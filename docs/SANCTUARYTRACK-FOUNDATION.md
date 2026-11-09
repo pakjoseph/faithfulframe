@@ -7,10 +7,16 @@
   retain upstream notices and bundled dlib/OpenBLAS/model license notices.
 - Submodules: dlib `6d338db` and libvisca `03578b0` are required and now
   initialized locally.
-- Baseline result on this host: **not built**. This arm64 Mac has Command Line
-  Tools selected but no Xcode compiler, Ninja, or OBS development environment.
-  CMake therefore stopped before configuration. This is a dependency blocker,
-  not a source failure.
+- Baseline result on this host: **passed on 2026-11-09**. The unmodified source
+  compiled as an arm64 macOS bundle with Xcode 27.2, Ninja 1.13.2, OpenBLAS
+  0.3.34, and the OBS 33 arm64 development SDK. OBS Studio 33.0.1 loaded the
+  bundle and logged `plugin loaded (plugin version 0.9.1, API version 33.0.0)`.
+  Existing upstream warnings remain for deprecated `obs_properties_add_button`
+  calls; they did not prevent the baseline build or load test.
+- macOS SDK rule: build against the Qt SDK bundled with the matching OBS
+  development environment. A first local build accidentally linked Homebrew
+  Qt 6.12 while OBS 33.0.1 ships Qt 6.11.1, and OBS rejected it at load time.
+  Passing `Qt6_DIR` to the OBS SDK's `lib/cmake/Qt6` fixed the binary linkage.
 - Windows result: **not verified**. The local GitHub CLI credentials are expired,
   so the existing upstream Actions run cannot yet be inspected or triggered.
   A successful Windows compile will be recorded separately from runtime testing.
