@@ -16,6 +16,7 @@ option(ENABLE_DEBUG_DATA "Enable property to save error and control data" OFF)
 option(WITH_DOCK "Enable dock" ON)
 option(ENABLE_DATAGEN "Enable generating data" OFF)
 option(ENABLE_RUST_CORE_TESTS "Enable pure FaithfulFrame Rust core tests" OFF)
+option(ENABLE_RUST_CORE_BRIDGE "Link the Rust core bridge and build its smoke test" OFF)
 
 set(CMAKE_PREFIX_PATH "${QTDIR}")
 
@@ -31,6 +32,41 @@ if (ENABLE_RUST_CORE_TESTS)
 		COMMENT "Running deterministic FaithfulFrame Rust core tests"
 		VERBATIM
 	)
+endif()
+
+if (ENABLE_RUST_CORE_BRIDGE)
+	find_program(CARGO_EXECUTABLE cargo REQUIRED)
+	set(FAITHFULFRAME_FFI_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/Cargo.toml)
+	if (WIN32)
+		set(FAITHFULFRAME_FFI_LIBRARY ${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/target/release/faithfulframe_ffi.lib)
+	else()
+		set(FAITHFULFRAME_FFI_LIBRARY ${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/target/release/libfaithfulframe_ffi.a)
+	endif()
+	set(FAITHFULFRAME_CARGO_BUILD ${CARGO_EXECUTABLE} build --release --manifest-path ${FAITHFULFRAME_FFI_MANIFEST})
+	if (APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
+		set(FAITHFULFRAME_CARGO_BUILD
+			${CMAKE_COMMAND} -E env MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
+			${FAITHFULFRAME_CARGO_BUILD})
+	endif()
+	add_custom_command(OUTPUT ${FAITHFULFRAME_FFI_LIBRARY}
+		COMMAND ${FAITHFULFRAME_CARGO_BUILD}
+		DEPENDS ${FAITHFULFRAME_FFI_MANIFEST}
+			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/Cargo.lock
+			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/src/lib.rs
+			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-core/src/framing.rs
+			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-core/src/lib.rs
+		COMMENT "Building FaithfulFrame Rust C ABI library"
+		VERBATIM)
+	add_custom_target(faithfulframe-rust-ffi-build DEPENDS ${FAITHFULFRAME_FFI_LIBRARY})
+	add_library(faithfulframe-rust-ffi STATIC IMPORTED GLOBAL)
+	set_target_properties(faithfulframe-rust-ffi PROPERTIES IMPORTED_LOCATION ${FAITHFULFRAME_FFI_LIBRARY})
+	add_executable(faithfulframe-rust-bridge-smoke
+		tests/faithfulframe-core-bridge-smoke.cpp src/faithfulframe-core-bridge.cpp)
+	add_dependencies(faithfulframe-rust-bridge-smoke faithfulframe-rust-ffi-build)
+	target_include_directories(faithfulframe-rust-bridge-smoke PRIVATE src rust/faithfulframe-ffi/include)
+	target_link_libraries(faithfulframe-rust-bridge-smoke PRIVATE faithfulframe-rust-ffi)
+	enable_testing()
+	add_test(NAME faithfulframe-rust-bridge-smoke COMMAND faithfulframe-rust-bridge-smoke)
 endif()
 
 set(plugin_additional_libs)
@@ -94,6 +130,10 @@ set(PLUGIN_SOURCES
 	src/dummy-backend.cpp
 )
 
+if (ENABLE_RUST_CORE_BRIDGE)
+	list(APPEND PLUGIN_SOURCES src/faithfulframe-core-bridge.cpp)
+endif()
+
 if (WITH_PTZ_TCP)
 	set(PLUGIN_SOURCES ${PLUGIN_SOURCES} src/libvisca-thread.cpp)
 endif()
@@ -130,6 +170,16 @@ target_link_libraries(${PROJECT_NAME}
 	dlib
 	${plugin_additional_libs}
 )
+
+if (ENABLE_RUST_CORE_BRIDGE)
+	add_dependencies(${PROJECT_NAME} faithfulframe-rust-ffi-build)
+	target_include_directories(${PROJECT_NAME} PRIVATE src rust/faithfulframe-ffi/include)
+	target_link_libraries(${PROJECT_NAME} faithfulframe-rust-ffi)
+	if (UNIX AND NOT APPLE)
+		find_package(Threads REQUIRED)
+		target_link_libraries(${PROJECT_NAME} Threads::Threads ${CMAKE_DL_LIBS} m)
+	endif()
+endif()
 
 target_include_directories(${PROJECT_NAME}
 	PRIVATE
