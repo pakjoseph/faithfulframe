@@ -11,6 +11,14 @@ pub type Millis = u64;
 pub type CandidateHandle = u64;
 pub type ContinuityToken = u64;
 
+/// Opaque identities are stable for one adapter/session lifetime. Generation
+/// counters describe changes within those identities and are not substitutes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Identity {
+    pub source: u64,
+    pub session: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Generations {
     pub source: u64,
@@ -66,6 +74,12 @@ pub enum GeometryError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionConfigError {
+    InvalidIdentity,
+    InvalidSafeWide(GeometryError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum State {
     Frozen,
     Manual,
@@ -109,9 +123,16 @@ pub enum Command {
     SelectCandidate {
         handle: CandidateHandle,
         observation_version: u64,
-        generations: Generations,
     },
     ResetToWide,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommandEnvelope {
+    pub identity: Identity,
+    pub status_version: u64,
+    pub generations: Generations,
+    pub command: Command,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,18 +150,31 @@ pub enum Lifecycle {
 pub struct Candidate {
     pub handle: CandidateHandle,
     pub continuity: ContinuityToken,
+    pub identity: Identity,
     pub observation_version: u64,
     pub generations: Generations,
     pub observed_at: Millis,
+    pub expires_at: Millis,
     pub rect: Rect,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
-    Command { at: Millis, command: Command },
-    Candidate(Candidate),
-    Tick { at: Millis },
-    Lifecycle { at: Millis, event: Lifecycle },
+    Command {
+        at: Millis,
+        envelope: CommandEnvelope,
+    },
+    Candidate {
+        at: Millis,
+        candidate: Candidate,
+    },
+    Tick {
+        at: Millis,
+    },
+    Lifecycle {
+        at: Millis,
+        event: Lifecycle,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,6 +188,7 @@ pub enum CommandResult {
 pub struct Snapshot {
     pub state: State,
     pub reason: Reason,
+    pub identity: Identity,
     pub generations: Generations,
     pub status_version: u64,
     pub observation_version: u64,
@@ -194,6 +229,7 @@ struct SelectedTarget {
 /// calls to `apply`; this type has no implicit timing or background work.
 pub struct TrackingSession {
     config: Config,
+    identity: Identity,
     generations: Generations,
     state: State,
     reason: Reason,
@@ -209,19 +245,28 @@ pub struct TrackingSession {
 }
 
 impl TrackingSession {
-    pub fn new(config: Config, generations: Generations) -> Result<Self, GeometryError> {
+    pub fn new(
+        config: Config,
+        identity: Identity,
+        generations: Generations,
+    ) -> Result<Self, SessionConfigError> {
+        if identity.source == 0 || identity.session == 0 {
+            return Err(SessionConfigError::InvalidIdentity);
+        }
         let safe_wide = Rect::normalized(
             config.safe_wide.x,
             config.safe_wide.y,
             config.safe_wide.width,
             config.safe_wide.height,
-        )?;
+        )
+        .map_err(SessionConfigError::InvalidSafeWide)?;
         Ok(Self {
             config: Config {
                 safe_wide,
                 max_candidates: config.max_candidates.max(1),
                 ..config
             },
+            identity,
             generations,
             state: State::Manual,
             reason: Reason::Startup,
@@ -241,6 +286,7 @@ impl TrackingSession {
         Snapshot {
             state: self.state,
             reason: self.reason,
+            identity: self.identity,
             generations: self.generations,
             status_version: self.status_version,
             observation_version: self.observation_version,
@@ -257,14 +303,25 @@ impl TrackingSession {
         if at < self.last_at {
             return self.reject(Reason::NonMonotonicEvent);
         }
-        self.last_at = at;
         let result = match event {
-            Event::Command { command, .. } => self.apply_command(command, at),
-            Event::Candidate(candidate) => self.apply_candidate(candidate),
+            Event::Command { envelope, .. } => {
+                if envelope.identity != self.identity
+                    || envelope.status_version != self.status_version
+                    || envelope.generations != self.generations
+                {
+                    self.reject_command(Reason::StaleCommand)
+                } else {
+                    self.apply_command(envelope.command, at)
+                }
+            }
+            Event::Candidate { at, candidate } => self.apply_candidate(candidate, at),
             Event::Tick { .. } => self.apply_tick(at),
             Event::Lifecycle { event, .. } => self.apply_lifecycle(event),
         };
-        self.status_version = self.status_version.saturating_add(1);
+        if !matches!(result, CommandResult::Rejected(_)) {
+            self.last_at = at;
+            self.status_version = self.status_version.saturating_add(1);
+        }
         let mut snapshot = self.snapshot();
         snapshot.command_result = result;
         snapshot
@@ -310,12 +367,14 @@ impl TrackingSession {
             Command::SelectCandidate {
                 handle,
                 observation_version,
-                generations,
             } if matches!(self.state, State::Manual | State::Searching | State::Lost)
-                && generations == self.generations
                 && observation_version == self.observation_version =>
             {
-                if let Some(candidate) = self.latest.get(&handle).copied() {
+                if let Some(candidate) = self.latest.get(&handle).copied()
+                    && candidate.expires_at >= at
+                    && candidate.observed_at <= at
+                    && at.saturating_sub(candidate.observed_at) <= self.config.max_evidence_age_ms
+                {
                     self.selected = Some(SelectedTarget {
                         handle,
                         continuity: candidate.continuity,
@@ -336,11 +395,20 @@ impl TrackingSession {
         }
     }
 
-    fn apply_candidate(&mut self, candidate: Candidate) -> CommandResult {
-        if candidate.generations != self.generations || candidate.observed_at < self.last_at {
+    fn apply_candidate(&mut self, candidate: Candidate, at: Millis) -> CommandResult {
+        if candidate.identity != self.identity
+            || candidate.generations != self.generations
+            || candidate.observed_at < self.last_at
+            || candidate.observed_at > at
+            || candidate.expires_at < at
+            || at.saturating_sub(candidate.observed_at) > self.config.max_evidence_age_ms
+        {
             return self.reject_command(Reason::InvalidCandidate);
         }
         if candidate.observation_version < self.observation_version {
+            return self.reject_command(Reason::InvalidCandidate);
+        }
+        if candidate.expires_at < candidate.observed_at {
             return self.reject_command(Reason::InvalidCandidate);
         }
         if Rect::normalized(
@@ -462,7 +530,7 @@ impl TrackingSession {
 fn event_time(event: Event) -> Millis {
     match event {
         Event::Command { at, .. } | Event::Tick { at } | Event::Lifecycle { at, .. } => at,
-        Event::Candidate(candidate) => candidate.observed_at,
+        Event::Candidate { at, .. } => at,
     }
 }
 
@@ -480,6 +548,13 @@ mod tests {
         }
     }
 
+    fn identity() -> Identity {
+        Identity {
+            source: 101,
+            session: 201,
+        }
+    }
+
     fn rect() -> Rect {
         Rect::normalized(0.2, 0.2, 0.4, 0.4).unwrap()
     }
@@ -488,11 +563,30 @@ mod tests {
         Candidate {
             handle,
             continuity: token,
+            identity: identity(),
             observation_version,
             generations: generations(),
             observed_at: at,
+            expires_at: at + 10,
             rect: rect(),
         }
+    }
+
+    fn send(session: &mut TrackingSession, at: Millis, command: Command) -> Snapshot {
+        let snapshot = session.snapshot();
+        session.apply(Event::Command {
+            at,
+            envelope: CommandEnvelope {
+                identity: snapshot.identity,
+                status_version: snapshot.status_version,
+                generations: snapshot.generations,
+                command,
+            },
+        })
+    }
+
+    fn observe(session: &mut TrackingSession, candidate: Candidate, at: Millis) -> Snapshot {
+        session.apply(Event::Candidate { at, candidate })
     }
 
     fn session() -> TrackingSession {
@@ -502,6 +596,7 @@ mod tests {
                 max_evidence_age_ms: 10,
                 ..Config::default()
             },
+            identity(),
             generations(),
         )
         .unwrap()
@@ -510,20 +605,17 @@ mod tests {
     #[test]
     fn explicit_selection_is_required_for_initial_lock() {
         let mut session = session();
-        session.apply(Event::Command {
-            at: 1,
-            command: Command::EnableAutoFollow,
-        });
-        session.apply(Event::Candidate(candidate(10, 100, 1, 2)));
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
         assert_eq!(session.snapshot().state, State::Searching);
-        let result = session.apply(Event::Command {
-            at: 3,
-            command: Command::SelectCandidate {
+        let result = send(
+            &mut session,
+            3,
+            Command::SelectCandidate {
                 handle: 10,
                 observation_version: 1,
-                generations: generations(),
             },
-        });
+        );
         assert_eq!(result.state, State::Locked);
         assert_eq!(result.crop_action, CropAction::Track);
     }
@@ -532,10 +624,7 @@ mod tests {
     fn invalid_command_is_a_strict_no_op() {
         let mut session = session();
         let before = session.snapshot();
-        let after = session.apply(Event::Command {
-            at: 1,
-            command: Command::ResetToWide,
-        });
+        let after = send(&mut session, 1, Command::ResetToWide);
         assert_eq!(
             after.command_result,
             CommandResult::Rejected(Reason::InvalidCommand)
@@ -548,18 +637,19 @@ mod tests {
     #[test]
     fn stale_selection_is_a_strict_no_op() {
         let mut session = session();
-        session.apply(Event::Command {
-            at: 1,
-            command: Command::EnableAutoFollow,
-        });
-        session.apply(Event::Candidate(candidate(10, 100, 1, 2)));
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
         let before = session.snapshot();
         let after = session.apply(Event::Command {
             at: 3,
-            command: Command::SelectCandidate {
-                handle: 10,
-                observation_version: 99,
-                generations: generations(),
+            envelope: CommandEnvelope {
+                identity: before.identity,
+                status_version: before.status_version,
+                generations: before.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: 99,
+                },
             },
         });
         assert_eq!(
@@ -573,27 +663,22 @@ mod tests {
     #[test]
     fn continuity_can_recover_only_inside_grace_period() {
         let mut session = session();
-        session.apply(Event::Command {
-            at: 1,
-            command: Command::EnableAutoFollow,
-        });
-        session.apply(Event::Candidate(candidate(10, 100, 1, 2)));
-        session.apply(Event::Command {
-            at: 3,
-            command: Command::SelectCandidate {
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
+        send(
+            &mut session,
+            3,
+            Command::SelectCandidate {
                 handle: 10,
                 observation_version: 1,
-                generations: generations(),
             },
-        });
+        );
         assert_eq!(
             session.apply(Event::Tick { at: 20 }).state,
             State::Searching
         );
         assert_eq!(
-            session
-                .apply(Event::Candidate(candidate(11, 100, 2, 30)))
-                .state,
+            observe(&mut session, candidate(11, 100, 2, 30), 30).state,
             State::Locked
         );
     }
@@ -601,39 +686,30 @@ mod tests {
     #[test]
     fn ambiguous_token_does_not_recover_lock() {
         let mut session = session();
-        session.apply(Event::Command {
-            at: 1,
-            command: Command::EnableAutoFollow,
-        });
-        session.apply(Event::Candidate(candidate(10, 100, 1, 2)));
-        session.apply(Event::Command {
-            at: 3,
-            command: Command::SelectCandidate {
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
+        send(
+            &mut session,
+            3,
+            Command::SelectCandidate {
                 handle: 10,
                 observation_version: 1,
-                generations: generations(),
             },
-        });
+        );
         session.apply(Event::Tick { at: 20 });
-        session.apply(Event::Candidate(candidate(11, 200, 2, 30)));
+        observe(&mut session, candidate(11, 200, 2, 30), 30);
         assert_eq!(session.snapshot().state, State::Searching);
     }
 
     #[test]
     fn loss_holds_and_reset_wide_stays_lost() {
         let mut session = session();
-        session.apply(Event::Command {
-            at: 1,
-            command: Command::EnableAutoFollow,
-        });
+        send(&mut session, 1, Command::EnableAutoFollow);
         let searching = session.snapshot();
         assert_eq!(searching.state, State::Searching);
         let lost = session.apply(Event::Tick { at: 101 });
         assert_eq!(lost.state, State::Lost);
-        let reset = session.apply(Event::Command {
-            at: 102,
-            command: Command::ResetToWide,
-        });
+        let reset = send(&mut session, 102, Command::ResetToWide);
         assert_eq!(reset.state, State::Lost);
         assert_eq!(reset.crop_action, CropAction::Wide);
     }
@@ -641,19 +717,16 @@ mod tests {
     #[test]
     fn lifecycle_invalidates_selection_and_requires_manual_recovery() {
         let mut session = session();
-        session.apply(Event::Command {
-            at: 1,
-            command: Command::EnableAutoFollow,
-        });
-        session.apply(Event::Candidate(candidate(10, 100, 1, 2)));
-        session.apply(Event::Command {
-            at: 3,
-            command: Command::SelectCandidate {
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
+        send(
+            &mut session,
+            3,
+            Command::SelectCandidate {
                 handle: 10,
                 observation_version: 1,
-                generations: generations(),
             },
-        });
+        );
         let mut changed = generations();
         changed.geometry += 1;
         let snapshot = session.apply(Event::Lifecycle {
@@ -683,26 +756,102 @@ mod tests {
     #[test]
     fn lower_version_candidate_cannot_move_a_locked_crop() {
         let mut session = session();
-        session.apply(Event::Command {
-            at: 1,
-            command: Command::EnableAutoFollow,
-        });
-        session.apply(Event::Candidate(candidate(10, 100, 2, 2)));
-        session.apply(Event::Command {
-            at: 3,
-            command: Command::SelectCandidate {
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 2, 2), 2);
+        send(
+            &mut session,
+            3,
+            Command::SelectCandidate {
                 handle: 10,
                 observation_version: 2,
-                generations: generations(),
             },
-        });
+        );
         let before = session.snapshot();
-        let stale = session.apply(Event::Candidate(candidate(11, 100, 1, 4)));
+        let stale = observe(&mut session, candidate(11, 100, 1, 4), 4);
         assert_eq!(
             stale.command_result,
             CommandResult::Rejected(Reason::InvalidCandidate)
         );
         assert_eq!(stale.state, before.state);
         assert_eq!(stale.crop, before.crop);
+    }
+
+    #[test]
+    fn expired_candidate_result_is_a_strict_no_op() {
+        let mut session = session();
+        send(&mut session, 1, Command::EnableAutoFollow);
+        let before = session.snapshot();
+        let mut expired = candidate(10, 100, 1, 2);
+        expired.expires_at = 5;
+
+        let after = observe(&mut session, expired, 6);
+
+        assert_eq!(
+            after.command_result,
+            CommandResult::Rejected(Reason::InvalidCandidate)
+        );
+        assert_eq!(after.state, before.state);
+        assert_eq!(after.selected, before.selected);
+        assert_eq!(after.crop, before.crop);
+        assert_eq!(after.loss_deadline, before.loss_deadline);
+        assert_eq!(after.status_version, before.status_version);
+        assert_eq!(after.observation_version, before.observation_version);
+    }
+
+    #[test]
+    fn cross_session_commands_and_candidates_are_rejected() {
+        let first = session();
+        let mut second = TrackingSession::new(
+            Config::default(),
+            Identity {
+                source: 102,
+                session: 202,
+            },
+            generations(),
+        )
+        .unwrap();
+        let before = second.snapshot();
+        let after_candidate = observe(&mut second, candidate(10, 100, 1, 0), 0);
+        assert_eq!(
+            after_candidate.command_result,
+            CommandResult::Rejected(Reason::InvalidCandidate)
+        );
+        assert_eq!(after_candidate.state, before.state);
+        assert_eq!(after_candidate.status_version, before.status_version);
+
+        let first_snapshot = first.snapshot();
+        let command = Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: first_snapshot.identity,
+                status_version: first_snapshot.status_version,
+                generations: first_snapshot.generations,
+                command: Command::EnableAutoFollow,
+            },
+        };
+        let rejected = second.apply(command);
+        assert_eq!(
+            rejected.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        assert_eq!(rejected.state, before.state);
+        assert_eq!(rejected.crop, before.crop);
+        assert_eq!(rejected.loss_deadline, before.loss_deadline);
+        assert_eq!(rejected.status_version, before.status_version);
+    }
+
+    #[test]
+    fn zero_identity_cannot_create_a_session() {
+        assert!(matches!(
+            TrackingSession::new(
+                Config::default(),
+                Identity {
+                    source: 0,
+                    session: 1,
+                },
+                generations(),
+            ),
+            Err(SessionConfigError::InvalidIdentity)
+        ));
     }
 }
