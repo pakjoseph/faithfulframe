@@ -15,11 +15,23 @@ option(ENABLE_MONITOR_USER "Enable monitor source for user" OFF)
 option(ENABLE_DEBUG_DATA "Enable property to save error and control data" OFF)
 option(WITH_DOCK "Enable dock" ON)
 option(ENABLE_DATAGEN "Enable generating data" OFF)
+option(ENABLE_RUST_CORE_TESTS "Enable pure FaithfulFrame Rust core tests" OFF)
 
 set(CMAKE_PREFIX_PATH "${QTDIR}")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if (ENABLE_RUST_CORE_TESTS)
+	find_program(CARGO_EXECUTABLE cargo REQUIRED)
+	add_custom_target(faithfulframe-rust-core-test
+		COMMAND ${CARGO_EXECUTABLE} test --manifest-path
+			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-core/Cargo.toml
+		WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-core
+		COMMENT "Running deterministic FaithfulFrame Rust core tests"
+		VERBATIM
+	)
+endif()
 
 set(plugin_additional_libs)
 set(plugin_additional_incs)
