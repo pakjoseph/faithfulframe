@@ -1,0 +1,13 @@
+[package]
+name = "faithfulframe-core"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "Pure deterministic tracking safety policy for FaithfulFrame"
+
+[lib]
+name = "faithfulframe_core"
+path = "src/lib.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
