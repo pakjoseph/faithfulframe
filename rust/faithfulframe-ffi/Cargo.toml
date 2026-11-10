@@ -1,0 +1,11 @@
+[package]
+name = "faithfulframe-ffi"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+faithfulframe-core = { path = "../faithfulframe-core" }
