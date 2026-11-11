@@ -173,6 +173,55 @@ int run_smoke()
 	}
 	equal_time.shutdown();
 
+	// One candidate batch can contain tracker results with different capture
+	// timestamps. Arrival-time ordering is shared, but each fresh face remains
+	// available for operator selection regardless of array order.
+	const ff_identity multi_identity{105, 205};
+	faithfulframe_session_executor multi_face(config, multi_identity, generations);
+	ff_snapshot multi_snapshot{};
+	if (!await_snapshot(
+		    multi_face, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    multi_snapshot))
+		return 40;
+	const ff_command multi_enable{FF_COMMAND_ENABLE_AUTO_FOLLOW,
+				      multi_snapshot.identity,
+				      multi_snapshot.status_version,
+				      multi_snapshot.generations,
+				      0,
+				      0};
+	const ff_candidate multi_candidates[] = {
+		{31, 310, multi_identity, 1, generations, 3, 503, {0.2f, 0.2f, 0.1f, 0.2f}},
+		{32, 320, multi_identity, 1, generations, 2, 502, {0.7f, 0.2f, 0.1f, 0.2f}},
+	};
+	if (!multi_face.enqueue_command(2, multi_enable) ||
+	    !await_snapshot(
+		    multi_face, [](const ff_snapshot &value) { return value.state == FF_STATE_SEARCHING; },
+		    multi_snapshot) ||
+	    !multi_face.enqueue_candidates(3, multi_candidates, std::size(multi_candidates)) ||
+	    !await_snapshot(
+		    multi_face,
+		    [](const ff_snapshot &value) {
+			    return value.state == FF_STATE_SEARCHING && value.observation_version == 1;
+		    },
+		    multi_snapshot))
+		return 41;
+	const ff_command select_second_face{FF_COMMAND_SELECT_CANDIDATE,
+					    multi_snapshot.identity,
+					    multi_snapshot.status_version,
+					    multi_snapshot.generations,
+					    32,
+					    1};
+	if (!multi_face.enqueue_command(4, select_second_face) ||
+	    !await_snapshot(
+		    multi_face,
+		    [](const ff_snapshot &value) {
+			    return value.command_result == FF_COMMAND_APPLIED && value.state == FF_STATE_LOCKED &&
+				   value.selected_handle == 32;
+		    },
+		    multi_snapshot))
+		return 42;
+	multi_face.shutdown();
+
 	// Teardown drops queued detector and operator work, then publishes only the
 	// worker-owned destruction transition.
 	faithfulframe_session_executor queued(config, ff_identity{102, 202}, generations);
