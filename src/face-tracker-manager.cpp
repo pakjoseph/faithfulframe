@@ -218,6 +218,7 @@ inline void face_tracker_manager::copy_detector_to_tracker()
 		tracker.tracker->set_texture(tracker.seed_texture);
 		tracker.tracker->set_position(expanded);
 		tracker.tracker->set_upsize_info(rectf_s{upsize_l, upsize_t, upsize_r, upsize_b});
+		tracker.tracker->set_landmark_detection(landmark_detection_data);
 		tracker.tracker->unlock();
 		tracker.observed_at_ms = 0;
 		tracker.rect = detection;
@@ -260,7 +261,6 @@ inline void face_tracker_manager::copy_detector_to_tracker()
 		additional.seed_texture = seed_texture;
 		additional.tick_cnt = detect_tick;
 		additional.state = tracker_inst_s::tracker_state_e::tracker_state_reset_texture;
-		additional.tracker->set_landmark_detection(landmark_detection_data);
 		if (!landmark_detection_data)
 			additional.landmark.clear();
 		if (!start_tracker(additional, detection)) {
@@ -333,8 +333,6 @@ inline void face_tracker_manager::stage_to_detector()
 		t.state = tracker_inst_s::tracker_state_e::tracker_state_reset_texture;
 		t.tick_cnt = tick_cnt;
 		t.seed_texture = cvtex;
-		t.tracker->set_texture(cvtex);
-		t.tracker->set_landmark_detection(landmark_detection_data);
 		if (!landmark_detection_data)
 			t.landmark.clear();
 		trackers.push_back(t);
