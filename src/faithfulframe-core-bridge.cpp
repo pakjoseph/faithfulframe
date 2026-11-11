@@ -196,6 +196,9 @@ bool faithfulframe_session_executor::enqueue(work_item item, bool coalesce)
 	// Producers capture timestamps before acquiring this mutex. A delayed
 	// producer must not place an older event after newer accepted work, because
 	// the Rust session rejects non-monotonic events and status age would regress.
+	// When timestamps tie, this mutex defines the accepted FIFO order; Rust
+	// advances due timers before each queued event. Coalescing replaces only the
+	// adjacent tail item and keeps that queue position.
 	item.monotonic_ms = std::max(item.monotonic_ms, last_submitted_ms);
 
 	if (coalesce && queue_size) {

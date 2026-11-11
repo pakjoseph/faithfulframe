@@ -133,6 +133,46 @@ int run_smoke()
 		return 24;
 	ordered.shutdown();
 
+	// Equal monotonic timestamps follow the queue's mutex-linearized FIFO
+	// insertion order. Freeze then Resume returns to Manual; reversing the
+	// order would leave the session Frozen.
+	faithfulframe_session_executor equal_time(config, ff_identity{104, 204}, generations);
+	ff_snapshot equal_snapshot{};
+	if (!await_snapshot(
+		    equal_time, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    equal_snapshot))
+		return 33;
+	const ff_command equal_freeze{FF_COMMAND_FREEZE,
+				      equal_snapshot.identity,
+				      equal_snapshot.status_version,
+				      equal_snapshot.generations,
+				      0,
+				      0};
+	const ff_command equal_resume{FF_COMMAND_RESUME,
+				      equal_snapshot.identity,
+				      equal_snapshot.status_version,
+				      equal_snapshot.generations,
+				      0,
+				      0};
+	const bool equal_freeze_queued = equal_time.enqueue_command(50, equal_freeze);
+	const bool equal_resume_queued = equal_time.enqueue_command(50, equal_resume);
+	const bool equal_result = equal_freeze_queued && equal_resume_queued &&
+				  await_snapshot(
+					  equal_time,
+					  [](const ff_snapshot &value) {
+						  return value.status_version == 2 && value.state == FF_STATE_MANUAL &&
+							 value.command_result == FF_COMMAND_APPLIED;
+					  },
+					  equal_snapshot);
+	if (!equal_result) {
+		std::fprintf(stderr, "equal-time commands queued=%d/%d state=%u result=%u rejection=%u version=%llu\n",
+			     equal_freeze_queued, equal_resume_queued, equal_snapshot.state,
+			     equal_snapshot.command_result, equal_snapshot.rejection_reason,
+			     static_cast<unsigned long long>(equal_snapshot.status_version));
+		return 34;
+	}
+	equal_time.shutdown();
+
 	// Teardown drops queued detector and operator work, then publishes only the
 	// worker-owned destruction transition.
 	faithfulframe_session_executor queued(config, ff_identity{102, 202}, generations);
