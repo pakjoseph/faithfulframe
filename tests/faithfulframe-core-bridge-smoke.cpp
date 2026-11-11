@@ -1,8 +1,10 @@
 #include "faithfulframe-core-bridge.hpp"
 
+#include <cmath>
+
 int main()
 {
-	const ff_session_config config{5000, 500, 8, {0.0f, 0.0f, 1.0f, 1.0f}};
+	const ff_session_config config{5000, 500, 8, 3840, 2160, 1920, 1080, 0.45f, 1.0f, 4.0f, 0.25f, 0.08f, 0.08f};
 	const ff_identity identity{101, 201};
 	ff_generations generations{1, 1, 1, 1, 1};
 	ff_result result = FF_OK;
@@ -22,9 +24,16 @@ int main()
 	if (bridge.publish_candidate(3, candidate, snapshot) != FF_OK || snapshot.observation_version != 1)
 		return 4;
 
-	ff_command select{FF_COMMAND_SELECT_CANDIDATE, snapshot.identity, snapshot.status_version, generations, candidate.handle, candidate.observation_version};
-	if (bridge.apply_command(4, select, snapshot) != FF_OK || snapshot.state != FF_STATE_LOCKED || !snapshot.has_selected || snapshot.selected_handle != candidate.handle)
+	ff_command select{
+		FF_COMMAND_SELECT_CANDIDATE,  snapshot.identity, snapshot.status_version, generations, candidate.handle,
+		candidate.observation_version};
+	if (bridge.apply_command(4, select, snapshot) != FF_OK || snapshot.state != FF_STATE_LOCKED ||
+	    !snapshot.has_selected || snapshot.selected_handle != candidate.handle)
 		return 5;
+	if (snapshot.crop.width == candidate.rect.width || snapshot.crop.height == candidate.rect.height ||
+	    std::abs(snapshot.crop.width / snapshot.crop.height - 1.0f) > 0.001f || snapshot.viewport.width != 1.0f ||
+	    snapshot.viewport.height != 1.0f)
+		return 17;
 
 	const auto locked = snapshot;
 	if (bridge.apply_command(5, select, snapshot) != FF_OK || snapshot.command_result != FF_COMMAND_REJECTED ||
@@ -37,24 +46,28 @@ int main()
 	++generations.stream;
 	++generations.geometry;
 	++generations.tracker;
-	const ff_lifecycle geometry_changed{FF_LIFECYCLE_GEOMETRY_CHANGED, snapshot.identity, generations};
+	const ff_lifecycle geometry_changed{FF_LIFECYCLE_GEOMETRY_CHANGED, snapshot.identity, generations, 1280, 960};
 	if (bridge.lifecycle(6, geometry_changed, snapshot) != FF_OK || snapshot.state != FF_STATE_MANUAL ||
-	    snapshot.has_selected || snapshot.generations.geometry != generations.geometry)
+	    snapshot.has_selected || snapshot.generations.geometry != generations.geometry ||
+	    snapshot.crop.width != 1.0f || snapshot.crop.height != 1.0f ||
+	    std::abs(snapshot.viewport.width - 0.75f) > 0.001f || std::abs(snapshot.viewport.x - 0.125f) > 0.001f)
 		return 7;
 	const auto after_geometry = snapshot;
 	ff_generations wrong_scene_generations = snapshot.generations;
 	++wrong_scene_generations.session;
 	++wrong_scene_generations.tracker;
-	const ff_lifecycle wrong_identity_scene{FF_LIFECYCLE_SCENE_ACTIVE, ff_identity{999, 999}, wrong_scene_generations};
+	const ff_lifecycle wrong_identity_scene{FF_LIFECYCLE_SCENE_ACTIVE, ff_identity{999, 999},
+						wrong_scene_generations};
 	if (bridge.lifecycle(7, wrong_identity_scene, snapshot) != FF_OK ||
-	    snapshot.command_result != FF_COMMAND_REJECTED || snapshot.rejection_reason != FF_REJECTION_STALE_LIFECYCLE ||
+	    snapshot.command_result != FF_COMMAND_REJECTED ||
+	    snapshot.rejection_reason != FF_REJECTION_STALE_LIFECYCLE ||
 	    snapshot.status_version != after_geometry.status_version || snapshot.state != after_geometry.state ||
 	    snapshot.crop.x != after_geometry.crop.x || snapshot.crop.y != after_geometry.crop.y ||
 	    snapshot.crop.width != after_geometry.crop.width || snapshot.crop.height != after_geometry.crop.height)
 		return 8;
 	const ff_lifecycle inexact_scene{FF_LIFECYCLE_SCENE_ACTIVE, snapshot.identity, snapshot.generations};
-	if (bridge.lifecycle(7, inexact_scene, snapshot) != FF_OK ||
-	    snapshot.command_result != FF_COMMAND_REJECTED || snapshot.rejection_reason != FF_REJECTION_INVALID_LIFECYCLE ||
+	if (bridge.lifecycle(7, inexact_scene, snapshot) != FF_OK || snapshot.command_result != FF_COMMAND_REJECTED ||
+	    snapshot.rejection_reason != FF_REJECTION_INVALID_LIFECYCLE ||
 	    snapshot.status_version != after_geometry.status_version || snapshot.state != after_geometry.state)
 		return 9;
 
@@ -68,9 +81,9 @@ int main()
 	if (bridge.lifecycle(7, rebind, snapshot) != FF_OK || !snapshot.closed || snapshot.state != FF_STATE_MANUAL)
 		return 10;
 	const auto closed = snapshot;
-	if (bridge.apply_command(8, enable, snapshot) != FF_OK ||
-	    snapshot.command_result != FF_COMMAND_REJECTED || snapshot.rejection_reason != FF_REJECTION_SESSION_CLOSED ||
-	    !snapshot.closed || snapshot.status_version != closed.status_version || snapshot.state != closed.state)
+	if (bridge.apply_command(8, enable, snapshot) != FF_OK || snapshot.command_result != FF_COMMAND_REJECTED ||
+	    snapshot.rejection_reason != FF_REJECTION_SESSION_CLOSED || !snapshot.closed ||
+	    snapshot.status_version != closed.status_version || snapshot.state != closed.state)
 		return 11;
 
 	const ff_identity other_identity{102, 202};
@@ -86,7 +99,8 @@ int main()
 	    other_snapshot.command_result != FF_COMMAND_REJECTED || other_snapshot.state != other_before.state ||
 	    other_snapshot.status_version != other_before.status_version ||
 	    other_snapshot.crop.x != other_before.crop.x || other_snapshot.crop.y != other_before.crop.y ||
-	    other_snapshot.crop.width != other_before.crop.width || other_snapshot.crop.height != other_before.crop.height)
+	    other_snapshot.crop.width != other_before.crop.width ||
+	    other_snapshot.crop.height != other_before.crop.height)
 		return 14;
 	if (other.apply_command(2, select, other_snapshot) != FF_OK ||
 	    other_snapshot.command_result != FF_COMMAND_REJECTED || other_snapshot.state != other_before.state ||

@@ -1,8 +1,9 @@
 //! Narrow C ABI. Unsafe pointer handling is contained in this crate only.
 
+use faithfulframe_core::framing::FramingConfig;
 use faithfulframe_core::{
     Candidate, Command, CommandEnvelope, CommandResult, Config, CropAction, Event, Generations,
-    Identity, Lifecycle, Reason, Rect, Snapshot, State, TrackingSession,
+    Identity, Lifecycle, Reason, Rect, Snapshot, State, TrackingEngine,
 };
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -42,7 +43,16 @@ pub struct FfSessionConfig {
     loss_grace_ms: u64,
     max_evidence_age_ms: u64,
     max_candidates: u32,
-    safe_wide: FfRect,
+    source_width: u32,
+    source_height: u32,
+    output_width: u32,
+    output_height: u32,
+    target_coverage: f32,
+    min_zoom: f32,
+    max_zoom: f32,
+    smoothing: f32,
+    max_pan_step: f32,
+    max_zoom_step: f32,
 }
 
 #[repr(C)]
@@ -75,6 +85,8 @@ pub struct FfLifecycle {
     kind: u32,
     identity: FfIdentity,
     generations: FfGenerations,
+    source_width: u32,
+    source_height: u32,
 }
 
 #[repr(C)]
@@ -94,11 +106,12 @@ pub struct FfSnapshot {
     command_result: u32,
     rejection_reason: u32,
     crop: FfRect,
+    viewport: FfRect,
     generations: FfGenerations,
 }
 
 pub struct FfSession {
-    inner: TrackingSession,
+    inner: TrackingEngine,
 }
 
 fn generations(value: FfGenerations) -> Generations {
@@ -149,6 +162,7 @@ fn map_reason(value: Reason) -> u32 {
         Reason::SessionClosed => 16,
         Reason::StaleLifecycle => 17,
         Reason::InvalidLifecycle => 18,
+        Reason::FramingFailure => 19,
     }
 }
 fn map_crop(value: CropAction) -> u32 {
@@ -200,6 +214,12 @@ fn write_snapshot(snapshot: Snapshot, output: &mut FfSnapshot) {
             width: snapshot.crop.width,
             height: snapshot.crop.height,
         },
+        viewport: FfRect {
+            x: snapshot.viewport.x,
+            y: snapshot.viewport.y,
+            width: snapshot.viewport.width,
+            height: snapshot.viewport.height,
+        },
         generations: FfGenerations {
             source: snapshot.generations.source,
             session: snapshot.generations.session,
@@ -231,7 +251,11 @@ fn lifecycle(value: FfLifecycle) -> Result<Lifecycle, i32> {
         2 => Lifecycle::CameraDisconnected { generations },
         3 => Lifecycle::CameraRestored { generations },
         4 => Lifecycle::SourceRebound { generations },
-        5 => Lifecycle::GeometryChanged { generations },
+        5 => Lifecycle::GeometryChanged {
+            generations,
+            source_width: value.source_width,
+            source_height: value.source_height,
+        },
         6 => Lifecycle::TrackerChanged { generations },
         7 => Lifecycle::FramingConfigChanged { generations },
         8 => Lifecycle::CandidatePolicyChanged { generations },
@@ -244,7 +268,7 @@ fn lifecycle(value: FfLifecycle) -> Result<Lifecycle, i32> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn faithfulframe_ffi_abi_version() -> u32 {
-    4
+    5
 }
 
 #[unsafe(no_mangle)]
@@ -263,17 +287,31 @@ pub unsafe extern "C" fn ff_session_create(
         }
         *output = std::ptr::null_mut();
         let config = &*config;
-        let safe_wide = match rect(config.safe_wide) {
-            Ok(value) => value,
-            Err(error) => return error,
+        if config.source_width == 0
+            || config.source_height == 0
+            || config.output_width == 0
+            || config.output_height == 0
+        {
+            return INVALID_ARGUMENT;
+        }
+        let framing = FramingConfig {
+            source_aspect: config.source_width as f32 / config.source_height as f32,
+            output_aspect: config.output_width as f32 / config.output_height as f32,
+            target_coverage: config.target_coverage,
+            min_zoom: config.min_zoom,
+            max_zoom: config.max_zoom,
+            smoothing: config.smoothing,
+            max_pan_step: config.max_pan_step,
+            max_zoom_step: config.max_zoom_step,
         };
-        match TrackingSession::new(
+        match TrackingEngine::new(
             Config {
                 loss_grace_ms: config.loss_grace_ms,
                 max_evidence_age_ms: config.max_evidence_age_ms,
                 max_candidates: config.max_candidates as usize,
-                safe_wide,
+                ..Config::default()
             },
+            framing,
             identity(*identity_in),
             generations(*generations_in),
         ) {
@@ -439,6 +477,6 @@ mod tests {
     use super::*;
     #[test]
     fn abi_version_is_stable() {
-        assert_eq!(faithfulframe_ffi_abi_version(), 4);
+        assert_eq!(faithfulframe_ffi_abi_version(), 5);
     }
 }
