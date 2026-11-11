@@ -74,6 +74,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		COMMAND ${FAITHFULFRAME_CARGO_BUILD}
 		${FAITHFULFRAME_VERIFY_RUST_DEPLOYMENT}
 		DEPENDS ${FAITHFULFRAME_FFI_MANIFEST}
+			${CMAKE_CURRENT_SOURCE_DIR}/rust-toolchain.toml
 			${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyRustMacOSDeployment.cmake
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/Cargo.lock
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/src/lib.rs
