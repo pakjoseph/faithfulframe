@@ -1,24 +1,38 @@
 #include "face-detector-base.h"
 
-#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
+#include <mutex>
 #include <thread>
 
 class probe_detector final : public face_detector_base {
-	std::atomic<bool> detecting{false};
+	std::mutex detection_mutex;
+	std::condition_variable detection_condition;
+	bool detecting = false;
 
 	void detect_main() override
 	{
-		detecting.store(true, std::memory_order_release);
+		{
+			std::lock_guard<std::mutex> lock(detection_mutex);
+			detecting = true;
+		}
+		detection_condition.notify_all();
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
-		detecting.store(false, std::memory_order_release);
+		{
+			std::lock_guard<std::mutex> lock(detection_mutex);
+			detecting = false;
+		}
 	}
 
 public:
 	void set_texture(std::shared_ptr<texture_object> &, int, int, int, int) override {}
 	void get_faces(std::vector<rect_s> &) override {}
-	bool is_detecting() const { return detecting.load(std::memory_order_acquire); }
+	bool wait_for_detection()
+	{
+		std::unique_lock<std::mutex> lock(detection_mutex);
+		return detection_condition.wait_for(lock, std::chrono::seconds(2), [this] { return detecting; });
+	}
 };
 
 static bool wait_for_runs(const probe_detector &detector, uint32_t expected)
@@ -26,17 +40,6 @@ static bool wait_for_runs(const probe_detector &detector, uint32_t expected)
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
 	while (std::chrono::steady_clock::now() < deadline) {
 		if (detector.completed_work_count() >= expected && detector.last_work_duration_us() >= 3'000)
-			return true;
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
-	}
-	return false;
-}
-
-static bool wait_for_detection(const probe_detector &detector)
-{
-	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-	while (std::chrono::steady_clock::now() < deadline) {
-		if (detector.is_detecting())
 			return true;
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
@@ -107,7 +110,7 @@ int main()
 			result = 4;
 		} else {
 			signal_work(detector);
-			if (!wait_for_detection(detector)) {
+			if (!detector.wait_for_detection()) {
 				std::fprintf(stderr, "restarted detector worker did not begin work\n");
 				result = 5;
 			}
