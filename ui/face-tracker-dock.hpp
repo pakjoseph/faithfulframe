@@ -33,6 +33,7 @@ public:
 
 	bool updating_widget = false;
 	bool in_updateState = false;
+	bool frontend_shutdown_started = false;
 
 public:
 	FTDock(QWidget *parent = nullptr);

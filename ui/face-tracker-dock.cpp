@@ -559,7 +559,9 @@ FTDock::~FTDock()
 {
 	if (statusTimer)
 		statusTimer->stop();
-	obs_frontend_remove_event_callback(frontendEvent_cb, this);
+	// OBS tears down the frontend callback registry as it dispatches EXIT.
+	if (!frontend_shutdown_started)
+		obs_frontend_remove_event_callback(frontendEvent_cb, this);
 
 	if (source_sh) {
 		signal_handler_disconnect(source_sh, "state_changed", onStateChanged, this);
@@ -588,6 +590,9 @@ void FTDock::hideEvent(QHideEvent *)
 
 void FTDock::frontendEvent(enum obs_frontend_event event)
 {
+	if (event == OBS_FRONTEND_EVENT_EXIT)
+		frontend_shutdown_started = true;
+
 	if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP || event == OBS_FRONTEND_EVENT_EXIT) {
 		if (docks)
 			while (docks->size()) {
