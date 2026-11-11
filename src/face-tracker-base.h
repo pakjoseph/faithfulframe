@@ -34,7 +34,7 @@ public:
 	virtual bool get_face(struct rect_s &) = 0;
 	virtual bool get_landmark(std::vector<pointf_s> &) = 0;
 
-	void start();
+	bool start();
 	void stop();
 	void request_stop();
 	void request_suspend();

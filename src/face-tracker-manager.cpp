@@ -174,7 +174,10 @@ inline void face_tracker_manager::copy_detector_to_tracker()
 	r.y1 += h * upsize_b;
 	t.tracker->set_position(r); // TODO: consider how to track two or more faces.
 	t.tracker->set_upsize_info(rectf_s{upsize_l, upsize_t, upsize_r, upsize_b});
-	t.tracker->start();
+	if (!t.tracker->start()) {
+		retire_tracker(static_cast<int>(i_tracker));
+		return;
+	}
 	t.state = tracker_inst_s::tracker_state_constructing;
 }
 

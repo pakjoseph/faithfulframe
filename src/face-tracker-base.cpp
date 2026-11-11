@@ -55,20 +55,27 @@ void *face_tracker_base::thread_routine(void *p)
 	return NULL;
 }
 
-void face_tracker_base::start()
+bool face_tracker_base::start()
 {
 	stop_requested = 0;
 	stopped = 0;
 	suspend_requested = 0;
 	if (!running) {
 		blog(LOG_INFO, "face_tracker_base: starting a new thread.");
-		pthread_create(&thread, NULL, thread_routine, (void *)this);
+		const int result = pthread_create(&thread, NULL, thread_routine, (void *)this);
+		if (result != 0) {
+			stop_requested = 1;
+			stopped = 1;
+			blog(LOG_ERROR, "face_tracker_base: failed to start thread (error %d)", result);
+			return false;
+		}
 		running = 1;
 	} else {
 		lock();
 		signal();
 		unlock();
 	}
+	return true;
 }
 
 void face_tracker_base::stop()
