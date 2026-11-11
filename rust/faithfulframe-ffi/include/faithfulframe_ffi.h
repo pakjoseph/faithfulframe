@@ -118,6 +118,8 @@ typedef struct ff_command
 {
 	uint32_t kind;
 	ff_identity identity;
+	/* Candidate selection is fenced by this preview version. Other commands
+	 * validate against current state and source/session generations. */
 	uint64_t status_version;
 	ff_generations generations;
 	uint64_t candidate_handle;
