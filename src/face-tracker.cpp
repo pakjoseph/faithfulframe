@@ -1640,8 +1640,12 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 		}
 	}
 
-	const bool source_available = !force_black && bound_source && binding &&
-				      !binding->closed.load(std::memory_order_acquire) &&
+	const bool source_geometry_current = bound_source &&
+					     ff_preview_source_geometry_matches(source_width, source_height,
+										obs_source_get_width(bound_source),
+										obs_source_get_height(bound_source));
+	const bool source_available = !force_black && source_geometry_current && obs_source_active(bound_source) &&
+				      binding && !binding->closed.load(std::memory_order_acquire) &&
 				      binding->signal_connected.load(std::memory_order_acquire) &&
 				      binding->source_active.load(std::memory_order_acquire);
 	gs_texture_t *texture = source_available && s->texrender ? gs_texrender_get_texture(s->texrender) : nullptr;
@@ -1913,7 +1917,14 @@ static void fts_render(void *data, gs_effect_t *)
 								       : nullptr;
 		if (!s->rendered) {
 			s->rendered = true;
-			if (safe_target && binding && binding->signal_connected.load(std::memory_order_acquire) &&
+			const bool source_geometry_current =
+				safe_target &&
+				ff_preview_source_geometry_matches(
+					binding->source_width.load(std::memory_order_acquire),
+					binding->source_height.load(std::memory_order_acquire),
+					obs_source_get_width(safe_target), obs_source_get_height(safe_target));
+			if (safe_target && source_geometry_current && obs_source_active(safe_target) &&
+			    binding->signal_connected.load(std::memory_order_acquire) &&
 			    binding->source_active.load(std::memory_order_acquire)) {
 				render_target(s, safe_target, NULL);
 				s->ftm->post_render();

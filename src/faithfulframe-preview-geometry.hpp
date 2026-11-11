@@ -26,6 +26,12 @@ inline bool ff_preview_observation_is_fresh(uint64_t observed_at_ms, uint64_t no
 	return observed_at_ms != 0 && observed_at_ms <= now_ms && now_ms - observed_at_ms <= maximum_age_ms;
 }
 
+inline bool ff_preview_source_geometry_matches(uint32_t bound_width, uint32_t bound_height, uint32_t live_width,
+					       uint32_t live_height)
+{
+	return bound_width != 0 && bound_height != 0 && bound_width == live_width && bound_height == live_height;
+}
+
 /// Estimate displayed digital zoom from a source-space crop. Full-source
 /// framing remains 1x even when aspect-fit padding is used.
 inline bool ff_preview_zoom_factor(const ff_rect &crop, uint32_t source_width, uint32_t source_height,
