@@ -42,12 +42,19 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	find_program(CARGO_EXECUTABLE cargo REQUIRED)
 	find_package(Threads REQUIRED)
 	set(FAITHFULFRAME_FFI_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/Cargo.toml)
-	if (WIN32)
-		set(FAITHFULFRAME_FFI_LIBRARY ${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/target/release/faithfulframe_ffi.lib)
-	else()
-		set(FAITHFULFRAME_FFI_LIBRARY ${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/target/release/libfaithfulframe_ffi.a)
+	set(FAITHFULFRAME_RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/faithfulframe-rust-target)
+	if (APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
+		set(FAITHFULFRAME_RUST_TARGET_DIR
+			${CMAKE_CURRENT_BINARY_DIR}/faithfulframe-rust-target-macos-${CMAKE_OSX_DEPLOYMENT_TARGET})
 	endif()
-	set(FAITHFULFRAME_CARGO_BUILD ${CARGO_EXECUTABLE} build --release --manifest-path ${FAITHFULFRAME_FFI_MANIFEST})
+	if (WIN32)
+		set(FAITHFULFRAME_FFI_LIBRARY ${FAITHFULFRAME_RUST_TARGET_DIR}/release/faithfulframe_ffi.lib)
+	else()
+		set(FAITHFULFRAME_FFI_LIBRARY ${FAITHFULFRAME_RUST_TARGET_DIR}/release/libfaithfulframe_ffi.a)
+	endif()
+	set(FAITHFULFRAME_CARGO_BUILD
+		${CARGO_EXECUTABLE} build --release --manifest-path ${FAITHFULFRAME_FFI_MANIFEST}
+		--target-dir ${FAITHFULFRAME_RUST_TARGET_DIR})
 	if (APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
 		find_program(OTOOL_EXECUTABLE otool)
 		if (NOT OTOOL_EXECUTABLE)
@@ -72,6 +79,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/src/lib.rs
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-core/src/framing.rs
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-core/src/lib.rs
+			${CARGO_EXECUTABLE}
 		COMMENT "Building FaithfulFrame Rust C ABI library"
 		VERBATIM)
 	add_custom_target(faithfulframe-rust-ffi-build DEPENDS ${FAITHFULFRAME_FFI_LIBRARY})
