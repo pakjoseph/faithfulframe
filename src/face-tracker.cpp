@@ -23,6 +23,7 @@
 #include "source_list.h"
 #ifdef ENABLE_RUST_CORE_BRIDGE
 #include "faithfulframe-core-bridge.hpp"
+#include "faithfulframe-preview-geometry.hpp"
 #endif
 
 static inline void scale_texture(struct face_tracker_filter *s, float scale);
@@ -1563,6 +1564,8 @@ static inline void draw_sprite_crop_to_rect(float x0, float y0, float x1, float 
 }
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
+static constexpr uint64_t safe_preview_max_snapshot_age_ms = 500;
+
 static bool valid_normalized_rect(const ff_rect &rect)
 {
 	return std::isfinite(rect.x) && std::isfinite(rect.y) && std::isfinite(rect.width) &&
@@ -1587,6 +1590,10 @@ static ff_rect full_source_viewport(uint32_t source_width, uint32_t source_heigh
 	}
 	return ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
 }
+
+static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, const ff_snapshot &snapshot,
+				       uint64_t snapshot_at, const ff_rect &crop, const ff_rect &viewport,
+				       uint32_t output_width, uint32_t output_height);
 
 static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_binding *binding,
 				   faithfulframe_source_runtime *runtime = nullptr, bool force_black = false,
@@ -1613,21 +1620,25 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 
 	ff_rect crop{0.0f, 0.0f, 1.0f, 1.0f};
 	ff_rect viewport = full_source_viewport(source_width, source_height, output_width, output_height);
-	if (!force_black && !force_wide && binding && !binding->closed.load(std::memory_order_acquire) &&
+	ff_snapshot displayed_snapshot{};
+	uint64_t displayed_snapshot_at = 0;
+	bool has_displayed_snapshot = false;
+	if (!force_black && binding && !binding->closed.load(std::memory_order_acquire) &&
 	    !binding->transition_pending.load(std::memory_order_acquire)) {
 		auto *executor = binding->render_executor.load(std::memory_order_acquire);
-		ff_snapshot snapshot{};
-		uint64_t snapshot_time = 0;
 		const uint64_t now = source_monotonic_millis();
-		if (executor && executor->try_snapshot(snapshot, &snapshot_time) && snapshot_time <= now &&
-		    now - snapshot_time <= 500 && snapshot.identity.source == binding->identity.source &&
-		    snapshot.identity.session == binding->identity.session && !snapshot.closed) {
-			const bool selected_crop = snapshot.crop_action != FF_CROP_TRACK ||
-						   (snapshot.state == FF_STATE_LOCKED && snapshot.has_selected);
-			if (selected_crop && valid_normalized_rect(snapshot.crop) &&
-			    valid_normalized_rect(snapshot.viewport)) {
-				crop = snapshot.crop;
-				viewport = snapshot.viewport;
+		if (executor && executor->try_snapshot(displayed_snapshot, &displayed_snapshot_at) &&
+		    displayed_snapshot_at <= now && now - displayed_snapshot_at <= safe_preview_max_snapshot_age_ms &&
+		    displayed_snapshot.identity.source == binding->identity.source &&
+		    displayed_snapshot.identity.session == binding->identity.session && !displayed_snapshot.closed) {
+			has_displayed_snapshot = true;
+			const bool selected_crop =
+				displayed_snapshot.crop_action != FF_CROP_TRACK ||
+				(displayed_snapshot.state == FF_STATE_LOCKED && displayed_snapshot.has_selected);
+			if (!force_wide && selected_crop && valid_normalized_rect(displayed_snapshot.crop) &&
+			    valid_normalized_rect(displayed_snapshot.viewport)) {
+				crop = displayed_snapshot.crop;
+				viewport = displayed_snapshot.viewport;
 			}
 		}
 	}
@@ -1668,6 +1679,99 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 		const float v1 = crop.y + crop.height;
 		while (gs_effect_loop(effect, "Draw"))
 			draw_sprite_crop_to_rect(dx0, dy0, dx1, dy1, u0, v0, u1, v1);
+	}
+	gs_blend_state_pop();
+	if (source_available && texture && has_displayed_snapshot)
+		draw_safe_candidate_bounds(binding, displayed_snapshot, displayed_snapshot_at, crop, viewport,
+					   output_width, output_height);
+}
+
+static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, const ff_snapshot &snapshot,
+				       uint64_t snapshot_at, const ff_rect &crop, const ff_rect &viewport,
+				       uint32_t output_width, uint32_t output_height)
+{
+	if (!binding || binding->closed.load(std::memory_order_acquire) ||
+	    binding->transition_pending.load(std::memory_order_acquire))
+		return;
+
+	const uint64_t now = source_monotonic_millis();
+	if (snapshot_at > now || now - snapshot_at > safe_preview_max_snapshot_age_ms || snapshot.closed ||
+	    snapshot.identity.source != binding->identity.source ||
+	    snapshot.identity.session != binding->identity.session)
+		return;
+
+	faithfulframe_source_binding::preview_payload preview;
+	{
+		std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
+		if (!lock.owns_lock())
+			return;
+		preview = binding->preview;
+	}
+	if (preview.identity.source != snapshot.identity.source ||
+	    preview.identity.session != snapshot.identity.session ||
+	    preview.generations.source != snapshot.generations.source ||
+	    preview.generations.session != snapshot.generations.session ||
+	    preview.generations.stream != snapshot.generations.stream ||
+	    preview.generations.geometry != snapshot.generations.geometry ||
+	    preview.generations.tracker != snapshot.generations.tracker ||
+	    preview.observation_version != snapshot.observation_version || preview.published_at_ms > now ||
+	    now - preview.published_at_ms > safe_preview_max_snapshot_age_ms)
+		return;
+
+	if (!output_width || !output_height)
+		return;
+	if (!valid_normalized_rect(crop) || !valid_normalized_rect(viewport))
+		return;
+
+	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_SOLID);
+	if (!effect)
+		return;
+	gs_eparam_t *color = gs_effect_get_param_by_name(effect, "color");
+	if (!color)
+		return;
+
+	gs_blend_state_push();
+	while (gs_effect_loop(effect, "Solid")) {
+		auto draw_bounds = [&](const ff_rect &rect, uint32_t rgba) {
+			ff_preview_rect_d mapped{};
+			if (!ff_preview_candidate_rect(crop, viewport, rect, mapped))
+				return;
+			const float x0 = static_cast<float>(mapped.x * output_width);
+			const float y0 = static_cast<float>(mapped.y * output_height);
+			const float x1 = static_cast<float>((mapped.x + mapped.width) * output_width);
+			const float y1 = static_cast<float>((mapped.y + mapped.height) * output_height);
+			if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(x1) || !std::isfinite(y1) ||
+			    x1 <= x0 || y1 <= y0)
+				return;
+			gs_effect_set_color(color, rgba);
+			gs_render_start(false);
+			gs_vertex2f(x0, y0);
+			gs_vertex2f(x1, y0);
+			gs_vertex2f(x1, y0);
+			gs_vertex2f(x1, y1);
+			gs_vertex2f(x1, y1);
+			gs_vertex2f(x0, y1);
+			gs_vertex2f(x0, y1);
+			gs_vertex2f(x0, y0);
+			gs_render_stop(GS_LINES);
+		};
+
+		const size_t count = std::min(preview.candidate_count, preview.candidates.size());
+		for (size_t i = 0; i < count; ++i) {
+			const ff_candidate &candidate = preview.candidates[i];
+			if (candidate.expires_at_ms >= now && candidate.observed_at_ms <= now &&
+			    candidate.observation_version == preview.observation_version &&
+			    candidate.identity.source == preview.identity.source &&
+			    candidate.identity.session == preview.identity.session &&
+			    candidate.generations.source == preview.generations.source &&
+			    candidate.generations.session == preview.generations.session &&
+			    candidate.generations.stream == preview.generations.stream &&
+			    candidate.generations.geometry == preview.generations.geometry &&
+			    candidate.generations.tracker == preview.generations.tracker &&
+			    valid_normalized_rect(candidate.rect))
+				draw_bounds(candidate.rect,
+					    candidate.handle == snapshot.selected_handle ? 0x3CFF72FF : 0x00D4FFFF);
+		}
 	}
 	gs_blend_state_pop();
 }
@@ -1910,19 +2014,15 @@ static void cb_render_frame(void *data, calldata_t *cd)
 static void cb_render_info(void *data, calldata_t *cd)
 {
 	auto *s = (struct face_tracker_filter *)data;
-#ifdef ENABLE_RUST_CORE_BRIDGE
-	// The legacy tracker rectangles use its independent crop transform. Keep
-	// those overlays off the safe-preview image until its candidates can be
-	// rendered from the same immutable Rust preview payload as hit-testing.
-	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire))
-		return;
-#endif
-
 	bool debug_notrack = false;
 	calldata_get_bool(cd, "notrack", &debug_notrack);
-
 	bool landmark_only = false;
 	calldata_get_bool(cd, "landmark_only", &landmark_only);
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+		return;
+	}
+#endif
 
 	draw_frame_info(s, debug_notrack, landmark_only);
 }
@@ -2053,7 +2153,8 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	const bool has_snapshot = executor->try_snapshot(snapshot, &snapshot_at);
 	if (has_snapshot && snapshot_at <= now)
 		calldata_set_int(cd, "status_snapshot_age_ms", ffi_integer(now - snapshot_at));
-	if (!has_snapshot || snapshot.closed || snapshot_at > now || now - snapshot_at > 1000 ||
+	if (!has_snapshot || snapshot.closed || snapshot_at > now ||
+	    now - snapshot_at > safe_preview_max_snapshot_age_ms ||
 	    snapshot.identity.source != binding->identity.source ||
 	    snapshot.identity.session != binding->identity.session || !valid_normalized_rect(snapshot.crop) ||
 	    !valid_normalized_rect(snapshot.viewport))
