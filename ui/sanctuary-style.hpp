@@ -24,7 +24,8 @@ inline constexpr int control_compact_height = 28;
 inline constexpr int control_standard_height = 36;
 inline constexpr int control_primary_height = 44;
 
-struct colors {
+struct colors
+{
 	QColor surface;
 	QColor surface_raised;
 	QColor text;

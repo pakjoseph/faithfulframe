@@ -1,8 +1,12 @@
 #include "faithfulframe-core-bridge.hpp"
 
-void faithfulframe_core_bridge::deleter::operator()(ff_session *session) const { ff_session_destroy(session); }
+void faithfulframe_core_bridge::deleter::operator()(ff_session *session) const
+{
+	ff_session_destroy(session);
+}
 
-faithfulframe_core_bridge::faithfulframe_core_bridge(const ff_session_config &config, const ff_identity &identity, const ff_generations &generations, ff_result &result)
+faithfulframe_core_bridge::faithfulframe_core_bridge(const ff_session_config &config, const ff_identity &identity,
+						     const ff_generations &generations, ff_result &result)
 	: bound_identity(identity)
 {
 	if (faithfulframe_ffi_abi_version() != FAITHFULFRAME_FFI_ABI_VERSION) {
@@ -32,14 +36,16 @@ ff_result faithfulframe_core_bridge::tick(uint64_t monotonic_ms, ff_snapshot &ou
 	return ff_session_tick(session.get(), monotonic_ms, &output);
 }
 
-ff_result faithfulframe_core_bridge::publish_candidate(uint64_t monotonic_ms, const ff_candidate &candidate, ff_snapshot &output)
+ff_result faithfulframe_core_bridge::publish_candidate(uint64_t monotonic_ms, const ff_candidate &candidate,
+						       ff_snapshot &output)
 {
 	if (!session)
 		return FF_INVALID_ARGUMENT;
 	return ff_session_publish_candidate(session.get(), monotonic_ms, &candidate, &output);
 }
 
-ff_result faithfulframe_core_bridge::apply_command(uint64_t monotonic_ms, const ff_command &command, ff_snapshot &output)
+ff_result faithfulframe_core_bridge::apply_command(uint64_t monotonic_ms, const ff_command &command,
+						   ff_snapshot &output)
 {
 	if (!session)
 		return FF_INVALID_ARGUMENT;

@@ -7,7 +7,8 @@
 
 class faithfulframe_core_bridge {
 public:
-	faithfulframe_core_bridge(const ff_session_config &, const ff_identity &, const ff_generations &, ff_result &result);
+	faithfulframe_core_bridge(const ff_session_config &, const ff_identity &, const ff_generations &,
+				  ff_result &result);
 	~faithfulframe_core_bridge();
 	faithfulframe_core_bridge(const faithfulframe_core_bridge &) = delete;
 	faithfulframe_core_bridge &operator=(const faithfulframe_core_bridge &) = delete;
@@ -20,7 +21,10 @@ public:
 	const ff_identity &binding_identity() const { return bound_identity; }
 
 private:
-	struct deleter { void operator()(ff_session *session) const; };
+	struct deleter
+	{
+		void operator()(ff_session *session) const;
+	};
 	const ff_identity bound_identity;
 	std::unique_ptr<ff_session, deleter> session;
 };
