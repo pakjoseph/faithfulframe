@@ -30,34 +30,50 @@ static void signal_work(probe_detector &detector)
 	detector.unlock();
 }
 
+static void report_stage(const char *stage)
+{
+	std::fprintf(stderr, "detector worker smoke: %s\n", stage);
+	std::fflush(stderr);
+}
+
 int main()
 {
 	probe_detector detector;
+	report_stage("starting worker");
 	if (!detector.start()) {
 		std::fprintf(stderr, "detector worker did not start\n");
 		return 1;
 	}
+	report_stage("worker started");
 	int result = 0;
 
 	std::this_thread::sleep_for(std::chrono::milliseconds(30));
+	report_stage("initial idle check");
 	if (detector.completed_work_count() != 0) {
 		std::fprintf(stderr, "detector worker ran before receiving work\n");
 		result = 1;
 	} else {
+		report_stage("signaling first work item");
 		signal_work(detector);
 		if (!wait_for_runs(detector, 1) || detector.last_work_duration_us() < 3'000) {
 			std::fprintf(stderr, "detector work was lost or not timed\n");
 			result = 2;
 		} else {
+			report_stage("first work item completed");
+			report_stage("signaling second work item");
 			signal_work(detector);
 			if (!wait_for_runs(detector, 2) || detector.last_work_duration_us() < 3'000 ||
 			    detector.max_work_duration_us() < detector.last_work_duration_us()) {
 				std::fprintf(stderr, "detector timing did not update consistently\n");
 				result = 3;
+			} else {
+				report_stage("second work item completed");
 			}
 		}
 	}
 
+	report_stage("stopping worker");
 	detector.stop();
+	report_stage("worker stopped");
 	return result;
 }

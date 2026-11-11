@@ -153,6 +153,10 @@ endif()
 
 find_package(libobs REQUIRED)
 find_package(obs-frontend-api REQUIRED)
+if (WIN32 AND ENABLE_RUST_CORE_BRIDGE)
+	set_tests_properties(faithfulframe-detector-worker-smoke PROPERTIES
+		ENVIRONMENT "PATH=$<TARGET_FILE_DIR:OBS::libobs>")
+endif()
 
 if (WITH_DLIB_SUBMODULE)
 	set(CMAKE_POSITION_INDEPENDENT_CODE True)
