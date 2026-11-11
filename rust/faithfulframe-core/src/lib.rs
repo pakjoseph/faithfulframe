@@ -2204,6 +2204,90 @@ mod tests {
     }
 
     #[test]
+    fn geometry_update_with_unchanged_dimensions_invalidates_old_selection() {
+        let mut engine = TrackingEngine::new(
+            Config::default(),
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        let searching = engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        let candidate = Candidate {
+            handle: 1,
+            continuity: 91,
+            identity: searching.identity,
+            observation_version: 1,
+            generations: searching.generations,
+            observed_at: 2,
+            expires_at: 20,
+            rect: rect(),
+        };
+        let observed = engine.apply(Event::Candidate { at: 2, candidate });
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: observed.identity,
+                status_version: observed.status_version,
+                generations: observed.generations,
+                command: Command::SelectCandidate {
+                    handle: candidate.handle,
+                    observation_version: candidate.observation_version,
+                },
+            },
+        });
+        assert_eq!(locked.state, State::Locked);
+        assert_eq!(locked.selected, Some(candidate.handle));
+        assert_ne!(locked.crop, Rect::full_frame());
+
+        let changed_generations =
+            generations_after(locked.generations, false, false, true, true, true);
+        let invalidated = engine.apply(Event::Lifecycle {
+            at: 4,
+            identity: locked.identity,
+            event: Lifecycle::GeometryChanged {
+                generations: changed_generations,
+                source_width: 1920,
+                source_height: 1080,
+            },
+        });
+        assert_eq!(invalidated.state, State::Manual);
+        assert_eq!(invalidated.selected, None);
+        assert_eq!(invalidated.crop, Rect::full_frame());
+        assert_eq!(invalidated.generations, changed_generations);
+
+        let stale_selection = engine.apply(Event::Command {
+            at: 5,
+            envelope: CommandEnvelope {
+                identity: locked.identity,
+                status_version: locked.status_version,
+                generations: locked.generations,
+                command: Command::SelectCandidate {
+                    handle: candidate.handle,
+                    observation_version: candidate.observation_version,
+                },
+            },
+        });
+        assert_eq!(
+            stale_selection.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        assert_eq!(stale_selection.state, invalidated.state);
+        assert_eq!(stale_selection.selected, invalidated.selected);
+        assert_eq!(stale_selection.crop, invalidated.crop);
+        assert_eq!(stale_selection.generations, invalidated.generations);
+    }
+
+    #[test]
     fn invalid_geometry_change_is_a_strict_no_op() {
         let mut engine = TrackingEngine::new(
             Config::default(),
