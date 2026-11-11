@@ -267,6 +267,7 @@ void faithfulframe_session_executor::request_shutdown(uint32_t terminal_lifecycl
 		if (worker_started.load(std::memory_order_acquire)) {
 			work_item stop;
 			stop.kind = work_kind::stop;
+			stop.enqueued_at = std::chrono::steady_clock::now();
 			stop.lifecycle.kind = terminal_lifecycle_kind;
 			stop.lifecycle.source_width = source_width;
 			stop.lifecycle.source_height = source_height;
