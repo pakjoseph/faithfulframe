@@ -6,6 +6,7 @@
 #include "texture-object.h"
 
 #include <dlib/image_processing/frontal_face_detector.h>
+#include <utility>
 
 #define MAX_ERROR 2
 
@@ -49,20 +50,23 @@ void face_detector_dlib_hog::set_texture(std::shared_ptr<texture_object> &tex, i
 
 void face_detector_dlib_hog::detect_main()
 {
-	if (!p->tex)
+	// A failed frame must not leave the previous detections looking current.
+	p->rects.clear();
+	std::shared_ptr<texture_object> tex = std::move(p->tex);
+	if (!tex)
 		return;
 
 	dlib::matrix<dlib::rgb_pixel> img;
-	if (!p->tex->get_dlib_rgb_image(img))
+	if (!tex->get_dlib_rgb_image(img))
 		return;
 
 	int x0 = 0, y0 = 0;
 	if (p->crop_l > 0 || p->crop_r > 0 || p->crop_t > 0 || p->crop_b > 0) {
 		dlib::matrix<dlib::rgb_pixel> img_crop;
-		x0 = (int)(p->crop_l / p->tex->scale);
-		int x1 = img.nc() - (int)(p->crop_r / p->tex->scale);
-		y0 = (int)(p->crop_t / p->tex->scale);
-		int y1 = img.nr() - (int)(p->crop_b / p->tex->scale);
+		x0 = (int)(p->crop_l / tex->scale);
+		int x1 = img.nc() - (int)(p->crop_r / tex->scale);
+		y0 = (int)(p->crop_t / tex->scale);
+		int y1 = img.nr() - (int)(p->crop_b / tex->scale);
 		if (x1 - x0 < 80 || y1 - y0 < 80) {
 			if (p->n_error++ < MAX_ERROR)
 				blog(LOG_ERROR, "too small image: %dx%d cropped left=%d right=%d top=%d bottom=%d",
@@ -104,15 +108,13 @@ void face_detector_dlib_hog::detect_main()
 		p->rects.resize(dets.size());
 		for (size_t i = 0; i < dets.size(); i++) {
 			rect_s &r = p->rects[i];
-			r.x0 = (dets[i].left() + x0) * p->tex->scale;
-			r.y0 = (dets[i].top() + y0) * p->tex->scale;
-			r.x1 = (dets[i].right() + x0) * p->tex->scale;
-			r.y1 = (dets[i].bottom() + y0) * p->tex->scale;
+			r.x0 = (dets[i].left() + x0) * tex->scale;
+			r.y0 = (dets[i].top() + y0) * tex->scale;
+			r.x1 = (dets[i].right() + x0) * tex->scale;
+			r.y1 = (dets[i].bottom() + y0) * tex->scale;
 			r.score = 1.0; // TODO: implement me
 		}
 	}
-
-	p->tex.reset();
 }
 
 void face_detector_dlib_hog::get_faces(std::vector<struct rect_s> &rects)

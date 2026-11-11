@@ -10,6 +10,7 @@
 #include <dlib/data_io.h>
 #include <dlib/image_processing.h>
 #include <dlib/array2d/array2d_kernel.h>
+#include <utility>
 
 #define MAX_ERROR 2
 
@@ -61,20 +62,23 @@ void face_detector_dlib_cnn::set_texture(std::shared_ptr<texture_object> &tex, i
 
 void face_detector_dlib_cnn::detect_main()
 {
-	if (!p->tex)
+	// A failed frame must not leave the previous detections looking current.
+	p->rects.clear();
+	std::shared_ptr<texture_object> tex = std::move(p->tex);
+	if (!tex)
 		return;
 
 	dlib::matrix<dlib::rgb_pixel> img;
-	if (!p->tex->get_dlib_rgb_image(img))
+	if (!tex->get_dlib_rgb_image(img))
 		return;
 
 	int x0 = 0, y0 = 0;
 	if (p->crop_l > 0 || p->crop_r > 0 || p->crop_t > 0 || p->crop_b > 0) {
 		image_t img_crop;
-		x0 = (int)(p->crop_l / p->tex->scale);
-		int x1 = img.nc() - (int)(p->crop_r / p->tex->scale);
-		y0 = (int)(p->crop_t / p->tex->scale);
-		int y1 = img.nr() - (int)(p->crop_b / p->tex->scale);
+		x0 = (int)(p->crop_l / tex->scale);
+		int x1 = img.nc() - (int)(p->crop_r / tex->scale);
+		y0 = (int)(p->crop_t / tex->scale);
+		int y1 = img.nr() - (int)(p->crop_b / tex->scale);
 		if (x1 - x0 < 80 || y1 - y0 < 80) {
 			if (p->n_error++ < MAX_ERROR)
 				blog(LOG_ERROR, "too small image: %dx%d cropped left=%d right=%d top=%d bottom=%d",
@@ -119,14 +123,12 @@ void face_detector_dlib_cnn::detect_main()
 	for (size_t i = 0; i < dets.size(); i++) {
 		auto &det = dets[i];
 		rect_s &r = p->rects[i];
-		r.x0 = (det.rect.left() + x0) * p->tex->scale;
-		r.y0 = (det.rect.top() + y0) * p->tex->scale;
-		r.x1 = (det.rect.right() + x0) * p->tex->scale;
-		r.y1 = (det.rect.bottom() + y0) * p->tex->scale;
+		r.x0 = (det.rect.left() + x0) * tex->scale;
+		r.y0 = (det.rect.top() + y0) * tex->scale;
+		r.x1 = (det.rect.right() + x0) * tex->scale;
+		r.y1 = (det.rect.bottom() + y0) * tex->scale;
 		r.score = det.detection_confidence;
 	}
-
-	p->tex.reset();
 }
 
 void face_detector_dlib_cnn::get_faces(std::vector<struct rect_s> &rects)
