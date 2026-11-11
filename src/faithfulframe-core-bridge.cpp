@@ -164,8 +164,11 @@ bool faithfulframe_session_executor::enqueue(const work_item &item, bool coalesc
 {
 	if (!worker_started.load(std::memory_order_acquire))
 		return false;
-	std::unique_lock<std::mutex> lock(queue_mutex, std::try_to_lock);
-	if (!lock.owns_lock() || closing || closing_requested.load(std::memory_order_acquire))
+	// Queue bookkeeping is kept brief and never runs detection or session policy.
+	// A try-lock here would silently drop valid operator commands under ordinary
+	// worker contention, even when the bounded queue still has capacity.
+	std::unique_lock<std::mutex> lock(queue_mutex);
+	if (closing || closing_requested.load(std::memory_order_acquire))
 		return false;
 
 	if (coalesce && queue_size) {
@@ -335,7 +338,7 @@ void faithfulframe_session_executor::run()
 					last_command_result = snapshot.command_result;
 					last_rejection = snapshot.command_result == FF_COMMAND_REJECTED
 								 ? snapshot.rejection_reason
-								 : FF_REJECTION_NONE;
+								 : static_cast<uint32_t>(FF_REJECTION_NONE);
 					const uint64_t lifetime = snapshot.command_result == FF_COMMAND_REJECTED ? 2000
 														 : 500;
 					command_message_expires_at =

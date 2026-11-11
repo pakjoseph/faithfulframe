@@ -1,6 +1,7 @@
 #include "faithfulframe-core-bridge.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <thread>
 
 namespace {
@@ -17,7 +18,7 @@ bool await_snapshot(const faithfulframe_session_executor &executor, Predicate pr
 }
 } // namespace
 
-int main()
+int run_smoke()
 {
 	const ff_session_config config{5000, 500, 8, 3840, 2160, 1920, 1080, 0.45f, 1.0f, 4.0f, 0.25f, 0.08f, 0.08f};
 	const ff_identity identity{101, 201};
@@ -118,4 +119,12 @@ int main()
 	    queued.enqueue_candidates(22, &queued_candidate, 1))
 		return 13;
 	return 0;
+}
+
+int main()
+{
+	const int result = run_smoke();
+	if (result != 0)
+		std::fprintf(stderr, "faithfulframe-session-executor-smoke failed at step %d\n", result);
+	return result;
 }

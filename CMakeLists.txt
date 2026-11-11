@@ -190,6 +190,9 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	if (UNIX AND NOT APPLE)
 		find_package(Threads REQUIRED)
 		target_link_libraries(${PROJECT_NAME} Threads::Threads ${CMAKE_DL_LIBS} m)
+	elseif (OS_WINDOWS)
+		# Rust's Windows standard library uses native NT file APIs.
+		target_link_libraries(${PROJECT_NAME} ntdll)
 	endif()
 endif()
 
