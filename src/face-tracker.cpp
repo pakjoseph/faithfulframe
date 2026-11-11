@@ -110,6 +110,7 @@ struct faithfulframe_source_runtime
 	double requested_max_zoom = 4.0;
 	double requested_pan_smoothing = 0.25;
 	double requested_zoom_smoothing = 0.25;
+	double requested_loss_grace_seconds = 5.0;
 	std::atomic<uint64_t> configuration_version{0};
 	std::atomic<uint64_t> tracker_configuration_version{0};
 	std::atomic<uint32_t> last_output_width{0};
@@ -212,6 +213,7 @@ static void fts_update(void *data, obs_data_t *settings)
 	bool max_zoom_changed = false;
 	bool pan_smoothing_changed = false;
 	bool zoom_smoothing_changed = false;
+	bool loss_grace_changed = false;
 	if (s->safe_runtime) {
 		{
 			std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
@@ -232,13 +234,18 @@ static void fts_update(void *data, obs_data_t *settings)
 				obs_data_get_double(settings, "safe_tracking_zoom_response");
 			zoom_smoothing_changed = s->safe_runtime->requested_zoom_smoothing != requested_zoom_smoothing;
 			s->safe_runtime->requested_zoom_smoothing = requested_zoom_smoothing;
+			const double requested_loss_grace_seconds =
+				obs_data_get_double(settings, "safe_tracking_loss_grace_seconds");
+			loss_grace_changed = s->safe_runtime->requested_loss_grace_seconds !=
+					     requested_loss_grace_seconds;
+			s->safe_runtime->requested_loss_grace_seconds = requested_loss_grace_seconds;
 		}
 		const bool enabled = obs_data_get_bool(settings, "safe_tracking_enabled");
 		const bool was_enabled = s->safe_runtime->enabled.exchange(enabled, std::memory_order_acq_rel);
 		defer_tracker_update = enabled || was_enabled;
-		const bool framing_changed = dead_zone_changed || max_zoom_changed || pan_smoothing_changed ||
-					     zoom_smoothing_changed;
-		if (binding_changed || was_enabled != enabled || (framing_changed && enabled)) {
+		const bool session_config_changed = dead_zone_changed || max_zoom_changed || pan_smoothing_changed ||
+						    zoom_smoothing_changed || loss_grace_changed;
+		if (binding_changed || was_enabled != enabled || (session_config_changed && enabled)) {
 			s->safe_runtime->reconfiguration_pending.store(true, std::memory_order_release);
 			s->safe_runtime->configuration_version.fetch_add(1, std::memory_order_release);
 		} else {
@@ -521,8 +528,10 @@ static obs_properties_t *fts_properties(void *data)
 				 1.0, 0.05);
 	obs_properties_add_float(safe_options, "safe_tracking_zoom_response", "Zoom response (higher = faster)", 0.05,
 				 1.0, 0.05);
+	obs_properties_add_float(safe_options, "safe_tracking_loss_grace_seconds", "Target loss grace (seconds)", 0.5,
+				 15.0, 0.5);
 	obs_property_t *safe_options_group = obs_properties_add_group(
-		props, "safe_tracking_options", "Safe tracking framing", OBS_GROUP_NORMAL, safe_options);
+		props, "safe_tracking_options", "Safe tracking motion and recovery", OBS_GROUP_NORMAL, safe_options);
 	obs_data_t *current_settings = obs_source_get_settings(s->context);
 	if (current_settings) {
 		obs_property_set_visible(safe_options_group,
@@ -551,6 +560,7 @@ static void ftf_get_defaults(obs_data_t *settings)
 	obs_data_set_default_double(settings, "safe_tracking_max_zoom", 4.0);
 	obs_data_set_default_double(settings, "safe_tracking_pan_response", 0.25);
 	obs_data_set_default_double(settings, "safe_tracking_zoom_response", 0.25);
+	obs_data_set_default_double(settings, "safe_tracking_loss_grace_seconds", 5.0);
 	face_tracker_manager::get_defaults(settings);
 	obs_data_set_default_double(settings, "track_z", 0.70);  //  1.00  0.50  0.35
 	obs_data_set_default_double(settings, "track_y", +0.00); // +0.00 +0.10 +0.30
@@ -909,7 +919,26 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 		return false;
 
 	ff_session_config config{};
-	config.loss_grace_ms = 5000;
+	double loss_grace_seconds = 5.0;
+	double max_zoom = 4.0;
+	double dead_zone_percent = 5.0;
+	double pan_smoothing = 0.25;
+	double zoom_smoothing = 0.25;
+	if (s->safe_runtime) {
+		std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
+		loss_grace_seconds = s->safe_runtime->requested_loss_grace_seconds;
+		max_zoom = s->safe_runtime->requested_max_zoom;
+		dead_zone_percent = s->safe_runtime->requested_dead_zone_percent;
+		pan_smoothing = s->safe_runtime->requested_pan_smoothing;
+		zoom_smoothing = s->safe_runtime->requested_zoom_smoothing;
+	}
+	if (!std::isfinite(loss_grace_seconds) || loss_grace_seconds < 0.5 || loss_grace_seconds > 15.0 ||
+	    !std::isfinite(max_zoom) || max_zoom < 1.0 || max_zoom > 8.0 || !std::isfinite(dead_zone_percent) ||
+	    dead_zone_percent < 0.0 || dead_zone_percent > 24.0 || !std::isfinite(pan_smoothing) ||
+	    pan_smoothing < 0.05 || pan_smoothing > 1.0 || !std::isfinite(zoom_smoothing) || zoom_smoothing < 0.05 ||
+	    zoom_smoothing > 1.0)
+		return false;
+	config.loss_grace_ms = static_cast<uint64_t>(std::llround(loss_grace_seconds * 1000.0));
 	config.max_evidence_age_ms = 500;
 	config.max_candidates = faithfulframe_session_executor::max_candidates;
 	config.source_width = source_width;
@@ -918,18 +947,8 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 	config.output_height = s->height_with_aspect;
 	config.target_coverage = 0.45f;
 	config.min_zoom = 1.0f;
-	double max_zoom = 4.0;
-	double dead_zone_percent = 5.0;
-	if (s->safe_runtime) {
-		std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
-		dead_zone_percent = s->safe_runtime->requested_dead_zone_percent;
-		max_zoom = s->safe_runtime->requested_max_zoom;
-		config.pan_smoothing = static_cast<float>(s->safe_runtime->requested_pan_smoothing);
-		config.zoom_smoothing = static_cast<float>(s->safe_runtime->requested_zoom_smoothing);
-	} else {
-		config.pan_smoothing = 0.25f;
-		config.zoom_smoothing = 0.25f;
-	}
+	config.pan_smoothing = static_cast<float>(pan_smoothing);
+	config.zoom_smoothing = static_cast<float>(zoom_smoothing);
 	config.max_zoom = static_cast<float>(max_zoom);
 	config.dead_zone_fraction = static_cast<float>(dead_zone_percent * 0.01);
 	config.max_pan_step = 0.08f;
