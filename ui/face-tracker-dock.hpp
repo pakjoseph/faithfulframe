@@ -25,6 +25,8 @@ public:
 	class FTWidget *ftWidget;
 	class QCheckBox *notrackButton;
 	class QLabel *safeStatusLabel;
+	class QToolButton *performanceToggle;
+	class QLabel *performanceLabel;
 	class QComboBox *candidateSelector;
 	class QPushButton *autoFollowButton;
 	class QPushButton *manualOverrideButton;

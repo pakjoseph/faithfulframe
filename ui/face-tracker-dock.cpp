@@ -11,6 +11,7 @@
 #include <QCheckBox>
 #include <QLabel>
 #include <QPushButton>
+#include <QToolButton>
 #include <QRectF>
 #include <QTimer>
 #include <QSignalBlocker>
@@ -50,6 +51,16 @@ struct faithfulframe_safe_preview
 	uint32_t source_height = 0;
 	uint32_t output_width = 0;
 	uint32_t output_height = 0;
+	int64_t status_snapshot_age_ms = -1;
+	uint64_t executor_queue_depth = 0;
+	uint64_t executor_queue_high_water = 0;
+	uint64_t executor_accepted_work = 0;
+	uint64_t executor_rejected_work = 0;
+	uint64_t executor_coalesced_work = 0;
+	uint64_t executor_last_queue_wait_us = 0;
+	uint64_t executor_max_queue_wait_us = 0;
+	uint64_t executor_last_processing_us = 0;
+	uint64_t executor_max_processing_us = 0;
 	uint64_t source_id = 0;
 	uint64_t session_id = 0;
 	uint64_t status_version = 0;
@@ -101,6 +112,18 @@ static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &
 	calldata_get_bool(&cd, "available", &preview.available);
 	calldata_get_bool(&cd, "target_active", &preview.target_active);
 	calldata_get_bool(&cd, "signal_connected", &preview.signal_connected);
+	long long snapshot_age_ms = -1;
+	if (calldata_get_int(&cd, "status_snapshot_age_ms", &snapshot_age_ms))
+		preview.status_snapshot_age_ms = snapshot_age_ms;
+	read_calldata_int(&cd, "executor_queue_depth", preview.executor_queue_depth);
+	read_calldata_int(&cd, "executor_queue_high_water", preview.executor_queue_high_water);
+	read_calldata_int(&cd, "executor_accepted_work", preview.executor_accepted_work);
+	read_calldata_int(&cd, "executor_rejected_work", preview.executor_rejected_work);
+	read_calldata_int(&cd, "executor_coalesced_work", preview.executor_coalesced_work);
+	read_calldata_int(&cd, "executor_last_queue_wait_us", preview.executor_last_queue_wait_us);
+	read_calldata_int(&cd, "executor_max_queue_wait_us", preview.executor_max_queue_wait_us);
+	read_calldata_int(&cd, "executor_last_processing_us", preview.executor_last_processing_us);
+	read_calldata_int(&cd, "executor_max_processing_us", preview.executor_max_processing_us);
 	uint64_t value = 0;
 	if (read_calldata_int(&cd, "state", value))
 		preview.state = static_cast<uint32_t>(value);
@@ -508,12 +531,31 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	safeStatusLabel->setWordWrap(true);
 	safeStatusLabel->setAccessibleName("FaithfulFrame tracking status");
 	mainLayout->addWidget(safeStatusLabel);
+	performanceToggle = new QToolButton(this);
+	performanceToggle->setText("Performance diagnostics");
+	performanceToggle->setAccessibleName("Show performance diagnostics");
+	performanceToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+	performanceToggle->setArrowType(Qt::RightArrow);
+	performanceToggle->setCheckable(true);
+	performanceToggle->setAutoRaise(true);
+	mainLayout->addWidget(performanceToggle);
+	performanceLabel = new QLabel(this);
+	performanceLabel->setWordWrap(true);
+	performanceLabel->setAccessibleName("FaithfulFrame performance diagnostics");
+	performanceLabel->hide();
+	mainLayout->addWidget(performanceLabel);
+	connect(performanceToggle, &QToolButton::toggled, this, [this](bool expanded) {
+		performanceToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+		performanceLabel->setVisible(expanded && performanceToggle->isVisible());
+	});
 #ifndef ENABLE_RUST_CORE_BRIDGE
 	autoFollowButton->hide();
 	manualOverrideButton->hide();
 	candidateSelector->hide();
 	selectCandidateButton->hide();
 	safeStatusLabel->hide();
+	performanceToggle->hide();
+	performanceLabel->hide();
 #endif
 
 	enableButton = new QPushButton("", this);
@@ -687,6 +729,8 @@ void FTDock::updateState()
 		candidateSelector->hide();
 		selectCandidateButton->hide();
 		safeStatusLabel->hide();
+		performanceToggle->hide();
+		performanceLabel->hide();
 		if (source_sh) {
 			signal_handler_disconnect(source_sh, "state_changed", onStateChanged, this);
 			source_sh = NULL;
@@ -705,10 +749,28 @@ void FTDock::updateState()
 	candidateSelector->setVisible(safe_mode);
 	selectCandidateButton->setVisible(safe_mode);
 	safeStatusLabel->setVisible(safe_mode);
+	performanceToggle->setVisible(safe_mode);
+	performanceLabel->setVisible(safe_mode && performanceToggle->isChecked());
 	enableButton->setVisible(!safe_mode);
 	notrackButton->setVisible(!safe_mode);
 	if (safe_mode) {
 		safeStatusLabel->setText(safe_state_text(safe_preview));
+		const QString snapshot_age = safe_preview.status_snapshot_age_ms < 0
+						     ? QString("unavailable")
+						     : QString("%1 ms").arg(safe_preview.status_snapshot_age_ms);
+		performanceLabel->setText(
+			QString("Snapshot: %1 | queue: %2 / %3 | wait: %4 / %5 µs | policy: %6 / %7 µs | "
+				"accepted %8 · rejected %9 · coalesced %10")
+				.arg(snapshot_age)
+				.arg(static_cast<qulonglong>(safe_preview.executor_queue_depth))
+				.arg(static_cast<qulonglong>(safe_preview.executor_queue_high_water))
+				.arg(static_cast<qulonglong>(safe_preview.executor_last_queue_wait_us))
+				.arg(static_cast<qulonglong>(safe_preview.executor_max_queue_wait_us))
+				.arg(static_cast<qulonglong>(safe_preview.executor_last_processing_us))
+				.arg(static_cast<qulonglong>(safe_preview.executor_max_processing_us))
+				.arg(static_cast<qulonglong>(safe_preview.executor_accepted_work))
+				.arg(static_cast<qulonglong>(safe_preview.executor_rejected_work))
+				.arg(static_cast<qulonglong>(safe_preview.executor_coalesced_work)));
 		set_pause_button(pauseButton, safe_preview.state == FF_STATE_FROZEN);
 		pauseButton->setEnabled(safe_preview.available);
 		resetButton->setText("Reset to Wide");
