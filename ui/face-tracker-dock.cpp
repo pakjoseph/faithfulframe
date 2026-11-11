@@ -85,6 +85,7 @@ struct faithfulframe_safe_preview
 	ff_rect crop{0.0f, 0.0f, 1.0f, 1.0f};
 	ff_rect viewport{0.0f, 0.0f, 1.0f, 1.0f};
 	QString target_name;
+	QString framing_preset = "Custom settings";
 	QList<QVariantMap> candidates;
 };
 
@@ -104,6 +105,38 @@ static bool read_calldata_float(calldata_t *cd, const char *name, float &value)
 		return false;
 	value = static_cast<float>(raw);
 	return std::isfinite(value);
+}
+
+static QString safe_framing_preset(obs_source_t *source)
+{
+	if (!source)
+		return "Custom settings";
+	obs_data_t *settings = obs_source_get_settings(source);
+	if (!settings)
+		return "Custom settings";
+	const char *name = obs_data_get_string(settings, "preset_name");
+	obs_data_t *presets = obs_data_get_obj(settings, "presets");
+	obs_data_t *preset = presets && name && *name ? obs_data_get_obj(presets, name) : nullptr;
+	static const char *const safe_fields[] = {"safe_tracking_dead_zone_percent", "safe_tracking_max_zoom",
+						  "safe_tracking_pan_response", "safe_tracking_zoom_response",
+						  "safe_tracking_loss_grace_seconds"};
+
+	bool matches = preset != nullptr;
+	for (const char *field : safe_fields) {
+		if (!matches || !obs_data_has_user_value(preset, field) ||
+		    obs_data_get_double(settings, field) != obs_data_get_double(preset, field)) {
+			matches = false;
+			break;
+		}
+	}
+	const QString result = matches ? QString("Framing preset: %1").arg(QString::fromUtf8(name))
+				       : QString("Framing preset: Custom settings");
+	if (preset)
+		obs_data_release(preset);
+	if (presets)
+		obs_data_release(presets);
+	obs_data_release(settings);
+	return result;
 }
 
 static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &preview)
@@ -180,6 +213,7 @@ static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &
 	calldata_get_string(&cd, "target_name", &target_name);
 	if (target_name)
 		preview.target_name = QString::fromUtf8(target_name);
+	preview.framing_preset = safe_framing_preset(source);
 	uint64_t candidate_count = 0;
 	if (preview.available && read_calldata_int(&cd, "candidate_count", candidate_count)) {
 		uint64_t candidate_source_id = 0, candidate_session_id = 0, candidate_observation_version = 0;
@@ -825,8 +859,9 @@ void FTDock::updateState()
 							     .arg(safe_preview.output_width)
 							     .arg(safe_preview.output_height)
 						   : QString("Resolution unavailable");
-		safeStatusLabel->setText(QString("Tracking source: %1\n%2\nCurrent zoom: %3×\n%4")
+		safeStatusLabel->setText(QString("Tracking source: %1\n%2\n%3\nCurrent zoom: %4×\n%5")
 						 .arg(tracking_source)
+						 .arg(safe_preview.framing_preset)
 						 .arg(safe_state_text(safe_preview))
 						 .arg(safe_preview_zoom(safe_preview), 0, 'f', 1)
 						 .arg(resolution));

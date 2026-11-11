@@ -12,12 +12,14 @@ static void copy_data_double(obs_data_t *dst, obs_data_t *src, const char *name)
 
 #define preset_mask_track 1
 #define preset_mask_control 2
+#define preset_mask_safe 4
 static const struct
 {
 	const uint32_t flag;
 	const char *name;
 } preset_mask_flags[] = {{preset_mask_track, "preset_mask_track"},
 			 {preset_mask_control, "preset_mask_control"},
+			 {preset_mask_safe, "preset_mask_safe"},
 			 {0, NULL}};
 
 static uint32_t prop_to_preset_mask(obs_data_t *prop)
@@ -35,37 +37,44 @@ static const struct
 	const char *name;
 	void (*func)(obs_data_t *, obs_data_t *, const char *);
 	uint32_t mask;
-} preset_property_list[] = {{"upsize_l", copy_data_double, preset_mask_track},
-			    {"upsize_r", copy_data_double, preset_mask_track},
-			    {"upsize_t", copy_data_double, preset_mask_track},
-			    {"upsize_b", copy_data_double, preset_mask_track},
-			    {"scale_max", copy_data_double, preset_mask_track},
-			    {"track_z", copy_data_double, preset_mask_track},
-			    {"track_x", copy_data_double, preset_mask_track},
-			    {"track_y", copy_data_double, preset_mask_track},
-			    {"Kp", copy_data_double, preset_mask_control},
-			    {"Ki", copy_data_double, preset_mask_control},
-			    {"Kd", copy_data_double, preset_mask_control},
-			    {"Tdlpf", copy_data_double, preset_mask_control},
-			    {"e_deadband_x", copy_data_double, preset_mask_control},
-			    {"e_deadband_y", copy_data_double, preset_mask_control},
-			    {"e_deadband_z", copy_data_double, preset_mask_control},
-			    {"e_nonlineaeer_x", copy_data_double, preset_mask_control},
-			    {"e_nonlineaeer_y", copy_data_double, preset_mask_control},
-			    {"e_nonlineaeer_z", copy_data_double, preset_mask_control},
-			    // specific to face_tracker_ptz
-			    {"Kp_x_db", copy_data_double, preset_mask_control},
-			    {"Kp_y_db", copy_data_double, preset_mask_control},
-			    {"Kp_z_db", copy_data_double, preset_mask_control},
-			    {"Ki_x", copy_data_double, preset_mask_control},
-			    {"Ki_y", copy_data_double, preset_mask_control},
-			    {"Ki_z", copy_data_double, preset_mask_control},
-			    {"Td_x", copy_data_double, preset_mask_control},
-			    {"Td_y", copy_data_double, preset_mask_control},
-			    {"Td_z", copy_data_double, preset_mask_control},
-			    {"Tdlpf_z", copy_data_double, preset_mask_control},
-			    {"Tatt_int", copy_data_double, preset_mask_control},
-			    {NULL, NULL, 0}};
+} preset_property_list[] = {
+	{"upsize_l", copy_data_double, preset_mask_track},
+	{"upsize_r", copy_data_double, preset_mask_track},
+	{"upsize_t", copy_data_double, preset_mask_track},
+	{"upsize_b", copy_data_double, preset_mask_track},
+	{"scale_max", copy_data_double, preset_mask_track},
+	{"track_z", copy_data_double, preset_mask_track},
+	{"track_x", copy_data_double, preset_mask_track},
+	{"track_y", copy_data_double, preset_mask_track},
+	{"Kp", copy_data_double, preset_mask_control},
+	{"Ki", copy_data_double, preset_mask_control},
+	{"Kd", copy_data_double, preset_mask_control},
+	{"Tdlpf", copy_data_double, preset_mask_control},
+	{"e_deadband_x", copy_data_double, preset_mask_control},
+	{"e_deadband_y", copy_data_double, preset_mask_control},
+	{"e_deadband_z", copy_data_double, preset_mask_control},
+	{"e_nonlineaeer_x", copy_data_double, preset_mask_control},
+	{"e_nonlineaeer_y", copy_data_double, preset_mask_control},
+	{"e_nonlineaeer_z", copy_data_double, preset_mask_control},
+	// specific to face_tracker_ptz
+	{"Kp_x_db", copy_data_double, preset_mask_control},
+	{"Kp_y_db", copy_data_double, preset_mask_control},
+	{"Kp_z_db", copy_data_double, preset_mask_control},
+	{"Ki_x", copy_data_double, preset_mask_control},
+	{"Ki_y", copy_data_double, preset_mask_control},
+	{"Ki_z", copy_data_double, preset_mask_control},
+	{"Td_x", copy_data_double, preset_mask_control},
+	{"Td_y", copy_data_double, preset_mask_control},
+	{"Td_z", copy_data_double, preset_mask_control},
+	{"Tdlpf_z", copy_data_double, preset_mask_control},
+	{"Tatt_int", copy_data_double, preset_mask_control},
+	// Presets restore safe framing only; enabling safety policy remains an explicit operator choice.
+	{"safe_tracking_dead_zone_percent", copy_data_double, preset_mask_safe},
+	{"safe_tracking_max_zoom", copy_data_double, preset_mask_safe},
+	{"safe_tracking_pan_response", copy_data_double, preset_mask_safe},
+	{"safe_tracking_zoom_response", copy_data_double, preset_mask_safe},
+	{"safe_tracking_loss_grace_seconds", copy_data_double, preset_mask_safe},
+	{NULL, NULL, 0}};
 
 static void copy_preset(obs_data_t *dst, obs_data_t *src, uint32_t mask)
 {

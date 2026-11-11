@@ -433,6 +433,7 @@ static obs_properties_t *ftf_properties(void *data)
 		obs_properties_add_button(pp, "preset_delete", obs_module_text("Delete preset"), ftf_preset_delete);
 		obs_properties_add_bool(pp, "preset_mask_track", obs_module_text("Save and load tracking parameters"));
 		obs_properties_add_bool(pp, "preset_mask_control", obs_module_text("Save and load control parameters"));
+		obs_properties_add_bool(pp, "preset_mask_safe", "Save and load FaithfulFrame safe settings");
 		obs_properties_add_group(props, "preset_grp", obs_module_text("Preset"), OBS_GROUP_NORMAL, pp);
 	}
 
@@ -556,6 +557,7 @@ static void ftf_get_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_bool(settings, "preset_mask_track", true);
 	obs_data_set_default_bool(settings, "preset_mask_control", true);
+	obs_data_set_default_bool(settings, "preset_mask_safe", true);
 	obs_data_set_default_double(settings, "safe_tracking_dead_zone_percent", 5.0);
 	obs_data_set_default_double(settings, "safe_tracking_max_zoom", 4.0);
 	obs_data_set_default_double(settings, "safe_tracking_pan_response", 0.25);
