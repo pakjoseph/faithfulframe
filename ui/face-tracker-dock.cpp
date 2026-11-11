@@ -292,6 +292,16 @@ static bool candidate_output_rect(const faithfulframe_safe_preview &preview, con
 	return true;
 }
 
+static void use_full_source_preview_transform(faithfulframe_safe_preview &preview)
+{
+	if (!preview.source_width || !preview.source_height)
+		return;
+	preview.crop = ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
+	preview.viewport = ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
+	preview.output_width = preview.source_width;
+	preview.output_height = preview.source_height;
+}
+
 static bool send_safe_command(obs_source_t *source, uint32_t kind, const QVariantMap *candidate = nullptr)
 {
 	faithfulframe_safe_preview preview;
@@ -894,12 +904,15 @@ void FTDock::updateState()
 						 safe_preview.state != FF_STATE_MANUAL);
 		const QVariantMap previous_candidate = candidateSelector->currentData().toMap();
 		const qulonglong previous_handle = previous_candidate.value("handle").toULongLong();
+		faithfulframe_safe_preview display_preview = safe_preview;
+		if (notrackButton->isChecked())
+			use_full_source_preview_transform(display_preview);
 		QSignalBlocker blocker(candidateSelector);
 		candidateSelector->clear();
 		int visible_candidate_count = 0;
 		for (const QVariantMap &candidate : safe_preview.candidates) {
 			QRectF visible;
-			if (!candidate_output_rect(safe_preview, candidate, visible))
+			if (!candidate_output_rect(display_preview, candidate, visible))
 				continue;
 			const int x = qRound(visible.center().x() * 100.0);
 			const int y = qRound(visible.center().y() * 100.0);
@@ -1090,6 +1103,8 @@ void FTDock::handlePreviewClick(const QPointF &position)
 		return;
 	if (preview.state != FF_STATE_MANUAL && preview.state != FF_STATE_SEARCHING && preview.state != FF_STATE_LOST)
 		return;
+	if (notrackButton->isChecked())
+		use_full_source_preview_transform(preview);
 
 	// FTWidget and Qt mouse events use logical pixels. The monitor's rendered
 	// preview uses the same aspect-fit transform, so normalizing inside the

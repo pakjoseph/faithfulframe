@@ -120,6 +120,37 @@ static obs_source_t *get_target(struct face_tracker_monitor *s)
 	return get_filter(s);
 }
 
+static bool get_safe_output_dimensions(struct face_tracker_monitor *s, uint32_t &width, uint32_t &height)
+{
+	obs_source_t *target = get_target(s);
+	if (!target)
+		return false;
+
+	proc_handler_t *handler = obs_source_get_proc_handler(target);
+	if (!handler) {
+		obs_source_release(target);
+		return false;
+	}
+
+	CALLDATA_FIXED_DECL(cd, 128);
+	calldata_set_bool(&cd, "safe_output", true);
+	long long reported_width = 0;
+	long long reported_height = 0;
+	bool safe_enabled = false;
+	const bool available = proc_handler_call(handler, "get_target_size", &cd) &&
+			       calldata_get_bool(&cd, "safe_enabled", &safe_enabled) && safe_enabled &&
+			       calldata_get_int(&cd, "width", &reported_width) &&
+			       calldata_get_int(&cd, "height", &reported_height) && reported_width > 0 &&
+			       reported_height > 0;
+	obs_source_release(target);
+	if (!available)
+		return false;
+
+	width = static_cast<uint32_t>(reported_width);
+	height = static_cast<uint32_t>(reported_height);
+	return true;
+}
+
 static inline bool test_weak_source_name(obs_weak_source_t *ref, const char *name)
 {
 	obs_source_t *src = obs_weak_source_get_source(ref);
@@ -209,6 +240,13 @@ static uint32_t ftmon_get_width(void *data)
 		}
 	}
 
+	if (!s->notrack) {
+		uint32_t width = 0;
+		uint32_t height = 0;
+		if (get_safe_output_dimensions(s, width, height))
+			return width;
+	}
+
 	OBSSource source(get_source(s));
 	obs_source_release(source);
 	if (!source)
@@ -234,6 +272,13 @@ static uint32_t ftmon_get_height(void *data)
 			if (calldata_get_int(&cd, "height", &ret))
 				return (uint32_t)ret;
 		}
+	}
+
+	if (!s->notrack) {
+		uint32_t width = 0;
+		uint32_t height = 0;
+		if (get_safe_output_dimensions(s, width, height))
+			return height;
 	}
 
 	OBSSource source(get_source(s));

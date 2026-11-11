@@ -1589,26 +1589,31 @@ static ff_rect full_source_viewport(uint32_t source_width, uint32_t source_heigh
 }
 
 static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_binding *binding,
-				   faithfulframe_source_runtime *runtime = nullptr, bool force_black = false)
+				   faithfulframe_source_runtime *runtime = nullptr, bool force_black = false,
+				   bool force_wide = false)
 {
-	const uint32_t output_width = binding   ? binding->output_width.load(std::memory_order_acquire)
-				      : runtime ? runtime->last_output_width.load(std::memory_order_acquire)
-						: s->width_with_aspect;
-	const uint32_t output_height = binding   ? binding->output_height.load(std::memory_order_acquire)
-				       : runtime ? runtime->last_output_height.load(std::memory_order_acquire)
-						 : s->height_with_aspect;
 	const uint32_t source_width = force_black ? 0
 				      : binding   ? binding->source_width.load(std::memory_order_acquire)
 						  : s->known_width;
 	const uint32_t source_height = force_black ? 0
 				       : binding   ? binding->source_height.load(std::memory_order_acquire)
 						   : s->known_height;
+	uint32_t output_width = binding   ? binding->output_width.load(std::memory_order_acquire)
+				: runtime ? runtime->last_output_width.load(std::memory_order_acquire)
+					  : s->width_with_aspect;
+	uint32_t output_height = binding   ? binding->output_height.load(std::memory_order_acquire)
+				 : runtime ? runtime->last_output_height.load(std::memory_order_acquire)
+					   : s->height_with_aspect;
+	if (force_wide) {
+		output_width = binding ? binding->source_width.load(std::memory_order_acquire) : s->known_width;
+		output_height = binding ? binding->source_height.load(std::memory_order_acquire) : s->known_height;
+	}
 	if (!output_width || !output_height)
 		return;
 
 	ff_rect crop{0.0f, 0.0f, 1.0f, 1.0f};
 	ff_rect viewport = full_source_viewport(source_width, source_height, output_width, output_height);
-	if (!force_black && binding && !binding->closed.load(std::memory_order_acquire) &&
+	if (!force_black && !force_wide && binding && !binding->closed.load(std::memory_order_acquire) &&
 	    !binding->transition_pending.load(std::memory_order_acquire)) {
 		auto *executor = binding->render_executor.load(std::memory_order_acquire);
 		ff_snapshot snapshot{};
@@ -1890,6 +1895,14 @@ static void cb_render_frame(void *data, calldata_t *cd)
 
 	bool debug_notrack = false;
 	calldata_get_bool(cd, "notrack", &debug_notrack);
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+		const bool reconfiguring = s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire);
+		auto *binding = reconfiguring ? nullptr : s->safe_runtime->active.load(std::memory_order_acquire);
+		draw_safe_source_frame(s, binding, s->safe_runtime, reconfiguring || !binding, debug_notrack);
+		return;
+	}
+#endif
 
 	draw_frame_texture(s, debug_notrack);
 }
@@ -1897,6 +1910,13 @@ static void cb_render_frame(void *data, calldata_t *cd)
 static void cb_render_info(void *data, calldata_t *cd)
 {
 	auto *s = (struct face_tracker_filter *)data;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	// The legacy tracker rectangles use its independent crop transform. Keep
+	// those overlays off the safe-preview image until its candidates can be
+	// rendered from the same immutable Rust preview payload as hit-testing.
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire))
+		return;
+#endif
 
 	bool debug_notrack = false;
 	calldata_get_bool(cd, "notrack", &debug_notrack);
@@ -1910,8 +1930,26 @@ static void cb_render_info(void *data, calldata_t *cd)
 static void cb_get_target_size(void *data, calldata_t *cd)
 {
 	auto *s = (struct face_tracker_filter *)data;
-	calldata_set_int(cd, "width", (int)s->known_width);
-	calldata_set_int(cd, "height", (int)s->known_height);
+	uint32_t width = s->known_width;
+	uint32_t height = s->known_height;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	const bool safe_enabled = s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire);
+	calldata_set_bool(cd, "safe_enabled", safe_enabled);
+	bool safe_output = false;
+	calldata_get_bool(cd, "safe_output", &safe_output);
+	if (safe_enabled && safe_output) {
+		auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+		if (binding) {
+			width = binding->output_width.load(std::memory_order_acquire);
+			height = binding->output_height.load(std::memory_order_acquire);
+		} else {
+			width = s->safe_runtime->last_output_width.load(std::memory_order_acquire);
+			height = s->safe_runtime->last_output_height.load(std::memory_order_acquire);
+		}
+	}
+#endif
+	calldata_set_int(cd, "width", static_cast<int>(width));
+	calldata_set_int(cd, "height", static_cast<int>(height));
 }
 
 static void cb_get_state(void *data, calldata_t *cd)
