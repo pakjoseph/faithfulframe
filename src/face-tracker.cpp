@@ -1035,6 +1035,10 @@ static void set_safe_adapter_activation(face_tracker_filter *s, bool active)
 	auto *binding = runtime->active.load(std::memory_order_acquire);
 	if (!binding)
 		return;
+	if (binding->closed.load(std::memory_order_acquire)) {
+		binding->set_active_child(false);
+		return;
+	}
 	if (!runtime->enabled.load(std::memory_order_acquire)) {
 		if (!active)
 			binding->set_active_child(false);
