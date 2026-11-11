@@ -13,7 +13,7 @@ class face_detector_base {
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 	bool running;
-	volatile bool request_stop;
+	bool request_stop;
 	bool work_pending;
 	void *leak_test;
 	std::atomic<uint64_t> last_work_us{0};

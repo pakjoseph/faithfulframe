@@ -38,8 +38,8 @@ void *face_tracker_base::thread_routine(void *p)
 	os_set_thread_name("face-trk");
 
 	base->lock();
-	while (!base->stop_requested) {
-		if (!base->suspend_requested) {
+	while (!base->stop_requested.load(std::memory_order_relaxed)) {
+		if (!base->suspend_requested.load(std::memory_order_relaxed)) {
 			try {
 				base->track_main();
 			} catch (std::exception &e) {
@@ -50,22 +50,22 @@ void *face_tracker_base::thread_routine(void *p)
 		}
 		pthread_cond_wait(&base->cond, &base->mutex);
 	}
-	base->stopped = 1;
+	base->stopped.store(true, std::memory_order_release);
 	base->unlock();
 	return NULL;
 }
 
 bool face_tracker_base::start()
 {
-	stop_requested = 0;
-	stopped = 0;
-	suspend_requested = 0;
+	stop_requested.store(false, std::memory_order_relaxed);
+	stopped.store(false, std::memory_order_relaxed);
+	suspend_requested.store(false, std::memory_order_relaxed);
 	if (!running) {
 		blog(LOG_INFO, "face_tracker_base: starting a new thread.");
 		const int result = pthread_create(&thread, NULL, thread_routine, (void *)this);
 		if (result != 0) {
-			stop_requested = 1;
-			stopped = 1;
+			stop_requested.store(true, std::memory_order_relaxed);
+			stopped.store(true, std::memory_order_relaxed);
 			blog(LOG_ERROR, "face_tracker_base: failed to start thread (error %d)", result);
 			return false;
 		}
@@ -81,7 +81,7 @@ bool face_tracker_base::start()
 void face_tracker_base::stop()
 {
 	lock();
-	stop_requested = 1;
+	stop_requested.store(true, std::memory_order_relaxed);
 	signal();
 	unlock();
 	if (running) {
@@ -95,14 +95,14 @@ void face_tracker_base::stop()
 void face_tracker_base::request_stop()
 {
 	lock();
-	stop_requested = 1;
+	stop_requested.store(true, std::memory_order_relaxed);
 	signal();
 	unlock();
 }
 
 bool face_tracker_base::is_stopped()
 {
-	if (stopped) {
+	if (stopped.load(std::memory_order_acquire)) {
 		if (running) {
 			blog(LOG_INFO, "face_tracker_base: joining the thread...");
 			pthread_join(thread, NULL);
@@ -115,5 +115,5 @@ bool face_tracker_base::is_stopped()
 
 void face_tracker_base::request_suspend()
 {
-	suspend_requested = true;
+	suspend_requested.store(true, std::memory_order_relaxed);
 }

@@ -1,6 +1,7 @@
 #pragma once
 #include <obs-module.h>
 #include <util/threading.h>
+#include <atomic>
 #include <vector>
 #include "plugin-macros.generated.h"
 #include "face-detector-base.h"
@@ -10,9 +11,9 @@ class face_tracker_base {
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 	bool running;
-	volatile bool stop_requested;
-	volatile bool stopped;
-	volatile bool suspend_requested;
+	std::atomic<bool> stop_requested{false};
+	std::atomic<bool> stopped{false};
+	std::atomic<bool> suspend_requested{false};
 	void *leak_test;
 
 	static void *thread_routine(void *);
