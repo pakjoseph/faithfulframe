@@ -528,6 +528,7 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	mainLayout = new QVBoxLayout(this);
 
 	targetSelector = new QComboBox(this);
+	targetSelector->setAccessibleName("Camera source with FaithfulFrame tracking filter");
 	init_target_selector(targetSelector);
 	mainLayout->addWidget(targetSelector);
 	connect(targetSelector, &QComboBox::currentTextChanged, this, &FTDock::targetSelectorChanged);
@@ -814,9 +815,11 @@ void FTDock::updateState()
 	enableButton->setVisible(!safe_mode);
 	notrackButton->setVisible(!safe_mode);
 	if (safe_mode) {
-		safeStatusLabel->setText(
-			safe_state_text(safe_preview) +
-			QString("\nCurrent zoom: %1×").arg(safe_preview_zoom(safe_preview), 0, 'f', 1));
+		const QString tracking_source = safe_preview.target_name.isEmpty() ? "Unavailable"
+										   : safe_preview.target_name;
+		safeStatusLabel->setText(QString("Tracking source: %1\n%2\nCurrent zoom: %3×")
+						 .arg(tracking_source, safe_state_text(safe_preview))
+						 .arg(safe_preview_zoom(safe_preview), 0, 'f', 1));
 		const QString snapshot_age = safe_preview.status_snapshot_age_ms < 0
 						     ? QString("unavailable")
 						     : QString("%1 ms").arg(safe_preview.status_snapshot_age_ms);
