@@ -74,6 +74,7 @@ struct FixtureFramingConfig {
     min_zoom: f32,
     max_zoom: f32,
     smoothing: f32,
+    dead_zone_fraction: f32,
     max_pan_step: f32,
     max_zoom_step: f32,
 }
@@ -87,6 +88,7 @@ impl From<&FixtureFramingConfig> for FramingConfig {
             min_zoom: value.min_zoom,
             max_zoom: value.max_zoom,
             smoothing: value.smoothing,
+            dead_zone_fraction: value.dead_zone_fraction,
             max_pan_step: value.max_pan_step,
             max_zoom_step: value.max_zoom_step,
         }

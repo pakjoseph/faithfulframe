@@ -53,6 +53,7 @@ pub struct FfSessionConfig {
     smoothing: f32,
     max_pan_step: f32,
     max_zoom_step: f32,
+    dead_zone_fraction: f32,
 }
 
 #[repr(C)]
@@ -268,7 +269,7 @@ fn lifecycle(value: FfLifecycle) -> Result<Lifecycle, i32> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn faithfulframe_ffi_abi_version() -> u32 {
-    5
+    6
 }
 
 #[unsafe(no_mangle)]
@@ -303,6 +304,7 @@ pub unsafe extern "C" fn ff_session_create(
             min_zoom: config.min_zoom,
             max_zoom: config.max_zoom,
             smoothing: config.smoothing,
+            dead_zone_fraction: config.dead_zone_fraction,
             max_pan_step: config.max_pan_step,
             max_zoom_step: config.max_zoom_step,
         };
@@ -480,7 +482,7 @@ mod tests {
 
     #[test]
     fn abi_version_is_stable() {
-        assert_eq!(faithfulframe_ffi_abi_version(), 5);
+        assert_eq!(faithfulframe_ffi_abi_version(), 6);
     }
 
     #[test]
@@ -494,6 +496,43 @@ mod tests {
                 &mut output,
             )
         };
+        assert_eq!(result, INVALID_ARGUMENT);
+        assert!(output.is_null());
+    }
+
+    #[test]
+    fn invalid_dead_zone_config_cannot_create_a_session() {
+        let config = FfSessionConfig {
+            loss_grace_ms: 5_000,
+            max_evidence_age_ms: 500,
+            max_candidates: 8,
+            source_width: 3_840,
+            source_height: 2_160,
+            output_width: 1_920,
+            output_height: 1_080,
+            target_coverage: 0.45,
+            min_zoom: 1.0,
+            max_zoom: 4.0,
+            smoothing: 0.25,
+            max_pan_step: 0.08,
+            max_zoom_step: 0.08,
+            dead_zone_fraction: 0.5,
+        };
+        let identity = FfIdentity {
+            source: 1,
+            session: 1,
+        };
+        let generations = FfGenerations {
+            source: 1,
+            session: 1,
+            stream: 1,
+            geometry: 1,
+            tracker: 1,
+        };
+        let mut output = std::ptr::NonNull::<FfSession>::dangling().as_ptr();
+
+        let result = unsafe { ff_session_create(&config, &identity, &generations, &mut output) };
+
         assert_eq!(result, INVALID_ARGUMENT);
         assert!(output.is_null());
     }
@@ -515,6 +554,7 @@ mod tests {
         assert_eq!(align_of::<FfSnapshot>(), 8);
         assert_eq!(offset_of!(FfCandidate, generations), 40);
         assert_eq!(offset_of!(FfCandidate, rect), 96);
+        assert_eq!(offset_of!(FfSessionConfig, dead_zone_fraction), 60);
         assert_eq!(offset_of!(FfCommand, generations), 32);
         assert_eq!(offset_of!(FfLifecycle, generations), 24);
         assert_eq!(offset_of!(FfSnapshot, crop), 76);

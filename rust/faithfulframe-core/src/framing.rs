@@ -10,6 +10,9 @@ pub struct FramingConfig {
     pub min_zoom: f32,
     pub max_zoom: f32,
     pub smoothing: f32,
+    /// Fraction inset from each edge of the current crop. Pan holds while the
+    /// complete target rectangle stays inside this inner crop region.
+    pub dead_zone_fraction: f32,
     pub max_pan_step: f32,
     pub max_zoom_step: f32,
 }
@@ -23,6 +26,7 @@ impl Default for FramingConfig {
             min_zoom: 1.0,
             max_zoom: 4.0,
             smoothing: 0.25,
+            dead_zone_fraction: 0.05,
             max_pan_step: 0.08,
             max_zoom_step: 0.08,
         }
@@ -61,6 +65,7 @@ impl FramingController {
             || !config.min_zoom.is_finite()
             || !config.max_zoom.is_finite()
             || !config.smoothing.is_finite()
+            || !config.dead_zone_fraction.is_finite()
             || !config.max_pan_step.is_finite()
             || !config.max_zoom_step.is_finite()
             || config.output_aspect <= 0.0
@@ -70,6 +75,7 @@ impl FramingController {
             || config.min_zoom < 1.0
             || config.max_zoom < config.min_zoom
             || !(0.0 < config.smoothing && config.smoothing <= 1.0)
+            || !(0.0..0.5).contains(&config.dead_zone_fraction)
             || config.max_pan_step <= 0.0
             || config.max_zoom_step <= 0.0
         {
@@ -104,6 +110,9 @@ impl FramingController {
             Some(current) if !self.has_output_aspect(current) => desired,
             Some(current) => self.smooth(current, desired, target),
         };
+        if next != Rect::full_frame() && !self.has_output_aspect(next) {
+            return Err(FramingError::InvalidTarget);
+        }
         self.current = Some(next);
         Ok(self.plan_for(next))
     }
@@ -131,20 +140,34 @@ impl FramingController {
             current.y + current.height * 0.5,
         );
         let max_pan_delta = self.config.max_pan_step * self.config.smoothing;
+        let target_inside_dead_zone = self.config.dead_zone_fraction > 0.0
+            && current != Rect::full_frame()
+            && target.x >= current.x + current.width * self.config.dead_zone_fraction
+            && target.x + target.width
+                <= current.x + current.width * (1.0 - self.config.dead_zone_fraction)
+            && target.y >= current.y + current.height * self.config.dead_zone_fraction
+            && target.y + target.height
+                <= current.y + current.height * (1.0 - self.config.dead_zone_fraction);
         let desired_center = (
             desired.x + desired.width * 0.5,
             desired.y + desired.height * 0.5,
         );
-        let mut center_x = current_center.0
-            + bounded_delta(
-                desired_center.0 - current_center.0,
-                self.config.max_pan_step,
-            ) * self.config.smoothing;
-        let mut center_y = current_center.1
-            + bounded_delta(
-                desired_center.1 - current_center.1,
-                self.config.max_pan_step,
-            ) * self.config.smoothing;
+        let (mut center_x, mut center_y) = if target_inside_dead_zone {
+            current_center
+        } else {
+            (
+                current_center.0
+                    + bounded_delta(
+                        desired_center.0 - current_center.0,
+                        self.config.max_pan_step,
+                    ) * self.config.smoothing,
+                current_center.1
+                    + bounded_delta(
+                        desired_center.1 - current_center.1,
+                        self.config.max_pan_step,
+                    ) * self.config.smoothing,
+            )
+        };
         let mut width = current.width
             + bounded_delta(desired.width - current.width, self.config.max_zoom_step)
                 * self.config.smoothing;
@@ -390,6 +413,56 @@ mod tests {
     }
 
     #[test]
+    fn dead_zone_holds_pan_until_target_leaves_inner_crop_region() {
+        let mut controller = FramingController::new(FramingConfig {
+            dead_zone_fraction: 0.1,
+            smoothing: 0.5,
+            max_pan_step: 0.2,
+            ..FramingConfig::default()
+        })
+        .unwrap();
+        let first_target = target(0.46, 0.46, 0.08, 0.08);
+        let first = controller.plan(first_target).unwrap();
+        let held = controller.plan(target(0.49, 0.46, 0.08, 0.08)).unwrap();
+        assert_eq!(held.source_crop, first.source_crop);
+
+        let moving_target = target(0.57, 0.46, 0.08, 0.08);
+        let moving = controller.plan(moving_target).unwrap();
+        let first_center_x = first.source_crop.x + first.source_crop.width * 0.5;
+        let moving_center_x = moving.source_crop.x + moving.source_crop.width * 0.5;
+        assert!(moving_center_x > first_center_x);
+        assert!(moving_center_x - first_center_x <= 0.1);
+        assert!(contains(moving.source_crop, moving_target));
+    }
+
+    #[test]
+    fn dead_zone_allows_zoom_to_adjust_without_pan() {
+        let mut controller = FramingController::new(FramingConfig {
+            dead_zone_fraction: 0.1,
+            smoothing: 0.5,
+            max_zoom: 8.0,
+            max_zoom_step: 0.2,
+            ..FramingConfig::default()
+        })
+        .unwrap();
+        let first = controller.plan(target(0.46, 0.46, 0.08, 0.08)).unwrap();
+        let narrower_target = target(0.48, 0.48, 0.04, 0.04);
+        let next = controller.plan(narrower_target).unwrap();
+        let first_center = (
+            first.source_crop.x + first.source_crop.width * 0.5,
+            first.source_crop.y + first.source_crop.height * 0.5,
+        );
+        let next_center = (
+            next.source_crop.x + next.source_crop.width * 0.5,
+            next.source_crop.y + next.source_crop.height * 0.5,
+        );
+
+        assert_eq!(next_center, first_center);
+        assert!(next.source_crop.width < first.source_crop.width);
+        assert!(contains(next.source_crop, narrower_target));
+    }
+
+    #[test]
     fn large_pan_that_breaks_step_limit_falls_back_to_safe_wide() {
         let mut controller = FramingController::new(FramingConfig::default()).unwrap();
         controller.plan(target(0.2, 0.3, 0.08, 0.16)).unwrap();
@@ -410,6 +483,13 @@ mod tests {
         assert!(matches!(
             FramingController::new(FramingConfig {
                 source_aspect: f32::NAN,
+                ..FramingConfig::default()
+            }),
+            Err(FramingError::InvalidConfig)
+        ));
+        assert!(matches!(
+            FramingController::new(FramingConfig {
+                dead_zone_fraction: 0.5,
                 ..FramingConfig::default()
             }),
             Err(FramingError::InvalidConfig)
