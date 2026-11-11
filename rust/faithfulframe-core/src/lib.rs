@@ -1555,6 +1555,39 @@ mod tests {
     }
 
     #[test]
+    fn candidate_handles_remain_reserved_across_tracker_generations() {
+        let mut session = session();
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
+        let before_transition = session.snapshot();
+        let changed = session.apply(Event::Lifecycle {
+            at: 3,
+            identity: before_transition.identity,
+            event: Lifecycle::TrackerChanged {
+                generations: generations_after(
+                    before_transition.generations,
+                    false,
+                    false,
+                    false,
+                    false,
+                    true,
+                ),
+            },
+        });
+        assert!(session.latest.is_empty());
+        let mut recycled = candidate(10, 200, changed.observation_version + 1, 4);
+        recycled.generations = changed.generations;
+
+        let after = observe(&mut session, recycled, 4);
+
+        assert_eq!(
+            after.command_result,
+            CommandResult::Rejected(Reason::InvalidCandidate)
+        );
+        assert_policy_no_op(after, changed);
+        assert_eq!(session.highest_candidate_handle, 10);
+    }
+
+    #[test]
     fn reset_wide_stops_following_and_requires_explicit_rearm() {
         let mut session = session();
         send(&mut session, 1, Command::EnableAutoFollow);
