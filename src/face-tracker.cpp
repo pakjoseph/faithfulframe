@@ -933,6 +933,15 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 			obs_source_release(target);
 		return;
 	}
+	// Grow the owning container before starting an executor. If allocation fails,
+	// no worker exists that the local binding destructor could join on this tick.
+	try {
+		runtime->bindings.reserve(runtime->bindings.size() + 1);
+	} catch (...) {
+		blog(LOG_ERROR, "FaithfulFrame could not reserve a source binding for '%s'", target_name.c_str());
+		obs_source_release(target);
+		return;
+	}
 
 	std::unique_ptr<faithfulframe_source_binding> binding(new (std::nothrow) faithfulframe_source_binding());
 	if (!binding) {
