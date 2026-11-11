@@ -77,6 +77,7 @@ pub enum GeometryError {
 pub enum SessionConfigError {
     InvalidIdentity,
     InvalidSafeWide(GeometryError),
+    SafeWideMustBeFullFrame,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,6 +110,7 @@ pub enum Reason {
     TrackerIdentityExpired,
     SessionClosing,
     SessionClosed,
+    FramingFailure,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,18 +144,44 @@ pub struct CommandEnvelope {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Lifecycle {
-    SceneInactive { generations: Generations },
-    SceneActive { generations: Generations },
-    CameraDisconnected { generations: Generations },
-    CameraRestored { generations: Generations },
-    SourceRebound { generations: Generations },
-    GeometryChanged { generations: Generations },
-    TrackerChanged { generations: Generations },
-    FramingConfigChanged { generations: Generations },
-    CandidatePolicyChanged { generations: Generations },
-    AdapterDestroyed { generations: Generations },
-    SourceDestroyed { generations: Generations },
-    ObsShutdown { generations: Generations },
+    SceneInactive {
+        generations: Generations,
+    },
+    SceneActive {
+        generations: Generations,
+    },
+    CameraDisconnected {
+        generations: Generations,
+    },
+    CameraRestored {
+        generations: Generations,
+    },
+    SourceRebound {
+        generations: Generations,
+    },
+    GeometryChanged {
+        generations: Generations,
+        source_width: u32,
+        source_height: u32,
+    },
+    TrackerChanged {
+        generations: Generations,
+    },
+    FramingConfigChanged {
+        generations: Generations,
+    },
+    CandidatePolicyChanged {
+        generations: Generations,
+    },
+    AdapterDestroyed {
+        generations: Generations,
+    },
+    SourceDestroyed {
+        generations: Generations,
+    },
+    ObsShutdown {
+        generations: Generations,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -204,8 +232,10 @@ pub struct Snapshot {
     pub status_version: u64,
     pub observation_version: u64,
     pub selected: Option<CandidateHandle>,
+    pub selected_rect: Option<Rect>,
     pub crop_action: CropAction,
     pub crop: Rect,
+    pub viewport: Rect,
     pub loss_deadline: Option<Millis>,
     pub closed: bool,
     pub command_result: CommandResult,
@@ -235,6 +265,7 @@ struct SelectedTarget {
     handle: CandidateHandle,
     continuity: ContinuityToken,
     last_seen: Millis,
+    rect: Rect,
 }
 
 /// A deterministic single-threaded safety policy. Callers must serialize all
@@ -273,6 +304,9 @@ impl TrackingSession {
             config.safe_wide.height,
         )
         .map_err(SessionConfigError::InvalidSafeWide)?;
+        if safe_wide != Rect::full_frame() {
+            return Err(SessionConfigError::SafeWideMustBeFullFrame);
+        }
         Ok(Self {
             config: Config {
                 safe_wide,
@@ -305,8 +339,10 @@ impl TrackingSession {
             status_version: self.status_version,
             observation_version: self.observation_version,
             selected: self.selected.map(|target| target.handle),
+            selected_rect: self.selected.map(|target| target.rect),
             crop_action: self.crop_action,
             crop: self.held_crop,
+            viewport: Rect::full_frame(),
             loss_deadline: self.loss_deadline,
             closed: self.closed,
             command_result: CommandResult::NotACommand,
@@ -405,10 +441,10 @@ impl TrackingSession {
                         handle,
                         continuity: candidate.continuity,
                         last_seen: candidate.observed_at,
+                        rect: candidate.rect,
                     });
                     self.state = State::Locked;
                     self.reason = Reason::SelectedByOperator;
-                    self.held_crop = candidate.rect;
                     self.crop_action = CropAction::Track;
                     self.loss_deadline = None;
                     CommandResult::Applied
@@ -466,9 +502,9 @@ impl TrackingSession {
                 self.selected = Some(SelectedTarget {
                     handle: candidate.handle,
                     last_seen: candidate.observed_at,
+                    rect: candidate.rect,
                     ..selected
                 });
-                self.held_crop = candidate.rect;
                 self.crop_action = CropAction::Track;
             } else if selected.continuity == candidate.continuity
                 && self.state == State::Searching
@@ -481,11 +517,11 @@ impl TrackingSession {
                 self.selected = Some(SelectedTarget {
                     handle: candidate.handle,
                     last_seen: candidate.observed_at,
+                    rect: candidate.rect,
                     ..selected
                 });
                 self.state = State::Locked;
                 self.reason = Reason::ContinuityRecovered;
-                self.held_crop = candidate.rect;
                 self.crop_action = CropAction::Track;
                 self.loss_deadline = None;
             }
@@ -587,6 +623,129 @@ impl TrackingSession {
         snapshot.command_result = CommandResult::Rejected(reason);
         snapshot
     }
+
+    fn fail_closed_framing(&mut self) {
+        self.state = State::Manual;
+        self.reason = Reason::FramingFailure;
+        self.selected = None;
+        self.latest.clear();
+        self.loss_deadline = None;
+        self.held_crop = Rect::full_frame();
+        self.crop_action = CropAction::Wide;
+        self.status_version = self.status_version.saturating_add(1);
+        self.observation_version = self.observation_version.saturating_add(1);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EngineConfigError {
+    Session(SessionConfigError),
+    Framing(framing::FramingError),
+}
+
+/// Composes deterministic target policy with independent crop planning. Both
+/// are called by the owner's serialized executor; rendering consumes snapshots
+/// and never invokes detection or policy work.
+pub struct TrackingEngine {
+    session: TrackingSession,
+    framing_config: framing::FramingConfig,
+    framing: framing::FramingController,
+    frame_plan: framing::FramePlan,
+}
+
+impl TrackingEngine {
+    pub fn new(
+        session_config: Config,
+        framing_config: framing::FramingConfig,
+        identity: Identity,
+        generations: Generations,
+    ) -> Result<Self, EngineConfigError> {
+        let session = TrackingSession::new(session_config, identity, generations)
+            .map_err(EngineConfigError::Session)?;
+        let framing =
+            framing::FramingController::new(framing_config).map_err(EngineConfigError::Framing)?;
+        let frame_plan = framing.safe_wide();
+        Ok(Self {
+            session,
+            framing_config,
+            framing,
+            frame_plan,
+        })
+    }
+
+    pub fn snapshot(&self) -> Snapshot {
+        self.with_frame(self.session.snapshot())
+    }
+
+    pub fn apply(&mut self, event: Event) -> Snapshot {
+        let geometry_update = match event {
+            Event::Lifecycle {
+                identity,
+                event:
+                    Lifecycle::GeometryChanged {
+                        source_width,
+                        source_height,
+                        ..
+                    },
+                ..
+            } if identity == self.session.identity => {
+                if source_width == 0 || source_height == 0 {
+                    return self.session.reject(Reason::InvalidLifecycle);
+                }
+                let mut config = self.framing_config;
+                config.source_aspect = source_width as f32 / source_height as f32;
+                match framing::FramingController::new(config) {
+                    Ok(controller) => Some((config, controller)),
+                    Err(_) => return self.session.reject(Reason::InvalidLifecycle),
+                }
+            }
+            _ => None,
+        };
+
+        let policy = self.session.apply(event);
+        if matches!(policy.command_result, CommandResult::Rejected(_)) {
+            return self.with_frame(policy);
+        }
+
+        if let Some((config, framing)) = geometry_update {
+            self.framing_config = config;
+            self.framing = framing;
+            self.frame_plan = self.framing.safe_wide();
+        } else {
+            match policy.crop_action {
+                CropAction::Track => {
+                    if let Some(target) = policy.selected_rect {
+                        match self.framing.plan(target) {
+                            Ok(plan) => self.frame_plan = plan,
+                            Err(_) => {
+                                self.session.fail_closed_framing();
+                                self.framing.reset();
+                                self.frame_plan = self.framing.safe_wide();
+                            }
+                        }
+                    }
+                }
+                CropAction::Wide => {
+                    self.framing.reset();
+                    self.frame_plan = self.framing.safe_wide();
+                }
+                CropAction::Hold | CropAction::None => {}
+            }
+        }
+        self.snapshot_with_result(policy.command_result)
+    }
+
+    fn with_frame(&self, mut snapshot: Snapshot) -> Snapshot {
+        snapshot.crop = self.frame_plan.source_crop;
+        snapshot.viewport = self.frame_plan.output_viewport;
+        snapshot
+    }
+
+    fn snapshot_with_result(&self, result: CommandResult) -> Snapshot {
+        let mut snapshot = self.session.snapshot();
+        snapshot.command_result = result;
+        self.with_frame(snapshot)
+    }
 }
 
 fn event_time(event: Event) -> Millis {
@@ -620,7 +779,7 @@ fn expected_lifecycle_generations(current: Generations, event: Lifecycle) -> Opt
         | Lifecycle::CameraDisconnected { generations }
         | Lifecycle::CameraRestored { generations }
         | Lifecycle::SourceRebound { generations }
-        | Lifecycle::GeometryChanged { generations }
+        | Lifecycle::GeometryChanged { generations, .. }
         | Lifecycle::TrackerChanged { generations }
         | Lifecycle::FramingConfigChanged { generations }
         | Lifecycle::CandidatePolicyChanged { generations }
@@ -777,6 +936,8 @@ mod tests {
             (
                 Lifecycle::GeometryChanged {
                     generations: generations_after(base, false, false, true, true, true),
+                    source_width: 1920,
+                    source_height: 1080,
                 },
                 State::Manual,
                 CropAction::Wide,
@@ -985,6 +1146,8 @@ mod tests {
             identity: identity(),
             event: Lifecycle::GeometryChanged {
                 generations: changed,
+                source_width: 1920,
+                source_height: 1080,
             },
         });
         assert_eq!(snapshot.state, State::Manual);
@@ -1044,7 +1207,7 @@ mod tests {
                     | Lifecycle::CameraDisconnected { generations }
                     | Lifecycle::CameraRestored { generations }
                     | Lifecycle::SourceRebound { generations }
-                    | Lifecycle::GeometryChanged { generations }
+                    | Lifecycle::GeometryChanged { generations, .. }
                     | Lifecycle::TrackerChanged { generations }
                     | Lifecycle::FramingConfigChanged { generations }
                     | Lifecycle::CandidatePolicyChanged { generations }
@@ -1291,5 +1454,166 @@ mod tests {
             ),
             Err(SessionConfigError::InvalidIdentity)
         ));
+    }
+
+    #[test]
+    fn engine_converts_selected_face_to_bounded_crop() {
+        let mut engine = TrackingEngine::new(
+            Config::default(),
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        engine.apply(Event::Candidate {
+            at: 2,
+            candidate: candidate(10, 100, 1, 2),
+        });
+        let searching = engine.snapshot();
+        let target = candidate(10, 100, 1, 2).rect;
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: searching.identity,
+                status_version: searching.status_version,
+                generations: searching.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: searching.observation_version,
+                },
+            },
+        });
+        assert_eq!(locked.state, State::Locked);
+        assert_eq!(locked.selected_rect, Some(target));
+        assert_ne!(locked.crop, target);
+        assert!((locked.crop.width / locked.crop.height - 1.0).abs() < 0.000_1);
+        assert!(locked.crop.x + locked.crop.width <= 1.0);
+        assert!(locked.crop.y + locked.crop.height <= 1.0);
+        assert_eq!(locked.viewport, Rect::full_frame());
+    }
+
+    #[test]
+    fn rejected_command_preserves_framing_plan() {
+        let mut engine = TrackingEngine::new(
+            Config::default(),
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        engine.apply(Event::Candidate {
+            at: 2,
+            candidate: candidate(10, 100, 1, 2),
+        });
+        let searching = engine.snapshot();
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: searching.identity,
+                status_version: searching.status_version,
+                generations: searching.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: searching.observation_version,
+                },
+            },
+        });
+        let rejected = engine.apply(Event::Command {
+            at: 4,
+            envelope: CommandEnvelope {
+                identity: locked.identity,
+                status_version: locked.status_version - 1,
+                generations: locked.generations,
+                command: Command::ManualOverride,
+            },
+        });
+        assert_eq!(
+            rejected.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        assert_eq!(rejected.state, locked.state);
+        assert_eq!(rejected.selected, locked.selected);
+        assert_eq!(rejected.selected_rect, locked.selected_rect);
+        assert_eq!(rejected.crop, locked.crop);
+        assert_eq!(rejected.viewport, locked.viewport);
+        assert_eq!(rejected.loss_deadline, locked.loss_deadline);
+        assert_eq!(rejected.status_version, locked.status_version);
+    }
+
+    #[test]
+    fn geometry_change_recomputes_safe_wide_padding_before_publish() {
+        let mut engine = TrackingEngine::new(
+            Config::default(),
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let before = engine.snapshot();
+        let changed = generations_after(before.generations, false, false, true, true, true);
+        let after = engine.apply(Event::Lifecycle {
+            at: 1,
+            identity: before.identity,
+            event: Lifecycle::GeometryChanged {
+                generations: changed,
+                source_width: 1280,
+                source_height: 960,
+            },
+        });
+        assert_eq!(after.state, State::Manual);
+        assert_eq!(after.selected, None);
+        assert_eq!(after.crop, Rect::full_frame());
+        assert!((after.viewport.width - 0.75).abs() < 0.000_1);
+        assert_eq!(after.viewport.x, 0.125);
+    }
+
+    #[test]
+    fn invalid_geometry_change_is_a_strict_no_op() {
+        let mut engine = TrackingEngine::new(
+            Config::default(),
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let before = engine.snapshot();
+        let after = engine.apply(Event::Lifecycle {
+            at: 1,
+            identity: before.identity,
+            event: Lifecycle::GeometryChanged {
+                generations: generations_after(before.generations, false, false, true, true, true),
+                source_width: 0,
+                source_height: 0,
+            },
+        });
+        assert_eq!(
+            after.command_result,
+            CommandResult::Rejected(Reason::InvalidLifecycle)
+        );
+        assert_eq!(after.state, before.state);
+        assert_eq!(after.generations, before.generations);
+        assert_eq!(after.crop, before.crop);
+        assert_eq!(after.viewport, before.viewport);
+        assert_eq!(after.status_version, before.status_version);
     }
 }
