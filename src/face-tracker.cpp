@@ -1896,7 +1896,7 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 				      obs_source_active(bound_source) && binding &&
 				      !binding->closed.load(std::memory_order_acquire) &&
 				      binding->signal_connected.load(std::memory_order_acquire) &&
-				      binding->source_active.load(std::memory_order_acquire);
+				      binding->effective_active.load(std::memory_order_acquire);
 	gs_texture_t *texture = source_available && s->texrender ? gs_texrender_get_texture(s->texrender) : nullptr;
 	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	if (texture && effect && source_width && source_height) {
