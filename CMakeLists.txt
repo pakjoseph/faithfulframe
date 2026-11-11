@@ -111,6 +111,9 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_custom_target(faithfulframe-rust-ffi-build DEPENDS ${FAITHFULFRAME_FFI_LIBRARY})
 	add_library(faithfulframe-rust-ffi STATIC IMPORTED GLOBAL)
 	set_target_properties(faithfulframe-rust-ffi PROPERTIES IMPORTED_LOCATION ${FAITHFULFRAME_FFI_LIBRARY})
+	if (WIN32)
+		target_link_libraries(faithfulframe-rust-ffi INTERFACE ws2_32 ntdll userenv)
+	endif()
 	add_executable(faithfulframe-rust-bridge-smoke
 		tests/faithfulframe-core-bridge-smoke.cpp src/faithfulframe-core-bridge.cpp)
 	add_executable(faithfulframe-session-executor-smoke
@@ -133,6 +136,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_test(NAME faithfulframe-rust-bridge-smoke COMMAND faithfulframe-rust-bridge-smoke)
 	add_test(NAME faithfulframe-session-executor-smoke COMMAND faithfulframe-session-executor-smoke)
 	add_test(NAME faithfulframe-detector-worker-smoke COMMAND faithfulframe-detector-worker-smoke)
+	set_tests_properties(faithfulframe-detector-worker-smoke PROPERTIES TIMEOUT 10)
 endif()
 
 set(plugin_additional_libs)

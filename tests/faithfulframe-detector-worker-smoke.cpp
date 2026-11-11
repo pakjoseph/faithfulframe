@@ -37,25 +37,27 @@ int main()
 		std::fprintf(stderr, "detector worker did not start\n");
 		return 1;
 	}
+	int result = 0;
+
 	std::this_thread::sleep_for(std::chrono::milliseconds(30));
 	if (detector.completed_work_count() != 0) {
 		std::fprintf(stderr, "detector worker ran before receiving work\n");
-		return 1;
-	}
-
-	signal_work(detector);
-	if (!wait_for_runs(detector, 1) || detector.last_work_duration_us() < 3'000) {
-		std::fprintf(stderr, "detector work was lost or not timed\n");
-		return 2;
-	}
-
-	signal_work(detector);
-	if (!wait_for_runs(detector, 2) || detector.last_work_duration_us() < 3'000 ||
-	    detector.max_work_duration_us() < detector.last_work_duration_us()) {
-		std::fprintf(stderr, "detector timing did not update consistently\n");
-		return 3;
+		result = 1;
+	} else {
+		signal_work(detector);
+		if (!wait_for_runs(detector, 1) || detector.last_work_duration_us() < 3'000) {
+			std::fprintf(stderr, "detector work was lost or not timed\n");
+			result = 2;
+		} else {
+			signal_work(detector);
+			if (!wait_for_runs(detector, 2) || detector.last_work_duration_us() < 3'000 ||
+			    detector.max_work_duration_us() < detector.last_work_duration_us()) {
+				std::fprintf(stderr, "detector timing did not update consistently\n");
+				result = 3;
+			}
+		}
 	}
 
 	detector.stop();
-	return 0;
+	return result;
 }
