@@ -491,7 +491,6 @@ impl TrackingSession {
             || candidate.observation_version == 0
             || candidate.identity != self.identity
             || candidate.generations != self.generations
-            || candidate.observed_at < self.last_at
             || candidate.observed_at > at
             || candidate.expires_at < at
             || at.saturating_sub(candidate.observed_at) > self.config.max_evidence_age_ms
@@ -519,6 +518,13 @@ impl TrackingSession {
         {
             return self.reject_command(Reason::InvalidCandidate);
         }
+        if self
+            .latest
+            .get(&candidate.handle)
+            .is_some_and(|previous| candidate.observed_at < previous.observed_at)
+        {
+            return self.reject_command(Reason::InvalidCandidate);
+        }
         self.handles.insert(candidate.handle, candidate.continuity);
         self.latest.insert(candidate.handle, candidate);
         while self.latest.len() > self.config.max_candidates {
@@ -529,7 +535,10 @@ impl TrackingSession {
         self.observation_version = self.observation_version.max(candidate.observation_version);
 
         if let Some(selected) = self.selected {
-            if selected.continuity == candidate.continuity && self.state == State::Locked {
+            if selected.continuity == candidate.continuity
+                && self.state == State::Locked
+                && candidate.observed_at >= selected.last_seen
+            {
                 self.selected = Some(SelectedTarget {
                     handle: candidate.handle,
                     last_seen: candidate.observed_at,
@@ -1160,6 +1169,46 @@ mod tests {
         );
         assert_eq!(result.state, State::Locked);
         assert_eq!(result.crop_action, CropAction::Track);
+    }
+
+    #[test]
+    fn same_timestamp_face_batch_accepts_older_but_fresh_observations() {
+        let mut session = session();
+        let later_face = observe(&mut session, candidate(20, 200, 1, 9), 11);
+        let earlier_face = observe(&mut session, candidate(21, 201, 1, 8), 11);
+
+        assert_eq!(later_face.observation_version, 1);
+        assert_eq!(earlier_face.observation_version, 1);
+        assert_eq!(earlier_face.command_result, CommandResult::NotACommand);
+
+        let selected = send(
+            &mut session,
+            12,
+            Command::SelectCandidate {
+                handle: 21,
+                observation_version: earlier_face.observation_version,
+            },
+        );
+        assert_eq!(selected.state, State::Locked);
+        assert_eq!(selected.selected, Some(21));
+    }
+
+    #[test]
+    fn older_tracker_observation_cannot_refresh_selected_target() {
+        let mut session = session();
+        let locked = lock_test_target(&mut session);
+
+        let stale = observe(&mut session, candidate(10, 100, 1, 1), 4);
+        assert_eq!(
+            stale.command_result,
+            CommandResult::Rejected(Reason::InvalidCandidate)
+        );
+        assert_eq!(stale.selected, locked.selected);
+        assert_eq!(stale.state, State::Locked);
+
+        let after_deadline = session.apply(Event::Tick { at: 13 });
+        assert_eq!(after_deadline.state, State::Searching);
+        assert_eq!(after_deadline.reason, Reason::TargetEvidenceStale);
     }
 
     #[test]
