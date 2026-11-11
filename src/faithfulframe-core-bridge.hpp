@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "faithfulframe_ffi.h"
+#include "faithfulframe-candidate-limits.hpp"
 
 class faithfulframe_core_bridge {
 public:
@@ -58,7 +59,7 @@ bool faithfulframe_next_lifecycle_generations(uint32_t kind, const ff_generation
 /// waiting for session policy or detection work.
 class faithfulframe_session_executor {
 public:
-	static constexpr size_t max_candidates = 8;
+	static constexpr size_t max_candidates = faithfulframe_max_candidates;
 
 	faithfulframe_session_executor(const ff_session_config &, const ff_identity &, const ff_generations &);
 	~faithfulframe_session_executor();

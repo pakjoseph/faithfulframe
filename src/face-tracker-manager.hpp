@@ -36,6 +36,7 @@ public:
 		std::vector<pointf_s> landmark;
 		float att;
 		float score_first;
+		std::shared_ptr<texture_object> seed_texture;
 		enum tracker_state_e {
 			tracker_state_init = 0,
 			tracker_state_reset_texture, // texture has been set, position is not set.
@@ -101,4 +102,5 @@ private:
 	int stage_surface_to_tracker(struct tracker_inst_s &t);
 	void stage_to_trackers();
 	uint64_t allocate_candidate_handle();
+	class face_tracker_base *take_idle_tracker();
 };

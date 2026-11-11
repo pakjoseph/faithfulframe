@@ -5,6 +5,8 @@
 #include "face-detector-dlib-hog.h"
 #include "face-detector-dlib-cnn.h"
 #include "face-tracker-dlib.h"
+#include "face-tracker-association.hpp"
+#include "faithfulframe-candidate-limits.hpp"
 #include "texture-object.h"
 #include "helper.hpp"
 
@@ -57,9 +59,25 @@ face_tracker_manager::~face_tracker_manager()
 inline void face_tracker_manager::retire_tracker(int ix)
 {
 	debug_track_thread("%p retire_tracker(%d %p)", this, ix, trackers[ix].tracker);
-	trackers_idlepool.push_back(trackers[ix]);
+	tracker_inst_s retired = trackers[ix];
+	retired.seed_texture.reset();
+	trackers_idlepool.push_back(std::move(retired));
 	trackers[ix].tracker->request_suspend();
 	trackers.erase(trackers.begin() + ix);
+}
+
+face_tracker_base *face_tracker_manager::take_idle_tracker()
+{
+	for (auto it = trackers_idlepool.begin(); it != trackers_idlepool.end(); ++it) {
+		if (!it->tracker || it->tracker->trylock() != 0)
+			continue;
+		face_tracker_base *tracker = it->tracker;
+		tracker->unlock();
+		it->tracker = nullptr;
+		trackers_idlepool.erase(it);
+		return tracker;
+	}
+	return nullptr;
 }
 
 uint64_t face_tracker_manager::allocate_candidate_handle()
@@ -92,19 +110,18 @@ void face_tracker_manager::remove_duplicated_tracker()
 		rect_s r = trackers[i].rect;
 		int a0 = (r.x1 - r.x0) * (r.y1 - r.y0);
 		int a_overlap_sum = 0;
-		bool to_remove = false;
-		for (size_t j = i + 1; j < trackers.size() && !to_remove; j++) {
+		for (size_t j = i + 1; j < trackers.size(); j++) {
 			if (trackers[j].state != tracker_inst_s::tracker_state_available)
 				continue;
 			int a = common_area(r, trackers[j].rect);
 			a_overlap_sum += a;
-			if (a * 10 > a0 && a_overlap_sum * 2 > a0)
-				to_remove = true;
-		}
-
-		if (to_remove) {
-			retire_tracker(i);
-			i--;
+			if (a * 10 > a0 && a_overlap_sum * 2 > a0) {
+				// Preserve the older tracker handle when two trackers overlap.
+				// That keeps the candidate's continuity token stable across a
+				// detector refresh and conservatively favors the established lock.
+				retire_tracker(j);
+				j--;
+			}
 		}
 	}
 }
@@ -158,28 +175,105 @@ inline void face_tracker_manager::copy_detector_to_tracker()
 	if (i_tracker >= trackers.size())
 		return;
 
-	if (detect_rects.size() <= 0) {
+	if (detect_rects.empty() || !trackers[i_tracker].seed_texture) {
 		retire_tracker(i_tracker);
 		return;
 	}
 
-	struct tracker_inst_s &t = trackers[i_tracker];
+	auto &placeholder = trackers[i_tracker];
+	const auto seed_texture = placeholder.seed_texture;
+	std::vector<rect_s> newly_initialized;
+	bool placeholder_used = false;
+	constexpr size_t max_tracker_candidates = faithfulframe_max_candidates;
 
-	struct rect_s r = detect_rects[0];
-	int w = r.x1 - r.x0;
-	int h = r.y1 - r.y0;
-	r.x0 -= w * upsize_l;
-	r.x1 += w * upsize_r;
-	r.y0 -= h * upsize_t;
-	r.y1 += h * upsize_b;
-	t.tracker->set_position(r); // TODO: consider how to track two or more faces.
-	t.observed_at_ms = 0;
-	t.tracker->set_upsize_info(rectf_s{upsize_l, upsize_t, upsize_r, upsize_b});
-	if (!t.tracker->start()) {
-		retire_tracker(static_cast<int>(i_tracker));
-		return;
+	auto represented_by_existing_tracker = [&](const rect_s &detection) {
+		const ff_tracker_box_i detection_box{detection.x0, detection.y0, detection.x1, detection.y1};
+		for (size_t i = 0; i < trackers.size(); ++i) {
+			if (i == i_tracker || trackers[i].state != tracker_inst_s::tracker_state_available)
+				continue;
+			const rect_s &tracked = trackers[i].rect;
+			if (ff_tracker_boxes_match(detection_box,
+						   ff_tracker_box_i{tracked.x0, tracked.y0, tracked.x1, tracked.y1}))
+				return true;
+		}
+		for (const auto &added : newly_initialized) {
+			if (ff_tracker_boxes_match(detection_box,
+						   ff_tracker_box_i{added.x0, added.y0, added.x1, added.y1}))
+				return true;
+		}
+		return false;
+	};
+
+	auto start_tracker = [&](tracker_inst_s &tracker, const rect_s &detection) {
+		if (detection.x1 <= detection.x0 || detection.y1 <= detection.y0 || !tracker.tracker ||
+		    !tracker.seed_texture || tracker.tracker->trylock() != 0)
+			return false;
+		const int width = detection.x1 - detection.x0;
+		const int height = detection.y1 - detection.y0;
+		rect_s expanded = detection;
+		expanded.x0 -= width * upsize_l;
+		expanded.x1 += width * upsize_r;
+		expanded.y0 -= height * upsize_t;
+		expanded.y1 += height * upsize_b;
+		tracker.tracker->set_texture(tracker.seed_texture);
+		tracker.tracker->set_position(expanded);
+		tracker.tracker->set_upsize_info(rectf_s{upsize_l, upsize_t, upsize_r, upsize_b});
+		tracker.tracker->unlock();
+		tracker.observed_at_ms = 0;
+		tracker.rect = detection;
+		tracker.seed_texture.reset();
+		if (!tracker.tracker->start())
+			return false;
+		tracker.state = tracker_inst_s::tracker_state_constructing;
+		return true;
+	};
+
+	for (const rect_s &detection : detect_rects) {
+		if (detection.x1 <= detection.x0 || detection.y1 <= detection.y0 ||
+		    represented_by_existing_tracker(detection))
+			continue;
+
+		if (!placeholder_used) {
+			if (trackers.size() > max_tracker_candidates)
+				continue;
+			if (start_tracker(placeholder, detection)) {
+				placeholder_used = true;
+				newly_initialized.push_back(detection);
+			}
+			continue;
+		}
+		if (trackers.size() >= max_tracker_candidates)
+			continue;
+
+		tracker_inst_s additional{};
+		additional.tracker = take_idle_tracker();
+		if (!additional.tracker)
+			additional.tracker = new face_tracker_dlib();
+		additional.observed_at_ms = 0;
+		additional.rect = rect_s{0, 0, 0, 0, 0.0f};
+		additional.crop_rect = rectf_s{0.0f, 0.0f, 0.0f, 0.0f};
+		additional.att = 0.0f;
+		additional.score_first = 0.0f;
+		additional.crop_tracker = crop_cur;
+		additional.candidate_handle = allocate_candidate_handle();
+		additional.continuity_token = additional.candidate_handle;
+		additional.seed_texture = seed_texture;
+		additional.tick_cnt = detect_tick;
+		additional.state = tracker_inst_s::tracker_state_e::tracker_state_reset_texture;
+		additional.tracker->set_landmark_detection(landmark_detection_data);
+		if (!landmark_detection_data)
+			additional.landmark.clear();
+		if (!start_tracker(additional, detection)) {
+			additional.tracker->request_suspend();
+			trackers_idlepool.push_back(std::move(additional));
+			continue;
+		}
+		newly_initialized.push_back(detection);
+		trackers.push_back(std::move(additional));
 	}
-	t.state = tracker_inst_s::tracker_state_constructing;
+
+	if (!placeholder_used)
+		retire_tracker(static_cast<int>(i_tracker));
 }
 
 inline void face_tracker_manager::stage_to_detector()
@@ -216,17 +310,14 @@ inline void face_tracker_manager::stage_to_detector()
 		detector_in_progress = true;
 		detect_tick = tick_cnt;
 
-		struct tracker_inst_s t;
+		struct tracker_inst_s t{};
 		t.observed_at_ms = 0;
 		t.rect = rect_s{0, 0, 0, 0, 0.0f};
 		t.crop_rect = rectf_s{0.0f, 0.0f, 0.0f, 0.0f};
 		t.att = 0.0f;
 		t.score_first = 0.0f;
-		if (trackers_idlepool.size() > 0) {
-			t.tracker = trackers_idlepool[0].tracker;
-			trackers_idlepool[0].tracker = NULL;
-			trackers_idlepool.pop_front();
-		} else {
+		t.tracker = take_idle_tracker();
+		if (!t.tracker) {
 			debug_track_thread(
 				"%p No available idle tracker, creating new tracker thread. There are %d existing thread.",
 				this, trackers.size());
@@ -241,6 +332,7 @@ inline void face_tracker_manager::stage_to_detector()
 		t.continuity_token = t.candidate_handle;
 		t.state = tracker_inst_s::tracker_state_e::tracker_state_reset_texture;
 		t.tick_cnt = tick_cnt;
+		t.seed_texture = cvtex;
 		t.tracker->set_texture(cvtex);
 		t.tracker->set_landmark_detection(landmark_detection_data);
 		if (!landmark_detection_data)

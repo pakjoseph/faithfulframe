@@ -59,8 +59,8 @@ bool face_tracker_base::start()
 {
 	stop_requested.store(false, std::memory_order_relaxed);
 	stopped.store(false, std::memory_order_relaxed);
-	suspend_requested.store(false, std::memory_order_relaxed);
 	if (!running) {
+		suspend_requested.store(false, std::memory_order_relaxed);
 		blog(LOG_INFO, "face_tracker_base: starting a new thread.");
 		const int result = pthread_create(&thread, NULL, thread_routine, (void *)this);
 		if (result != 0) {
@@ -72,6 +72,7 @@ bool face_tracker_base::start()
 		running = 1;
 	} else {
 		lock();
+		suspend_requested.store(false, std::memory_order_relaxed);
 		signal();
 		unlock();
 	}
