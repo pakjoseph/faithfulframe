@@ -23,6 +23,10 @@ set(CMAKE_PREFIX_PATH "${QTDIR}")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Establish platform defaults before configuring the Rust static library so
+# its deployment target matches the OBS plugin target below.
+include(cmake/ObsPluginHelpers.cmake)
+
 if (ENABLE_RUST_CORE_TESTS)
 	find_program(CARGO_EXECUTABLE cargo REQUIRED)
 	add_custom_target(faithfulframe-rust-core-test
@@ -45,13 +49,25 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	endif()
 	set(FAITHFULFRAME_CARGO_BUILD ${CARGO_EXECUTABLE} build --release --manifest-path ${FAITHFULFRAME_FFI_MANIFEST})
 	if (APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
+		find_program(OTOOL_EXECUTABLE otool)
+		if (NOT OTOOL_EXECUTABLE)
+			message(FATAL_ERROR "otool is required to validate the macOS Rust archive deployment target")
+		endif()
 		set(FAITHFULFRAME_CARGO_BUILD
 			${CMAKE_COMMAND} -E env MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
 			${FAITHFULFRAME_CARGO_BUILD})
+		set(FAITHFULFRAME_VERIFY_RUST_DEPLOYMENT
+			COMMAND ${CMAKE_COMMAND}
+				-DFF_ARCHIVE=${FAITHFULFRAME_FFI_LIBRARY}
+				-DFF_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
+				-DFF_OTOOL=${OTOOL_EXECUTABLE}
+				-P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyRustMacOSDeployment.cmake)
 	endif()
 	add_custom_command(OUTPUT ${FAITHFULFRAME_FFI_LIBRARY}
 		COMMAND ${FAITHFULFRAME_CARGO_BUILD}
+		${FAITHFULFRAME_VERIFY_RUST_DEPLOYMENT}
 		DEPENDS ${FAITHFULFRAME_FFI_MANIFEST}
+			${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyRustMacOSDeployment.cmake
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/Cargo.lock
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/src/lib.rs
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-core/src/framing.rs
@@ -94,7 +110,6 @@ endif()
 
 find_package(libobs REQUIRED)
 find_package(obs-frontend-api REQUIRED)
-include(cmake/ObsPluginHelpers.cmake)
 
 if (WITH_DLIB_SUBMODULE)
 	set(CMAKE_POSITION_INDEPENDENT_CODE True)
