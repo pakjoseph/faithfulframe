@@ -74,6 +74,9 @@ struct faithfulframe_source_binding
 	std::atomic<uint32_t> source_height{0};
 	std::atomic<uint32_t> output_width{0};
 	std::atomic<uint32_t> output_height{0};
+	std::atomic<uint64_t> detector_last_work_us{0};
+	std::atomic<uint64_t> detector_max_work_us{0};
+	std::atomic<uint64_t> detector_work_count{0};
 	std::atomic<bool> signal_connected{false};
 	std::atomic<bool> source_active{false};
 	std::atomic<bool> closed{false};
@@ -1142,6 +1145,18 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 		s->height_with_aspect = binding->output_height.load(std::memory_order_acquire);
 		s->ftm->crop_cur = rectf_s{0.0f, 0.0f, (float)source_width, (float)source_height};
 		s->ftm->tick(second);
+		if (s->ftm->detect) {
+			binding->detector_last_work_us.store(s->ftm->detect->last_work_duration_us(),
+							     std::memory_order_relaxed);
+			binding->detector_max_work_us.store(s->ftm->detect->max_work_duration_us(),
+							    std::memory_order_relaxed);
+			binding->detector_work_count.store(s->ftm->detect->completed_work_count(),
+							   std::memory_order_relaxed);
+		} else {
+			binding->detector_last_work_us.store(0, std::memory_order_relaxed);
+			binding->detector_max_work_us.store(0, std::memory_order_relaxed);
+			binding->detector_work_count.store(0, std::memory_order_relaxed);
+		}
 		publish_source_candidates(s, binding, now);
 	} else {
 		s->known_width = binding->source_width.load(std::memory_order_acquire);
@@ -1881,6 +1896,12 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	calldata_set_int(cd, "executor_max_queue_wait_us", ffi_integer(diagnostics.max_queue_wait_us));
 	calldata_set_int(cd, "executor_last_processing_us", ffi_integer(diagnostics.last_processing_us));
 	calldata_set_int(cd, "executor_max_processing_us", ffi_integer(diagnostics.max_processing_us));
+	calldata_set_int(cd, "detector_last_work_us",
+			 ffi_integer(binding->detector_last_work_us.load(std::memory_order_relaxed)));
+	calldata_set_int(cd, "detector_max_work_us",
+			 ffi_integer(binding->detector_max_work_us.load(std::memory_order_relaxed)));
+	calldata_set_int(cd, "detector_work_count",
+			 ffi_integer(binding->detector_work_count.load(std::memory_order_relaxed)));
 
 	ff_snapshot snapshot{};
 	uint64_t snapshot_at = 0;

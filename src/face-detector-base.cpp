@@ -17,6 +17,7 @@ face_detector_base::face_detector_base()
 	pthread_cond_init(&cond, NULL);
 	request_stop = 0;
 	running = 0;
+	work_pending = false;
 	leak_test = bmalloc(1);
 }
 
@@ -39,6 +40,12 @@ void *face_detector_base::thread_routine(void *p)
 
 	base->lock();
 	while (!base->request_stop) {
+		while (!base->request_stop && !base->work_pending)
+			pthread_cond_wait(&base->cond, &base->mutex);
+		if (base->request_stop)
+			break;
+		base->work_pending = false;
+		const uint64_t started_ns = os_gettime_ns();
 		try {
 			base->detect_main();
 		} catch (std::exception &e) {
@@ -46,7 +53,15 @@ void *face_detector_base::thread_routine(void *p)
 		} catch (...) {
 			blog(LOG_ERROR, "detect_main: unknown exception");
 		}
-		pthread_cond_wait(&base->cond, &base->mutex);
+		const uint64_t finished_ns = os_gettime_ns();
+		const uint64_t elapsed_us = finished_ns >= started_ns ? (finished_ns - started_ns) / 1000 : 0;
+		base->last_work_us.store(elapsed_us, std::memory_order_relaxed);
+		uint64_t previous_max = base->max_work_us.load(std::memory_order_relaxed);
+		while (previous_max < elapsed_us &&
+		       !base->max_work_us.compare_exchange_weak(previous_max, elapsed_us, std::memory_order_relaxed,
+								std::memory_order_relaxed)) {
+		}
+		base->completed_work.fetch_add(1, std::memory_order_relaxed);
 	}
 	base->unlock();
 	return NULL;
@@ -54,8 +69,11 @@ void *face_detector_base::thread_routine(void *p)
 
 void face_detector_base::start()
 {
+	lock();
 	blog(LOG_INFO, "face_detector_base: starting the thread.");
 	request_stop = 0;
+	work_pending = false;
+	unlock();
 	pthread_create(&thread, NULL, thread_routine, (void *)this);
 	running = 1;
 }

@@ -61,6 +61,9 @@ struct faithfulframe_safe_preview
 	uint64_t executor_max_queue_wait_us = 0;
 	uint64_t executor_last_processing_us = 0;
 	uint64_t executor_max_processing_us = 0;
+	uint64_t detector_last_work_us = 0;
+	uint64_t detector_max_work_us = 0;
+	uint64_t detector_work_count = 0;
 	uint64_t source_id = 0;
 	uint64_t session_id = 0;
 	uint64_t status_version = 0;
@@ -124,6 +127,9 @@ static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &
 	read_calldata_int(&cd, "executor_max_queue_wait_us", preview.executor_max_queue_wait_us);
 	read_calldata_int(&cd, "executor_last_processing_us", preview.executor_last_processing_us);
 	read_calldata_int(&cd, "executor_max_processing_us", preview.executor_max_processing_us);
+	read_calldata_int(&cd, "detector_last_work_us", preview.detector_last_work_us);
+	read_calldata_int(&cd, "detector_max_work_us", preview.detector_max_work_us);
+	read_calldata_int(&cd, "detector_work_count", preview.detector_work_count);
 	uint64_t value = 0;
 	if (read_calldata_int(&cd, "state", value))
 		preview.state = static_cast<uint32_t>(value);
@@ -760,7 +766,7 @@ void FTDock::updateState()
 						     : QString("%1 ms").arg(safe_preview.status_snapshot_age_ms);
 		performanceLabel->setText(
 			QString("Snapshot: %1 | queue: %2 / %3 | wait: %4 / %5 µs | policy: %6 / %7 µs | "
-				"accepted %8 · rejected %9 · coalesced %10")
+				"dlib: %8 runs, %9 / %10 µs | accepted %11 · rejected %12 · coalesced %13")
 				.arg(snapshot_age)
 				.arg(static_cast<qulonglong>(safe_preview.executor_queue_depth))
 				.arg(static_cast<qulonglong>(safe_preview.executor_queue_high_water))
@@ -768,6 +774,9 @@ void FTDock::updateState()
 				.arg(static_cast<qulonglong>(safe_preview.executor_max_queue_wait_us))
 				.arg(static_cast<qulonglong>(safe_preview.executor_last_processing_us))
 				.arg(static_cast<qulonglong>(safe_preview.executor_max_processing_us))
+				.arg(static_cast<qulonglong>(safe_preview.detector_work_count))
+				.arg(static_cast<qulonglong>(safe_preview.detector_last_work_us))
+				.arg(static_cast<qulonglong>(safe_preview.detector_max_work_us))
 				.arg(static_cast<qulonglong>(safe_preview.executor_accepted_work))
 				.arg(static_cast<qulonglong>(safe_preview.executor_rejected_work))
 				.arg(static_cast<qulonglong>(safe_preview.executor_coalesced_work)));
