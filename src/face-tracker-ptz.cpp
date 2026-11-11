@@ -183,7 +183,8 @@ static void ftptz_update(void *data, obs_data_t *settings)
 	auto *s = (struct face_tracker_ptz *)data;
 
 	s->ftm->update(settings);
-	s->ftm->scale = roundf(s->ftm->scale);
+	const float configured_scale = s->ftm->scale.load(std::memory_order_relaxed);
+	s->ftm->scale.store(roundf(configured_scale), std::memory_order_relaxed);
 	s->track_z = obs_data_get_double(settings, "track_z");
 	s->track_x = obs_data_get_double(settings, "track_x");
 	s->track_y = obs_data_get_double(settings, "track_y");
@@ -949,7 +950,8 @@ static inline bool operator!=(const struct video_scale_info &a, const struct vid
 	return false;
 }
 
-static bool scale_set_texture(struct face_tracker_ptz *s, texture_object *cvtex, struct obs_source_frame *frame)
+static bool scale_set_texture(struct face_tracker_ptz *s, texture_object *cvtex, struct obs_source_frame *frame,
+			      float scale)
 {
 	const struct video_scale_info scaler_src_info = {
 		frame->format,    frame->width,
@@ -958,8 +960,8 @@ static bool scale_set_texture(struct face_tracker_ptz *s, texture_object *cvtex,
 	};
 	const struct video_scale_info scaler_dst_info = {
 		VIDEO_FORMAT_BGRX,
-		(uint32_t)(frame->width / s->ftm->scale),
-		(uint32_t)(frame->height / s->ftm->scale),
+		(uint32_t)(frame->width / scale),
+		(uint32_t)(frame->height / scale),
 		scaler_src_info.range,
 		VIDEO_CS_DEFAULT,
 	};
@@ -967,7 +969,7 @@ static bool scale_set_texture(struct face_tracker_ptz *s, texture_object *cvtex,
 
 	if (!s->scaler || scaler_src_info != s->scaler_src_info || scaler_dst_info != s->scaler_dst_info) {
 		blog(LOG_DEBUG, "creating video-scaler: width=%u height=%u scale=%f -> %ux%u", frame->width,
-		     frame->height, s->ftm->scale, scaler_dst_info.width, scaler_dst_info.height);
+		     frame->height, scale, scaler_dst_info.width, scaler_dst_info.height);
 
 		video_scaler_destroy(s->scaler);
 		s->scaler = NULL;
@@ -1011,15 +1013,16 @@ static struct obs_source_frame *ftptz_filter_video(void *data, struct obs_source
 		return NULL;
 
 	auto *s = (struct face_tracker_ptz *)data;
+	const float scale = s->ftm->scale.load(std::memory_order_relaxed);
 
 	std::shared_ptr<texture_object> cvtex(new texture_object());
-	cvtex->scale = s->ftm->scale;
+	cvtex->scale = scale;
 	cvtex->tick = s->ftm->tick_cnt;
 
 	if (is_rgb_format(frame->format)) {
-		cvtex->set_texture_obsframe(frame, s->ftm->scale);
+		cvtex->set_texture_obsframe(frame, scale);
 	} else {
-		if (!scale_set_texture(s, cvtex.get(), frame))
+		if (!scale_set_texture(s, cvtex.get(), frame, scale))
 			return frame;
 	}
 

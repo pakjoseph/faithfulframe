@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <deque>
 #include <cstdint>
 #include <string>
@@ -46,8 +47,8 @@ public:
 
 public: // properties
 	float upsize_l, upsize_r, upsize_t, upsize_b;
-	volatile float scale;
-	volatile bool reset_requested;
+	std::atomic<float> scale{0.0f};
+	std::atomic<bool> reset_requested{false};
 	float tracking_threshold;
 	enum detector_engine_e detector_engine = engine_uninitialized;
 	std::string detector_dlib_hog_model;

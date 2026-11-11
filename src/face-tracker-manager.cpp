@@ -21,7 +21,7 @@
 face_tracker_manager::face_tracker_manager()
 {
 	upsize_l = upsize_r = upsize_t = upsize_b = 0.0f;
-	scale = 0.0f;
+	scale.store(0.0f, std::memory_order_relaxed);
 	tracking_threshold = 1e-2f;
 	landmark_detection_data = NULL;
 	crop_cur.x0 = crop_cur.x1 = crop_cur.y0 = crop_cur.y1 = 0.0f;
@@ -344,11 +344,10 @@ static inline void make_tracker_rects(std::vector<face_tracker_manager::tracker_
 
 void face_tracker_manager::tick(float second)
 {
-	if (reset_requested) {
+	if (reset_requested.exchange(false, std::memory_order_acq_rel)) {
 		for (int i = trackers.size() - 1; i >= 0; i--)
 			trackers[i].att = 0.0f;
 		detect_rects.clear();
-		reset_requested = false;
 	}
 
 	if (detect_tick == tick_cnt)
@@ -396,7 +395,7 @@ void face_tracker_manager::update(obs_data_t *settings)
 	upsize_r = obs_data_get_double(settings, "upsize_r");
 	upsize_t = obs_data_get_double(settings, "upsize_t");
 	upsize_b = obs_data_get_double(settings, "upsize_b");
-	scale = obs_data_get_double(settings, "scale");
+	scale.store(static_cast<float>(obs_data_get_double(settings, "scale")), std::memory_order_relaxed);
 	auto _detector_engine = (enum detector_engine_e)obs_data_get_int(settings, "detector_engine");
 	if (_detector_engine != detector_engine)
 		update_detector(this, _detector_engine);
