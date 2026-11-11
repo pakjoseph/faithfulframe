@@ -449,7 +449,18 @@ pub unsafe extern "C" fn ff_session_apply_command(
         let input = *input;
         let command = match command(input) {
             Ok(value) => value,
-            Err(error) => return error,
+            Err(_) => {
+                write_snapshot(
+                    (*session).inner.reject_invalid_command(
+                        at,
+                        identity(input.identity),
+                        generations(input.generations),
+                        input.status_version,
+                    ),
+                    &mut *output,
+                );
+                return OK;
+            }
         };
         let event = Event::Command {
             at,
@@ -482,7 +493,15 @@ pub unsafe extern "C" fn ff_session_lifecycle(
         let input = *input;
         let lifecycle = match lifecycle(input) {
             Ok(value) => value,
-            Err(error) => return error,
+            Err(_) => {
+                write_snapshot(
+                    (*session)
+                        .inner
+                        .reject_invalid_lifecycle(at, identity(input.identity)),
+                    &mut *output,
+                );
+                return OK;
+            }
         };
         write_snapshot(
             (*session).inner.apply(Event::Lifecycle {
@@ -641,6 +660,51 @@ mod tests {
         );
         assert_eq!(output.state, 3);
         let held_crop = output.crop;
+        let locked_status_version = output.status_version;
+
+        let invalid_command = FfCommand {
+            kind: u32::MAX,
+            identity,
+            status_version: output.status_version,
+            generations,
+            candidate_handle: 0,
+            observation_version: output.observation_version,
+        };
+        assert_eq!(
+            unsafe { ff_session_apply_command(session, 4, &invalid_command, &mut output) },
+            OK
+        );
+        assert_eq!(output.command_result, 2);
+        assert_eq!(output.rejection_reason, 2);
+        assert_eq!(output.state, 3);
+        assert_eq!(output.selected_handle, initial_candidate.handle);
+        assert_eq!(output.status_version, locked_status_version);
+        assert_eq!(output.crop.x, held_crop.x);
+        assert_eq!(output.crop.y, held_crop.y);
+        assert_eq!(output.crop.width, held_crop.width);
+        assert_eq!(output.crop.height, held_crop.height);
+
+        let invalid_lifecycle = FfLifecycle {
+            kind: u32::MAX,
+            identity,
+            generations,
+            source_width: 0,
+            source_height: 0,
+        };
+        assert_eq!(
+            unsafe { ff_session_lifecycle(session, 5, &invalid_lifecycle, &mut output) },
+            OK
+        );
+        assert_eq!(output.command_result, 2);
+        assert_eq!(output.rejection_reason, 6);
+        assert_eq!(output.state, 3);
+        assert_eq!(output.selected_handle, initial_candidate.handle);
+        assert_eq!(output.status_version, locked_status_version);
+        assert_eq!(output.crop.x, held_crop.x);
+        assert_eq!(output.crop.y, held_crop.y);
+        assert_eq!(output.crop.width, held_crop.width);
+        assert_eq!(output.crop.height, held_crop.height);
+
         let mut malformed = initial_candidate;
         malformed.handle = 11;
         malformed.observation_version = 2;

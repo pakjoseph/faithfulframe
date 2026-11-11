@@ -699,6 +699,31 @@ impl TrackingSession {
         self.reject(reason)
     }
 
+    fn reject_invalid_command_at(
+        &mut self,
+        at: Millis,
+        identity: Identity,
+        generations: Generations,
+        status_version: u64,
+    ) -> Snapshot {
+        if self.closed {
+            return self.reject(Reason::SessionClosed);
+        }
+        if at < self.last_at {
+            return self.reject(Reason::NonMonotonicEvent);
+        }
+        self.advance_due_timers(at);
+        let reason = if identity != self.identity
+            || generations != self.generations
+            || status_version != self.status_version
+        {
+            Reason::StaleCommand
+        } else {
+            Reason::InvalidCommand
+        };
+        self.reject(reason)
+    }
+
     fn fail_closed_framing(&mut self) {
         self.state = State::Manual;
         self.reason = Reason::FramingFailure;
@@ -751,6 +776,32 @@ impl TrackingEngine {
 
     pub fn snapshot(&self) -> Snapshot {
         self.with_frame(self.session.snapshot())
+    }
+
+    /// Records a syntactically invalid command as a serialized rejection.
+    /// Due safety timers still advance independently of that no-op command.
+    pub fn reject_invalid_command(
+        &mut self,
+        at: Millis,
+        identity: Identity,
+        generations: Generations,
+        status_version: u64,
+    ) -> Snapshot {
+        let rejected =
+            self.session
+                .reject_invalid_command_at(at, identity, generations, status_version);
+        self.with_frame(rejected)
+    }
+
+    /// Records an invalid lifecycle tag through the session event path.
+    pub fn reject_invalid_lifecycle(&mut self, at: Millis, identity: Identity) -> Snapshot {
+        let reason = if identity == self.session.identity {
+            Reason::InvalidLifecycle
+        } else {
+            Reason::StaleLifecycle
+        };
+        let rejected = self.session.reject_at(at, reason);
+        self.with_frame(rejected)
     }
 
     pub fn apply(&mut self, event: Event) -> Snapshot {
@@ -1358,6 +1409,32 @@ mod tests {
         assert_eq!(after.crop_action, CropAction::Hold);
         assert_eq!(after.loss_deadline, None);
         assert_eq!(after.status_version, stale_preview.status_version + 2);
+    }
+
+    #[test]
+    fn malformed_command_rejection_keeps_due_loss_deadline_independent() {
+        let mut session = session();
+        lock_test_target(&mut session);
+        let before = session.snapshot();
+
+        let after = session.reject_invalid_command_at(
+            113,
+            before.identity,
+            before.generations,
+            before.status_version,
+        );
+
+        assert_eq!(
+            after.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        assert_eq!(after.state, State::Lost);
+        assert_eq!(after.reason, Reason::TargetLossDeadlineExpired);
+        assert_eq!(after.selected, None);
+        assert_eq!(after.generations, before.generations);
+        assert_eq!(after.crop, before.crop);
+        assert_eq!(after.crop_action, CropAction::Hold);
+        assert_eq!(after.status_version, before.status_version + 2);
     }
 
     #[test]
