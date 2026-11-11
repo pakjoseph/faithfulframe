@@ -2020,6 +2020,11 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	calldata_set_int(cd, "session_id", ffi_integer(snapshot.identity.session));
 	calldata_set_int(cd, "status_version", ffi_integer(snapshot.status_version));
 	calldata_set_int(cd, "observation_version", ffi_integer(snapshot.observation_version));
+	calldata_set_int(cd, "loss_remaining_ms", -1);
+	if (snapshot.has_loss_deadline) {
+		const uint64_t remaining_ms = snapshot.loss_deadline_ms > now ? snapshot.loss_deadline_ms - now : 0;
+		calldata_set_int(cd, "loss_remaining_ms", ffi_integer(remaining_ms));
+	}
 	set_generation_fields(cd, snapshot.generations, "");
 	calldata_set_int(cd, "state", snapshot.state);
 	calldata_set_int(cd, "reason", snapshot.reason);

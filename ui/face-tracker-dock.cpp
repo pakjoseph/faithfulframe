@@ -60,6 +60,7 @@ struct faithfulframe_safe_preview
 	uint32_t output_width = 0;
 	uint32_t output_height = 0;
 	int64_t status_snapshot_age_ms = -1;
+	int64_t loss_remaining_ms = -1;
 	uint64_t executor_queue_depth = 0;
 	uint64_t executor_queue_high_water = 0;
 	uint64_t executor_accepted_work = 0;
@@ -126,6 +127,7 @@ static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &
 	long long snapshot_age_ms = -1;
 	if (calldata_get_int(&cd, "status_snapshot_age_ms", &snapshot_age_ms))
 		preview.status_snapshot_age_ms = snapshot_age_ms;
+	calldata_get_int(&cd, "loss_remaining_ms", &preview.loss_remaining_ms);
 	read_calldata_int(&cd, "executor_queue_depth", preview.executor_queue_depth);
 	read_calldata_int(&cd, "executor_queue_high_water", preview.executor_queue_high_water);
 	read_calldata_int(&cd, "executor_accepted_work", preview.executor_accepted_work);
@@ -324,6 +326,9 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 			return "Wide framing; select a face to follow again";
 		return "Manual; select a face before following";
 	case FF_STATE_SEARCHING:
+		if (preview.loss_remaining_ms >= 0)
+			return QString("Target briefly lost; holding framing. Same-speaker reacquisition: %1 s; then select again.")
+				.arg(preview.loss_remaining_ms / 1000.0, 0, 'f', 1);
 		return "Searching; holding the last framing";
 	case FF_STATE_LOCKED:
 		return "Following the selected speaker";
