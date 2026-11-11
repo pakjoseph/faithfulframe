@@ -81,7 +81,9 @@ impl FramingController {
             || !(0.0 < config.zoom_smoothing && config.zoom_smoothing <= 1.0)
             || !(0.0..0.5).contains(&config.dead_zone_fraction)
             || config.max_pan_step <= 0.0
+            || config.max_pan_step > 1.0
             || config.max_zoom_step <= 0.0
+            || config.max_zoom_step > 1.0
         {
             return Err(FramingError::InvalidConfig);
         }
@@ -546,6 +548,20 @@ mod tests {
         assert!(matches!(
             FramingController::new(FramingConfig {
                 zoom_smoothing: f32::INFINITY,
+                ..FramingConfig::default()
+            }),
+            Err(FramingError::InvalidConfig)
+        ));
+        assert!(matches!(
+            FramingController::new(FramingConfig {
+                max_pan_step: 1.01,
+                ..FramingConfig::default()
+            }),
+            Err(FramingError::InvalidConfig)
+        ));
+        assert!(matches!(
+            FramingController::new(FramingConfig {
+                max_zoom_step: 1.01,
                 ..FramingConfig::default()
             }),
             Err(FramingError::InvalidConfig)
