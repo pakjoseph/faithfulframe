@@ -192,8 +192,8 @@ static void fts_update(void *data, obs_data_t *settings)
 
 	const char *target_name = obs_data_get_string(settings, "target_name");
 	const std::string requested_name = target_name ? target_name : "";
-	bool binding_changed = false;
 #ifdef ENABLE_RUST_CORE_BRIDGE
+	bool binding_changed = false;
 	if (s->safe_runtime) {
 		{
 			std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
