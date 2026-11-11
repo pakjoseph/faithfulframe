@@ -1,7 +1,9 @@
 #include "faithfulframe-core-bridge.hpp"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
+#include <mutex>
 #include <thread>
 
 namespace {
@@ -131,6 +133,72 @@ int run_smoke()
 	    teardown_diagnostics.rejected_work != 4 || teardown_diagnostics.coalesced_work != 0 ||
 	    teardown_diagnostics.queue_high_water > 3)
 		return 16;
+
+	// Hold a callback-owned executor reference after the adapter atomically
+	// removes its published handle. Teardown begins between command creation
+	// and submission; the callback must be able to finish without touching a
+	// destroyed executor, and the closed executor must reject that command.
+	for (int attempt = 0; attempt < 10; ++attempt) {
+		auto owned = std::make_shared<faithfulframe_session_executor>(
+			config,
+			ff_identity{200u + static_cast<uint64_t>(attempt), 300u + static_cast<uint64_t>(attempt)},
+			generations);
+		ff_snapshot initial{};
+		if (!await_snapshot(
+			    *owned, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, initial))
+			return 17;
+		std::weak_ptr<faithfulframe_session_executor> lifetime = owned;
+		std::shared_ptr<faithfulframe_session_executor> published = owned;
+		owned.reset();
+
+		std::mutex gate_mutex;
+		std::condition_variable gate_condition;
+		bool command_created = false;
+		bool allow_submission = false;
+		bool command_accepted = true;
+		std::thread delayed_callback([&] {
+			auto callback_owner = std::atomic_load_explicit(&published, std::memory_order_acquire);
+			ff_command delayed_command{FF_COMMAND_ENABLE_AUTO_FOLLOW,
+						   initial.identity,
+						   initial.status_version,
+						   initial.generations,
+						   0,
+						   0};
+			{
+				std::unique_lock<std::mutex> lock(gate_mutex);
+				command_created = true;
+				gate_condition.notify_one();
+				gate_condition.wait(lock, [&] { return allow_submission; });
+			}
+			command_accepted = callback_owner && callback_owner->enqueue_command(1, delayed_command);
+		});
+
+		{
+			std::unique_lock<std::mutex> lock(gate_mutex);
+			gate_condition.wait(lock, [&] { return command_created; });
+		}
+		auto retiring = std::atomic_exchange_explicit(
+			&published, std::shared_ptr<faithfulframe_session_executor>{}, std::memory_order_acq_rel);
+		if (!retiring) {
+			{
+				std::lock_guard<std::mutex> lock(gate_mutex);
+				allow_submission = true;
+			}
+			gate_condition.notify_one();
+			delayed_callback.join();
+			return 18;
+		}
+		retiring->request_shutdown();
+		retiring.reset();
+		{
+			std::lock_guard<std::mutex> lock(gate_mutex);
+			allow_submission = true;
+		}
+		gate_condition.notify_one();
+		delayed_callback.join();
+		if (command_accepted || !lifetime.expired())
+			return 19;
+	}
 	return 0;
 }
 
