@@ -579,6 +579,46 @@ mod tests {
     }
 
     #[test]
+    fn candidate_capacity_outside_the_bounded_contract_is_rejected() {
+        let mut config = FfSessionConfig {
+            loss_grace_ms: 5_000,
+            max_evidence_age_ms: 500,
+            max_candidates: 0,
+            source_width: 3_840,
+            source_height: 2_160,
+            output_width: 1_920,
+            output_height: 1_080,
+            target_coverage: 0.45,
+            min_zoom: 1.0,
+            max_zoom: 4.0,
+            pan_smoothing: 0.25,
+            max_pan_step: 0.08,
+            max_zoom_step: 0.08,
+            dead_zone_fraction: 0.05,
+            zoom_smoothing: 0.25,
+        };
+        let identity = FfIdentity {
+            source: 1,
+            session: 1,
+        };
+        let generations = FfGenerations {
+            source: 1,
+            session: 1,
+            stream: 1,
+            geometry: 1,
+            tracker: 1,
+        };
+        for max_candidates in [0, 9] {
+            config.max_candidates = max_candidates;
+            let mut output = std::ptr::NonNull::<FfSession>::dangling().as_ptr();
+            let result =
+                unsafe { ff_session_create(&config, &identity, &generations, &mut output) };
+            assert_eq!(result, INVALID_ARGUMENT);
+            assert!(output.is_null());
+        }
+    }
+
+    #[test]
     fn malformed_candidate_geometry_reaches_policy_and_keeps_due_deadlines() {
         let config = FfSessionConfig {
             loss_grace_ms: 100,

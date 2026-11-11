@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 pub type Millis = u64;
 pub type CandidateHandle = u64;
 pub type ContinuityToken = u64;
+pub const MAX_SESSION_CANDIDATES: usize = 8;
 
 /// Opaque identities are stable for one adapter/session lifetime. Generation
 /// counters describe changes within those identities and are not substitutes.
@@ -76,6 +77,7 @@ pub enum GeometryError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionConfigError {
     InvalidIdentity,
+    InvalidCandidateCapacity,
     InvalidSafeWide(GeometryError),
     SafeWideMustBeFullFrame,
 }
@@ -302,6 +304,9 @@ impl TrackingSession {
         if identity.source == 0 || identity.session == 0 {
             return Err(SessionConfigError::InvalidIdentity);
         }
+        if config.max_candidates == 0 || config.max_candidates > MAX_SESSION_CANDIDATES {
+            return Err(SessionConfigError::InvalidCandidateCapacity);
+        }
         let safe_wide = Rect::normalized(
             config.safe_wide.x,
             config.safe_wide.y,
@@ -315,7 +320,6 @@ impl TrackingSession {
         Ok(Self {
             config: Config {
                 safe_wide,
-                max_candidates: config.max_candidates.max(1),
                 ..config
             },
             identity,
@@ -2046,6 +2050,24 @@ mod tests {
             ),
             Err(SessionConfigError::InvalidIdentity)
         ));
+    }
+
+    #[test]
+    fn candidate_capacity_must_stay_inside_the_bounded_session_limit() {
+        for max_candidates in [0, MAX_SESSION_CANDIDATES + 1] {
+            let result = TrackingSession::new(
+                Config {
+                    max_candidates,
+                    ..Config::default()
+                },
+                identity(),
+                generations(),
+            );
+            assert!(matches!(
+                result,
+                Err(SessionConfigError::InvalidCandidateCapacity)
+            ));
+        }
     }
 
     #[test]
