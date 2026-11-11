@@ -3,10 +3,19 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <memory>
 #include <mutex>
 #include <thread>
+#include <utility>
+
+struct probe_lifetime_state
+{
+	std::atomic<bool> resource_available{true};
+	std::atomic<bool> accessed_after_release{false};
+};
 
 class probe_detector final : public face_detector_base {
+	std::shared_ptr<probe_lifetime_state> lifetime_state;
 	std::mutex detection_mutex;
 	std::condition_variable detection_condition;
 	bool detecting = false;
@@ -19,6 +28,8 @@ class probe_detector final : public face_detector_base {
 		}
 		detection_condition.notify_all();
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		if (!lifetime_state->resource_available.load(std::memory_order_acquire))
+			lifetime_state->accessed_after_release.store(true, std::memory_order_release);
 		{
 			std::lock_guard<std::mutex> lock(detection_mutex);
 			detecting = false;
@@ -26,6 +37,13 @@ class probe_detector final : public face_detector_base {
 	}
 
 public:
+	explicit probe_detector(std::shared_ptr<probe_lifetime_state> state) : lifetime_state(std::move(state)) {}
+	~probe_detector() override
+	{
+		stop();
+		lifetime_state->resource_available.store(false, std::memory_order_release);
+	}
+
 	void set_texture(std::shared_ptr<texture_object> &, int, int, int, int) override {}
 	void get_faces(std::vector<rect_s> &) override {}
 	bool wait_for_detection()
@@ -61,7 +79,7 @@ static void report_stage(const char *stage)
 
 int main()
 {
-	probe_detector detector;
+	probe_detector detector(std::make_shared<probe_lifetime_state>());
 	report_stage("starting worker");
 	if (!detector.start()) {
 		std::fprintf(stderr, "detector worker did not start\n");
@@ -122,6 +140,27 @@ int main()
 				result = 6;
 			}
 		}
+	}
+
+	report_stage("checking derived-state teardown");
+	auto lifetime_state = std::make_shared<probe_lifetime_state>();
+	{
+		probe_detector teardown_detector(lifetime_state);
+		if (!teardown_detector.start()) {
+			std::fprintf(stderr, "teardown detector did not start\n");
+			result = 7;
+		} else {
+			signal_work(teardown_detector);
+			if (!teardown_detector.wait_for_detection()) {
+				std::fprintf(stderr, "teardown detector did not begin active work\n");
+				result = 8;
+			}
+		}
+	}
+	if (lifetime_state->resource_available.load(std::memory_order_acquire) ||
+	    lifetime_state->accessed_after_release.load(std::memory_order_acquire)) {
+		std::fprintf(stderr, "derived resources were released before active detection stopped\n");
+		result = 9;
 	}
 	return result;
 }

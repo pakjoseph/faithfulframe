@@ -30,6 +30,10 @@ face_detector_dlib_hog::face_detector_dlib_hog()
 
 face_detector_dlib_hog::~face_detector_dlib_hog()
 {
+	// The worker calls detect_main() through this derived object and accesses p.
+	// Stop it before releasing derived state; the base destructor's stop() runs
+	// only after this destructor body has completed.
+	stop();
 	delete p;
 }
 
