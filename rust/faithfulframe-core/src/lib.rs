@@ -600,6 +600,18 @@ impl TrackingSession {
     }
 
     fn apply_lifecycle(&mut self, event: Lifecycle) -> CommandResult {
+        if matches!(
+            event,
+            Lifecycle::GeometryChanged {
+                source_width: 0,
+                ..
+            } | Lifecycle::GeometryChanged {
+                source_height: 0,
+                ..
+            }
+        ) {
+            return self.reject_command(Reason::InvalidLifecycle);
+        }
         let Some(generations) = expected_lifecycle_generations(self.generations, event) else {
             return self.reject_command(Reason::InvalidLifecycle);
         };
@@ -674,6 +686,19 @@ impl TrackingSession {
         snapshot
     }
 
+    fn reject_at(&mut self, at: Millis, reason: Reason) -> Snapshot {
+        if self.closed {
+            return self.reject(Reason::SessionClosed);
+        }
+        if at < self.last_at {
+            return self.reject(Reason::NonMonotonicEvent);
+        }
+        // Invalid event payloads are strict no-ops, but a genuine deadline at
+        // this monotonic time remains an independent authorized transition.
+        self.advance_due_timers(at);
+        self.reject(reason)
+    }
+
     fn fail_closed_framing(&mut self) {
         self.state = State::Manual;
         self.reason = Reason::FramingFailure;
@@ -729,6 +754,7 @@ impl TrackingEngine {
     }
 
     pub fn apply(&mut self, event: Event) -> Snapshot {
+        let at = event_time(event);
         let geometry_update = match event {
             Event::Lifecycle {
                 identity,
@@ -741,13 +767,17 @@ impl TrackingEngine {
                 ..
             } if identity == self.session.identity => {
                 if source_width == 0 || source_height == 0 {
-                    return self.session.reject(Reason::InvalidLifecycle);
+                    let rejected = self.session.reject_at(at, Reason::InvalidLifecycle);
+                    return self.with_frame(rejected);
                 }
                 let mut config = self.framing_config;
                 config.source_aspect = source_width as f32 / source_height as f32;
                 match framing::FramingController::new(config) {
                     Ok(controller) => Some((config, controller)),
-                    Err(_) => return self.session.reject(Reason::InvalidLifecycle),
+                    Err(_) => {
+                        let rejected = self.session.reject_at(at, Reason::InvalidLifecycle);
+                        return self.with_frame(rejected);
+                    }
                 }
             }
             _ => None,
@@ -1972,5 +2002,65 @@ mod tests {
         assert_eq!(after.crop, before.crop);
         assert_eq!(after.viewport, before.viewport);
         assert_eq!(after.status_version, before.status_version);
+    }
+
+    #[test]
+    fn invalid_geometry_event_does_not_suppress_an_independent_loss_deadline() {
+        let mut engine = TrackingEngine::new(
+            Config::default(),
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        engine.apply(Event::Candidate {
+            at: 2,
+            candidate: candidate(10, 100, 1, 2),
+        });
+        let searching = engine.snapshot();
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: searching.identity,
+                status_version: searching.status_version,
+                generations: searching.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: searching.observation_version,
+                },
+            },
+        });
+        let generations_before = locked.generations;
+        let rejected = engine.apply(Event::Lifecycle {
+            at: 5_503,
+            identity: locked.identity,
+            event: Lifecycle::GeometryChanged {
+                generations: generations_after(generations_before, false, false, true, true, true),
+                source_width: 0,
+                source_height: 0,
+            },
+        });
+
+        assert_eq!(
+            rejected.command_result,
+            CommandResult::Rejected(Reason::InvalidLifecycle)
+        );
+        assert_eq!(rejected.state, State::Lost);
+        assert_eq!(rejected.reason, Reason::TargetLossDeadlineExpired);
+        assert_eq!(rejected.selected, None);
+        assert_eq!(rejected.generations, generations_before);
+        assert_eq!(rejected.crop, locked.crop);
+        assert_eq!(rejected.crop_action, CropAction::Hold);
+        assert!(rejected.status_version > locked.status_version);
     }
 }

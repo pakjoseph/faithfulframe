@@ -146,8 +146,15 @@ fn identity(value: FfIdentity) -> Identity {
         session: value.session,
     }
 }
-fn rect(value: FfRect) -> Result<Rect, i32> {
-    Rect::normalized(value.x, value.y, value.width, value.height).map_err(|_| INVALID_ARGUMENT)
+fn rect(value: FfRect) -> Rect {
+    // Preserve raw input so the serialized policy event can reject malformed
+    // geometry after independently advancing any due lifecycle timers.
+    Rect {
+        x: value.x,
+        y: value.y,
+        width: value.width,
+        height: value.height,
+    }
 }
 fn map_state(value: State) -> u32 {
     match value {
@@ -406,10 +413,7 @@ pub unsafe extern "C" fn ff_session_publish_candidate(
             return INVALID_ARGUMENT;
         }
         let input = &*input;
-        let candidate_rect = match rect(input.rect) {
-            Ok(value) => value,
-            Err(error) => return error,
-        };
+        let candidate_rect = rect(input.rect);
         let candidate = Candidate {
             handle: input.handle,
             continuity: input.continuity_token,
@@ -553,6 +557,117 @@ mod tests {
 
         assert_eq!(result, INVALID_ARGUMENT);
         assert!(output.is_null());
+    }
+
+    #[test]
+    fn malformed_candidate_geometry_reaches_policy_and_keeps_due_deadlines() {
+        let config = FfSessionConfig {
+            loss_grace_ms: 100,
+            max_evidence_age_ms: 10,
+            max_candidates: 8,
+            source_width: 3_840,
+            source_height: 2_160,
+            output_width: 1_920,
+            output_height: 1_080,
+            target_coverage: 0.45,
+            min_zoom: 1.0,
+            max_zoom: 4.0,
+            pan_smoothing: 0.25,
+            max_pan_step: 0.08,
+            max_zoom_step: 0.08,
+            dead_zone_fraction: 0.05,
+            zoom_smoothing: 0.25,
+        };
+        let identity = FfIdentity {
+            source: 101,
+            session: 201,
+        };
+        let generations = FfGenerations {
+            source: 1,
+            session: 1,
+            stream: 1,
+            geometry: 1,
+            tracker: 1,
+        };
+        let mut raw_session = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { ff_session_create(&config, &identity, &generations, &mut raw_session) },
+            OK
+        );
+        let session = raw_session;
+        let mut output: FfSnapshot = unsafe { std::mem::zeroed() };
+        let enable = FfCommand {
+            kind: 0,
+            identity,
+            status_version: 0,
+            generations,
+            candidate_handle: 0,
+            observation_version: 0,
+        };
+        assert_eq!(
+            unsafe { ff_session_apply_command(session, 1, &enable, &mut output) },
+            OK
+        );
+        let initial_candidate = FfCandidate {
+            handle: 10,
+            continuity_token: 100,
+            identity,
+            observation_version: 1,
+            generations,
+            observed_at_ms: 2,
+            expires_at_ms: 12,
+            rect: FfRect {
+                x: 0.2,
+                y: 0.2,
+                width: 0.2,
+                height: 0.3,
+            },
+        };
+        assert_eq!(
+            unsafe { ff_session_publish_candidate(session, 2, &initial_candidate, &mut output) },
+            OK
+        );
+        let select = FfCommand {
+            kind: 4,
+            identity,
+            status_version: output.status_version,
+            generations,
+            candidate_handle: initial_candidate.handle,
+            observation_version: initial_candidate.observation_version,
+        };
+        assert_eq!(
+            unsafe { ff_session_apply_command(session, 3, &select, &mut output) },
+            OK
+        );
+        assert_eq!(output.state, 3);
+        let held_crop = output.crop;
+        let mut malformed = initial_candidate;
+        malformed.handle = 11;
+        malformed.observation_version = 2;
+        malformed.observed_at_ms = 113;
+        malformed.expires_at_ms = 123;
+        malformed.rect.x = f32::NAN;
+        assert_eq!(
+            unsafe { ff_session_publish_candidate(session, 113, &malformed, &mut output) },
+            OK
+        );
+
+        assert_eq!(output.command_result, 2);
+        assert_eq!(output.rejection_reason, 4);
+        assert_eq!(output.reason, 7);
+        assert_eq!(output.state, 4);
+        assert_eq!(output.has_selected, 0);
+        assert_eq!(output.crop.x, held_crop.x);
+        assert_eq!(output.crop.y, held_crop.y);
+        assert_eq!(output.crop.width, held_crop.width);
+        assert_eq!(output.crop.height, held_crop.height);
+        assert_eq!(output.generations.source, generations.source);
+        assert_eq!(output.generations.session, generations.session);
+        assert_eq!(output.generations.stream, generations.stream);
+        assert_eq!(output.generations.geometry, generations.geometry);
+        assert_eq!(output.generations.tracker, generations.tracker);
+
+        unsafe { ff_session_destroy(session) };
     }
 
     #[test]
