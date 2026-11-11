@@ -829,43 +829,6 @@ static uint64_t source_monotonic_millis()
 	return os_gettime_ns() / 1000000ULL;
 }
 
-static bool advance_source_generations(uint32_t kind, const ff_generations &current, ff_generations &next)
-{
-	next = current;
-	auto increment = [](uint64_t &value) {
-		if (value == std::numeric_limits<uint64_t>::max())
-			return false;
-		++value;
-		return true;
-	};
-	switch (kind) {
-	case FF_LIFECYCLE_SCENE_INACTIVE:
-	case FF_LIFECYCLE_SCENE_ACTIVE:
-		return increment(next.session) && increment(next.tracker);
-	case FF_LIFECYCLE_CAMERA_DISCONNECTED:
-	case FF_LIFECYCLE_CAMERA_RESTORED:
-		return increment(next.stream) && increment(next.tracker);
-	case FF_LIFECYCLE_SOURCE_REBOUND:
-		return increment(next.source) && increment(next.session) && increment(next.stream) &&
-		       increment(next.geometry) && increment(next.tracker);
-	case FF_LIFECYCLE_GEOMETRY_CHANGED:
-		return increment(next.stream) && increment(next.geometry) && increment(next.tracker);
-	case FF_LIFECYCLE_TRACKER_CHANGED:
-		return increment(next.tracker);
-	case FF_LIFECYCLE_FRAMING_CONFIG_CHANGED:
-		return increment(next.session) && increment(next.geometry) && increment(next.tracker);
-	case FF_LIFECYCLE_CANDIDATE_POLICY_CHANGED:
-	case FF_LIFECYCLE_ADAPTER_DESTROYED:
-		return increment(next.session) && increment(next.tracker);
-	case FF_LIFECYCLE_SOURCE_DESTROYED:
-	case FF_LIFECYCLE_OBS_SHUTDOWN:
-		return increment(next.source) && increment(next.session) && increment(next.stream) &&
-		       increment(next.tracker);
-	default:
-		return false;
-	}
-}
-
 static void find_legacy_tracker_filter(obs_source_t *, obs_source_t *filter, void *param)
 {
 	auto *found = static_cast<bool *>(param);
@@ -893,7 +856,7 @@ static bool enqueue_source_lifecycle(faithfulframe_source_binding *binding, uint
 	event.identity = binding->identity;
 	event.source_width = width;
 	event.source_height = height;
-	if (!advance_source_generations(kind, binding->generations, event.generations)) {
+	if (!faithfulframe_next_lifecycle_generations(kind, binding->generations, event.generations)) {
 		binding->transition_pending.store(true, std::memory_order_release);
 		executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
 		binding->closed.store(true, std::memory_order_release);

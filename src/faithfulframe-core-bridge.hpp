@@ -49,6 +49,10 @@ struct ff_executor_diagnostics
 	uint64_t max_processing_us = 0;
 };
 
+/// Derives the exact next generation vector accepted by the Rust lifecycle
+/// policy. All C++ lifecycle producers use this shared translation.
+bool faithfulframe_next_lifecycle_generations(uint32_t kind, const ff_generations &current, ff_generations &next);
+
 /// Owns one Rust session on a bounded background executor. OBS callbacks only
 /// enqueue copied values; rendering reads a version-consistent snapshot without
 /// waiting for session policy or detection work.

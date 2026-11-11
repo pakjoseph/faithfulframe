@@ -3,6 +3,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <iterator>
 #include <mutex>
 #include <thread>
 
@@ -277,6 +278,77 @@ int run_smoke()
 	    deadline_snapshot.has_selected || deadline_snapshot.crop_action != FF_CROP_HOLD)
 		return 29;
 	deadline_executor.shutdown();
+
+	// Exercise every C++ lifecycle translation against the Rust policy. A
+	// generation-table drift would otherwise leave an adapter transition
+	// pending after Rust rejects the event.
+	struct lifecycle_case
+	{
+		uint32_t kind;
+		ff_generations expected_generations;
+		uint32_t expected_state;
+		bool expected_closed;
+	};
+	const ff_generations initial_generations{1, 1, 1, 1, 1};
+	const lifecycle_case lifecycle_cases[] = {
+		{FF_LIFECYCLE_SCENE_INACTIVE, {1, 2, 1, 1, 2}, FF_STATE_MANUAL, false},
+		{FF_LIFECYCLE_SCENE_ACTIVE, {1, 2, 1, 1, 2}, FF_STATE_MANUAL, false},
+		{FF_LIFECYCLE_CAMERA_DISCONNECTED, {1, 1, 2, 1, 2}, FF_STATE_MANUAL, false},
+		{FF_LIFECYCLE_CAMERA_RESTORED, {1, 1, 2, 1, 2}, FF_STATE_MANUAL, false},
+		{FF_LIFECYCLE_SOURCE_REBOUND, {2, 2, 2, 2, 2}, FF_STATE_MANUAL, true},
+		{FF_LIFECYCLE_GEOMETRY_CHANGED, {1, 1, 2, 2, 2}, FF_STATE_MANUAL, false},
+		{FF_LIFECYCLE_TRACKER_CHANGED, {1, 1, 1, 1, 2}, FF_STATE_LOST, false},
+		{FF_LIFECYCLE_FRAMING_CONFIG_CHANGED, {1, 2, 1, 2, 2}, FF_STATE_MANUAL, true},
+		{FF_LIFECYCLE_CANDIDATE_POLICY_CHANGED, {1, 2, 1, 1, 2}, FF_STATE_MANUAL, true},
+		{FF_LIFECYCLE_ADAPTER_DESTROYED, {1, 2, 1, 1, 2}, FF_STATE_MANUAL, true},
+		{FF_LIFECYCLE_SOURCE_DESTROYED, {2, 2, 2, 1, 2}, FF_STATE_MANUAL, true},
+		{FF_LIFECYCLE_OBS_SHUTDOWN, {2, 2, 2, 1, 2}, FF_STATE_MANUAL, true},
+	};
+	auto same_generations = [](const ff_generations &left, const ff_generations &right) {
+		return left.source == right.source && left.session == right.session && left.stream == right.stream &&
+		       left.geometry == right.geometry && left.tracker == right.tracker;
+	};
+	for (size_t i = 0; i < std::size(lifecycle_cases); ++i) {
+		const auto &test = lifecycle_cases[i];
+		const ff_identity lifecycle_identity{600 + i, 700 + i};
+		faithfulframe_session_executor lifecycle_executor(config, lifecycle_identity, initial_generations);
+		ff_snapshot lifecycle_snapshot{};
+		if (!await_snapshot(
+			    lifecycle_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+			    lifecycle_snapshot))
+			return 30;
+
+		ff_lifecycle lifecycle{};
+		lifecycle.kind = test.kind;
+		lifecycle.identity = lifecycle_identity;
+		if (!faithfulframe_next_lifecycle_generations(test.kind, initial_generations, lifecycle.generations) ||
+		    !same_generations(lifecycle.generations, test.expected_generations))
+			return 31;
+		if (test.kind == FF_LIFECYCLE_GEOMETRY_CHANGED) {
+			lifecycle.source_width = 3840;
+			lifecycle.source_height = 2160;
+		}
+		if (!lifecycle_executor.enqueue_lifecycle(10, lifecycle) ||
+		    !await_snapshot(
+			    lifecycle_executor,
+			    [&test, &same_generations](const ff_snapshot &value) {
+				    return value.state == test.expected_state && value.closed == test.expected_closed &&
+					   same_generations(value.generations, test.expected_generations);
+			    },
+			    lifecycle_snapshot)) {
+			std::fprintf(
+				stderr,
+				"lifecycle case %zu kind=%u actual state=%u closed=%u generations=%llu/%llu/%llu/%llu/%llu\n",
+				i, test.kind, lifecycle_snapshot.state, lifecycle_snapshot.closed,
+				static_cast<unsigned long long>(lifecycle_snapshot.generations.source),
+				static_cast<unsigned long long>(lifecycle_snapshot.generations.session),
+				static_cast<unsigned long long>(lifecycle_snapshot.generations.stream),
+				static_cast<unsigned long long>(lifecycle_snapshot.generations.geometry),
+				static_cast<unsigned long long>(lifecycle_snapshot.generations.tracker));
+			return 32;
+		}
+		lifecycle_executor.shutdown();
+	}
 	return 0;
 }
 

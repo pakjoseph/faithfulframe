@@ -81,7 +81,7 @@ ff_result faithfulframe_core_bridge::lifecycle(uint64_t monotonic_ms, const ff_l
 
 static_assert(std::atomic<uint64_t>::is_always_lock_free, "OBS render snapshots require lock-free 64-bit atomics");
 
-static bool advance_lifecycle_generations(uint32_t kind, const ff_generations &current, ff_generations &next)
+bool faithfulframe_next_lifecycle_generations(uint32_t kind, const ff_generations &current, ff_generations &next)
 {
 	next = current;
 	auto increment = [](uint64_t &value) {
@@ -363,7 +363,7 @@ void faithfulframe_session_executor::run()
 				destroyed.identity = identity;
 				destroyed.source_width = item.lifecycle.source_width;
 				destroyed.source_height = item.lifecycle.source_height;
-				const bool can_advance = advance_lifecycle_generations(
+				const bool can_advance = faithfulframe_next_lifecycle_generations(
 					destroyed.kind, snapshot.generations, destroyed.generations);
 				if (can_advance && bridge.lifecycle(item.monotonic_ms, destroyed, snapshot) == FF_OK) {
 					snapshot.command_result = FF_COMMAND_NOT_APPLICABLE;
