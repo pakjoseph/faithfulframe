@@ -27,8 +27,8 @@ foreach(_entry IN LISTS _minimum_versions)
 	if(_minimum_version VERSION_GREATER FF_DEPLOYMENT_TARGET)
 		message(FATAL_ERROR
 			"FaithfulFrame Rust archive contains an object targeting macOS ${_minimum_version}, "
-			"above the plugin deployment target ${FF_DEPLOYMENT_TARGET}. Use a Rustup-managed "
-			"toolchain or raise CMAKE_OSX_DEPLOYMENT_TARGET before packaging.")
+			"above the plugin deployment target ${FF_DEPLOYMENT_TARGET}. Use the repository-pinned "
+			"Rustup toolchain or raise CMAKE_OSX_DEPLOYMENT_TARGET before packaging.")
 	endif()
 endforeach()
 

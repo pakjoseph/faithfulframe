@@ -39,8 +39,8 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.98.0
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Restore ccache
         id: ccache-cache
@@ -141,8 +141,8 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.98.0
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Setup Environment
         id: setup
@@ -241,7 +241,8 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=$arch \
             -D PKG_SUFFIX=$PKG_SUFFIX \
             -D OBS_BUNDLE_CODESIGN_IDENTITY='${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}' \
-            ${{ steps.obsdeps.outputs.PLUGIN_CMAKE_OPTIONS }}
+            ${{ steps.obsdeps.outputs.PLUGIN_CMAKE_OPTIONS }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
           cmake --build build --config RelWithDebInfo
           ctest --test-dir build --output-on-failure
 
@@ -364,8 +365,8 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.98.0
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Download obs-studio
         id: obsdeps
@@ -442,11 +443,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.98.0
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt
 
       - name: Check Rust formatting
-        run: cargo fmt --manifest-path rust/faithfulframe-core/Cargo.toml -- --check
+        run: |
+          cargo fmt --manifest-path rust/faithfulframe-core/Cargo.toml -- --check
+          cargo fmt --manifest-path rust/faithfulframe-ffi/Cargo.toml -- --check
 
-      - name: Run deterministic core and fixture tests
-        run: cargo test --manifest-path rust/faithfulframe-core/Cargo.toml
+      - name: Run deterministic core, fixture, and FFI tests
+        run: |
+          cargo test --manifest-path rust/faithfulframe-core/Cargo.toml
+          cargo test --manifest-path rust/faithfulframe-ffi/Cargo.toml
