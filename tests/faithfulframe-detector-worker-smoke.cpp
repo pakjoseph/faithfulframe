@@ -1,15 +1,24 @@
 #include "face-detector-base.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <thread>
 
 class probe_detector final : public face_detector_base {
-	void detect_main() override { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+	std::atomic<bool> detecting{false};
+
+	void detect_main() override
+	{
+		detecting.store(true, std::memory_order_release);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		detecting.store(false, std::memory_order_release);
+	}
 
 public:
 	void set_texture(std::shared_ptr<texture_object> &, int, int, int, int) override {}
 	void get_faces(std::vector<rect_s> &) override {}
+	bool is_detecting() const { return detecting.load(std::memory_order_acquire); }
 };
 
 static bool wait_for_runs(const probe_detector &detector, uint32_t expected)
@@ -17,6 +26,17 @@ static bool wait_for_runs(const probe_detector &detector, uint32_t expected)
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
 	while (std::chrono::steady_clock::now() < deadline) {
 		if (detector.completed_work_count() >= expected && detector.last_work_duration_us() >= 3'000)
+			return true;
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	return false;
+}
+
+static bool wait_for_detection(const probe_detector &detector)
+{
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (std::chrono::steady_clock::now() < deadline) {
+		if (detector.is_detecting())
 			return true;
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
@@ -87,11 +107,17 @@ int main()
 			result = 4;
 		} else {
 			signal_work(detector);
-			if (!wait_for_runs(detector, 3)) {
-				std::fprintf(stderr, "restarted detector worker did not process work\n");
+			if (!wait_for_detection(detector)) {
+				std::fprintf(stderr, "restarted detector worker did not begin work\n");
 				result = 5;
 			}
 			detector.stop();
+			const uint64_t completed_at_stop = detector.completed_work_count();
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+			if (completed_at_stop < 3 || detector.completed_work_count() != completed_at_stop) {
+				std::fprintf(stderr, "detector worker did not drain active work before stopping\n");
+				result = 6;
+			}
 		}
 	}
 	return result;
