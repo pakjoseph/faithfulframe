@@ -280,6 +280,10 @@ inline void face_tracker_manager::stage_to_detector()
 {
 	if (!detect || detect->trylock())
 		return;
+	if (!detect->is_idle_locked()) {
+		detect->unlock();
+		return;
+	}
 
 	// get previous results
 	if (detector_in_progress) {

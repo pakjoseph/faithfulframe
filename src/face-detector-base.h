@@ -47,6 +47,8 @@ public:
 		mutex.unlock();
 		return 0;
 	}
+	/// Caller must hold mutex; a queued item is not a completed detector result.
+	bool is_idle_locked() const { return !request_stop && !work_pending; }
 	// Caller must hold mutex; sets the predicate as well as notifying the worker.
 	int signal()
 	{

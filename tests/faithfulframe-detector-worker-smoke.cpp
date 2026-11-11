@@ -152,7 +152,14 @@ int main()
 		report_stage("signaling first work item");
 		detector.hold_next_detection();
 		detector.queue_result_epoch(4);
-		signal_work(detector);
+		detector.lock();
+		detector.signal();
+		const bool pending_reported_idle = detector.is_idle_locked();
+		detector.unlock();
+		if (pending_reported_idle) {
+			std::fprintf(stderr, "queued detector work was reported idle before the worker started\n");
+			result = 11;
+		}
 		const bool detection_started = detector.wait_for_detection();
 		if (!detection_started) {
 			std::fprintf(stderr, "held detector work did not begin\n");
