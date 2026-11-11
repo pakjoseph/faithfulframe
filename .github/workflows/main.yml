@@ -398,9 +398,13 @@ jobs:
           }
 
           cmake -S . -B build ${{ steps.obsdeps.outputs.PLUGIN_CMAKE_OPTIONS_PS }} @CmakeArgs
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE" }
           cmake --build build --config RelWithDebInfo -j 4
+          if ($LASTEXITCODE -ne 0) { throw "CMake build failed with exit code $LASTEXITCODE" }
           ctest --test-dir build -C RelWithDebInfo --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "CTest failed with exit code $LASTEXITCODE" }
           cmake --install build --config RelWithDebInfo --prefix "$(Resolve-Path -Path .)/release"
+          if ($LASTEXITCODE -ne 0) { throw "CMake install failed with exit code $LASTEXITCODE" }
 
       - name: Package plugin
         run: ci/windows/package-windows.cmd ${{ matrix.obs }} ${{ matrix.arch }}
