@@ -104,6 +104,11 @@ pub enum Reason {
     InvalidCommand,
     NonMonotonicEvent,
     InvalidCandidate,
+    StaleLifecycle,
+    InvalidLifecycle,
+    TrackerIdentityExpired,
+    SessionClosing,
+    SessionClosed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -137,13 +142,18 @@ pub struct CommandEnvelope {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Lifecycle {
-    SceneInactive,
-    SceneActive,
-    CameraDisconnected,
-    CameraRestored,
+    SceneInactive { generations: Generations },
+    SceneActive { generations: Generations },
+    CameraDisconnected { generations: Generations },
+    CameraRestored { generations: Generations },
     SourceRebound { generations: Generations },
     GeometryChanged { generations: Generations },
     TrackerChanged { generations: Generations },
+    FramingConfigChanged { generations: Generations },
+    CandidatePolicyChanged { generations: Generations },
+    AdapterDestroyed { generations: Generations },
+    SourceDestroyed { generations: Generations },
+    ObsShutdown { generations: Generations },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -173,6 +183,7 @@ pub enum Event {
     },
     Lifecycle {
         at: Millis,
+        identity: Identity,
         event: Lifecycle,
     },
 }
@@ -196,6 +207,7 @@ pub struct Snapshot {
     pub crop_action: CropAction,
     pub crop: Rect,
     pub loss_deadline: Option<Millis>,
+    pub closed: bool,
     pub command_result: CommandResult,
 }
 
@@ -242,6 +254,7 @@ pub struct TrackingSession {
     status_version: u64,
     observation_version: u64,
     last_at: Millis,
+    closed: bool,
 }
 
 impl TrackingSession {
@@ -279,6 +292,7 @@ impl TrackingSession {
             status_version: 0,
             observation_version: 0,
             last_at: 0,
+            closed: false,
         })
     }
 
@@ -294,12 +308,16 @@ impl TrackingSession {
             crop_action: self.crop_action,
             crop: self.held_crop,
             loss_deadline: self.loss_deadline,
+            closed: self.closed,
             command_result: CommandResult::NotACommand,
         }
     }
 
     pub fn apply(&mut self, event: Event) -> Snapshot {
         let at = event_time(event);
+        if self.closed {
+            return self.reject(Reason::SessionClosed);
+        }
         if at < self.last_at {
             return self.reject(Reason::NonMonotonicEvent);
         }
@@ -316,7 +334,15 @@ impl TrackingSession {
             }
             Event::Candidate { at, candidate } => self.apply_candidate(candidate, at),
             Event::Tick { .. } => self.apply_tick(at),
-            Event::Lifecycle { event, .. } => self.apply_lifecycle(event),
+            Event::Lifecycle {
+                identity, event, ..
+            } => {
+                if identity != self.identity {
+                    self.reject_command(Reason::StaleLifecycle)
+                } else {
+                    self.apply_lifecycle(event)
+                }
+            }
         };
         if !matches!(result, CommandResult::Rejected(_)) {
             self.last_at = at;
@@ -489,31 +515,67 @@ impl TrackingSession {
     }
 
     fn apply_lifecycle(&mut self, event: Lifecycle) -> CommandResult {
-        match event {
-            Lifecycle::SceneInactive | Lifecycle::SceneActive => {
-                self.invalidate_to_manual(self.generations, Reason::LifecycleInvalidated);
-            }
-            Lifecycle::CameraDisconnected | Lifecycle::CameraRestored => {
-                self.invalidate_to_manual(self.generations, Reason::LifecycleInvalidated);
-            }
-            Lifecycle::SourceRebound { generations }
-            | Lifecycle::GeometryChanged { generations }
-            | Lifecycle::TrackerChanged { generations } => {
-                self.invalidate_to_manual(generations, Reason::LifecycleInvalidated);
-            }
-        }
+        let Some(generations) = expected_lifecycle_generations(self.generations, event) else {
+            return self.reject_command(Reason::InvalidLifecycle);
+        };
+        let (reason, state, crop_action, closes_session) = match event {
+            Lifecycle::TrackerChanged { .. } => (
+                Reason::TrackerIdentityExpired,
+                State::Lost,
+                CropAction::Hold,
+                false,
+            ),
+            Lifecycle::SourceRebound { .. }
+            | Lifecycle::FramingConfigChanged { .. }
+            | Lifecycle::CandidatePolicyChanged { .. }
+            | Lifecycle::AdapterDestroyed { .. }
+            | Lifecycle::SourceDestroyed { .. }
+            | Lifecycle::ObsShutdown { .. } => (
+                Reason::SessionClosing,
+                State::Manual,
+                CropAction::Wide,
+                true,
+            ),
+            Lifecycle::SceneInactive { .. }
+            | Lifecycle::SceneActive { .. }
+            | Lifecycle::CameraDisconnected { .. }
+            | Lifecycle::CameraRestored { .. } => (
+                Reason::LifecycleInvalidated,
+                State::Manual,
+                CropAction::Hold,
+                false,
+            ),
+            Lifecycle::GeometryChanged { .. } => (
+                Reason::LifecycleInvalidated,
+                State::Manual,
+                CropAction::Wide,
+                false,
+            ),
+        };
+        self.invalidate_to_state(generations, reason, state, crop_action, closes_session);
         CommandResult::NotACommand
     }
 
-    fn invalidate_to_manual(&mut self, generations: Generations, reason: Reason) {
+    fn invalidate_to_state(
+        &mut self,
+        generations: Generations,
+        reason: Reason,
+        state: State,
+        crop_action: CropAction,
+        closes_session: bool,
+    ) {
         self.generations = generations;
         self.selected = None;
         self.latest.clear();
         self.loss_deadline = None;
-        self.state = State::Manual;
+        self.state = state;
         self.reason = reason;
-        self.held_crop = self.config.safe_wide;
-        self.crop_action = CropAction::Wide;
+        if crop_action == CropAction::Wide {
+            self.held_crop = self.config.safe_wide;
+        }
+        self.crop_action = crop_action;
+        self.observation_version = self.observation_version.saturating_add(1);
+        self.closed = closes_session;
     }
 
     fn reject_command(&self, reason: Reason) -> CommandResult {
@@ -531,6 +593,56 @@ fn event_time(event: Event) -> Millis {
     match event {
         Event::Command { at, .. } | Event::Tick { at } | Event::Lifecycle { at, .. } => at,
         Event::Candidate { at, .. } => at,
+    }
+}
+
+fn expected_lifecycle_generations(current: Generations, event: Lifecycle) -> Option<Generations> {
+    let (source, session, stream, geometry, tracker) = match event {
+        Lifecycle::SceneInactive { .. } | Lifecycle::SceneActive { .. } => {
+            (false, true, false, false, true)
+        }
+        Lifecycle::CameraDisconnected { .. } | Lifecycle::CameraRestored { .. } => {
+            (false, false, true, false, true)
+        }
+        Lifecycle::SourceRebound { .. } => (true, true, true, true, true),
+        Lifecycle::GeometryChanged { .. } => (false, false, true, true, true),
+        Lifecycle::TrackerChanged { .. } => (false, false, false, false, true),
+        Lifecycle::AdapterDestroyed { .. } => (false, true, false, false, true),
+        Lifecycle::FramingConfigChanged { .. } => (false, true, false, true, true),
+        Lifecycle::CandidatePolicyChanged { .. } => (false, true, false, false, true),
+        Lifecycle::SourceDestroyed { .. } | Lifecycle::ObsShutdown { .. } => {
+            (true, true, true, false, true)
+        }
+    };
+    let proposed = match event {
+        Lifecycle::SceneInactive { generations }
+        | Lifecycle::SceneActive { generations }
+        | Lifecycle::CameraDisconnected { generations }
+        | Lifecycle::CameraRestored { generations }
+        | Lifecycle::SourceRebound { generations }
+        | Lifecycle::GeometryChanged { generations }
+        | Lifecycle::TrackerChanged { generations }
+        | Lifecycle::FramingConfigChanged { generations }
+        | Lifecycle::CandidatePolicyChanged { generations }
+        | Lifecycle::AdapterDestroyed { generations }
+        | Lifecycle::SourceDestroyed { generations }
+        | Lifecycle::ObsShutdown { generations } => generations,
+    };
+    let expected = Generations {
+        source: increment_generation(current.source, source)?,
+        session: increment_generation(current.session, session)?,
+        stream: increment_generation(current.stream, stream)?,
+        geometry: increment_generation(current.geometry, geometry)?,
+        tracker: increment_generation(current.tracker, tracker)?,
+    };
+    (proposed == expected).then_some(proposed)
+}
+
+fn increment_generation(value: u64, increment: bool) -> Option<u64> {
+    if increment {
+        value.checked_add(1)
+    } else {
+        Some(value)
     }
 }
 
@@ -600,6 +712,143 @@ mod tests {
             generations(),
         )
         .unwrap()
+    }
+
+    fn generations_after(
+        base: Generations,
+        source: bool,
+        session: bool,
+        stream: bool,
+        geometry: bool,
+        tracker: bool,
+    ) -> Generations {
+        Generations {
+            source: base.source + u64::from(source),
+            session: base.session + u64::from(session),
+            stream: base.stream + u64::from(stream),
+            geometry: base.geometry + u64::from(geometry),
+            tracker: base.tracker + u64::from(tracker),
+        }
+    }
+
+    fn lifecycle_cases() -> Vec<(Lifecycle, State, CropAction, bool)> {
+        let base = generations();
+        vec![
+            (
+                Lifecycle::SceneInactive {
+                    generations: generations_after(base, false, true, false, false, true),
+                },
+                State::Manual,
+                CropAction::Hold,
+                false,
+            ),
+            (
+                Lifecycle::SceneActive {
+                    generations: generations_after(base, false, true, false, false, true),
+                },
+                State::Manual,
+                CropAction::Hold,
+                false,
+            ),
+            (
+                Lifecycle::CameraDisconnected {
+                    generations: generations_after(base, false, false, true, false, true),
+                },
+                State::Manual,
+                CropAction::Hold,
+                false,
+            ),
+            (
+                Lifecycle::CameraRestored {
+                    generations: generations_after(base, false, false, true, false, true),
+                },
+                State::Manual,
+                CropAction::Hold,
+                false,
+            ),
+            (
+                Lifecycle::SourceRebound {
+                    generations: generations_after(base, true, true, true, true, true),
+                },
+                State::Manual,
+                CropAction::Wide,
+                true,
+            ),
+            (
+                Lifecycle::GeometryChanged {
+                    generations: generations_after(base, false, false, true, true, true),
+                },
+                State::Manual,
+                CropAction::Wide,
+                false,
+            ),
+            (
+                Lifecycle::TrackerChanged {
+                    generations: generations_after(base, false, false, false, false, true),
+                },
+                State::Lost,
+                CropAction::Hold,
+                false,
+            ),
+            (
+                Lifecycle::FramingConfigChanged {
+                    generations: generations_after(base, false, true, false, true, true),
+                },
+                State::Manual,
+                CropAction::Wide,
+                true,
+            ),
+            (
+                Lifecycle::CandidatePolicyChanged {
+                    generations: generations_after(base, false, true, false, false, true),
+                },
+                State::Manual,
+                CropAction::Wide,
+                true,
+            ),
+            (
+                Lifecycle::AdapterDestroyed {
+                    generations: generations_after(base, false, true, false, false, true),
+                },
+                State::Manual,
+                CropAction::Wide,
+                true,
+            ),
+            (
+                Lifecycle::SourceDestroyed {
+                    generations: generations_after(base, true, true, true, false, true),
+                },
+                State::Manual,
+                CropAction::Wide,
+                true,
+            ),
+            (
+                Lifecycle::ObsShutdown {
+                    generations: generations_after(base, true, true, true, false, true),
+                },
+                State::Manual,
+                CropAction::Wide,
+                true,
+            ),
+        ]
+    }
+
+    fn lock_test_target(session: &mut TrackingSession) -> Snapshot {
+        send(session, 1, Command::EnableAutoFollow);
+        observe(session, candidate(10, 100, 1, 2), 2);
+        send(
+            session,
+            3,
+            Command::SelectCandidate {
+                handle: 10,
+                observation_version: 1,
+            },
+        )
+    }
+
+    fn assert_policy_no_op(mut actual: Snapshot, expected: Snapshot) {
+        actual.command_result = expected.command_result;
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -728,9 +977,12 @@ mod tests {
             },
         );
         let mut changed = generations();
+        changed.stream += 1;
         changed.geometry += 1;
+        changed.tracker += 1;
         let snapshot = session.apply(Event::Lifecycle {
             at: 4,
+            identity: identity(),
             event: Lifecycle::GeometryChanged {
                 generations: changed,
             },
@@ -739,6 +991,192 @@ mod tests {
         assert_eq!(snapshot.selected, None);
         assert_eq!(snapshot.generations, changed);
         assert_eq!(snapshot.crop_action, CropAction::Wide);
+    }
+
+    #[test]
+    fn lifecycle_generation_matrix_and_recovery_are_exact() {
+        for (index, (event, expected_state, expected_crop_action, closes_session)) in
+            lifecycle_cases().into_iter().enumerate()
+        {
+            let mut session = session();
+            lock_test_target(&mut session);
+            let before = session.snapshot();
+            let after = session.apply(Event::Lifecycle {
+                at: 4,
+                identity: before.identity,
+                event,
+            });
+
+            assert_eq!(
+                after.command_result,
+                CommandResult::NotACommand,
+                "case {index}"
+            );
+            assert_eq!(after.state, expected_state, "case {index}");
+            assert_eq!(
+                after.reason,
+                if closes_session {
+                    Reason::SessionClosing
+                } else if expected_state == State::Lost {
+                    Reason::TrackerIdentityExpired
+                } else {
+                    Reason::LifecycleInvalidated
+                },
+                "case {index}"
+            );
+            assert_eq!(after.selected, None, "case {index}");
+            assert_eq!(after.loss_deadline, None, "case {index}");
+            assert_eq!(after.crop_action, expected_crop_action, "case {index}");
+            assert_eq!(
+                after.crop,
+                if expected_crop_action == CropAction::Wide {
+                    Config::default().safe_wide
+                } else {
+                    before.crop
+                },
+                "case {index}"
+            );
+            assert_eq!(
+                after.generations,
+                match event {
+                    Lifecycle::SceneInactive { generations }
+                    | Lifecycle::SceneActive { generations }
+                    | Lifecycle::CameraDisconnected { generations }
+                    | Lifecycle::CameraRestored { generations }
+                    | Lifecycle::SourceRebound { generations }
+                    | Lifecycle::GeometryChanged { generations }
+                    | Lifecycle::TrackerChanged { generations }
+                    | Lifecycle::FramingConfigChanged { generations }
+                    | Lifecycle::CandidatePolicyChanged { generations }
+                    | Lifecycle::AdapterDestroyed { generations }
+                    | Lifecycle::SourceDestroyed { generations }
+                    | Lifecycle::ObsShutdown { generations } => generations,
+                },
+                "case {index}"
+            );
+            assert_eq!(
+                after.status_version,
+                before.status_version + 1,
+                "case {index}"
+            );
+            assert_eq!(
+                after.observation_version,
+                before.observation_version + 1,
+                "case {index}"
+            );
+            assert_eq!(after.closed, closes_session, "case {index}");
+
+            let mut stale_candidate = candidate(11, 100, 2, 5);
+            stale_candidate.generations = before.generations;
+            let rejected_candidate = observe(&mut session, stale_candidate, 5);
+            assert!(matches!(
+                rejected_candidate.command_result,
+                CommandResult::Rejected(_)
+            ));
+            assert_policy_no_op(rejected_candidate, after);
+
+            let stale_command = session.apply(Event::Command {
+                at: 6,
+                envelope: CommandEnvelope {
+                    identity: before.identity,
+                    status_version: before.status_version,
+                    generations: before.generations,
+                    command: Command::EnableAutoFollow,
+                },
+            });
+            assert_eq!(
+                stale_command.command_result,
+                CommandResult::Rejected(if closes_session {
+                    Reason::SessionClosed
+                } else {
+                    Reason::StaleCommand
+                }),
+                "case {index}"
+            );
+            assert_policy_no_op(stale_command, after);
+        }
+    }
+
+    #[test]
+    fn rapid_scene_inactive_active_cycle_requires_fresh_selection() {
+        let mut session = session();
+        lock_test_target(&mut session);
+        let locked = session.snapshot();
+        let inactive_generations =
+            generations_after(locked.generations, false, true, false, false, true);
+        let inactive = session.apply(Event::Lifecycle {
+            at: 4,
+            identity: locked.identity,
+            event: Lifecycle::SceneInactive {
+                generations: inactive_generations,
+            },
+        });
+        let active_generations =
+            generations_after(inactive.generations, false, true, false, false, true);
+        let active = session.apply(Event::Lifecycle {
+            at: 5,
+            identity: locked.identity,
+            event: Lifecycle::SceneActive {
+                generations: active_generations,
+            },
+        });
+
+        assert_eq!(active.state, State::Manual);
+        assert_eq!(active.selected, None);
+        assert_eq!(active.crop_action, CropAction::Hold);
+        assert_eq!(active.crop, locked.crop);
+        assert_eq!(active.generations.session, locked.generations.session + 2);
+        assert_eq!(active.generations.tracker, locked.generations.tracker + 2);
+
+        let mut late = candidate(11, 100, active.observation_version, 6);
+        late.generations = locked.generations;
+        let rejected_late_result = observe(&mut session, late, 6);
+        assert_eq!(
+            rejected_late_result.command_result,
+            CommandResult::Rejected(Reason::InvalidCandidate)
+        );
+        assert_policy_no_op(rejected_late_result, active);
+
+        let rearmed = send(&mut session, 7, Command::EnableAutoFollow);
+        assert_eq!(rearmed.state, State::Searching);
+        assert_eq!(rearmed.selected, None);
+    }
+
+    #[test]
+    fn mismatched_and_inexact_lifecycle_events_are_strict_no_ops() {
+        let mut session = session();
+        lock_test_target(&mut session);
+        let before = session.snapshot();
+        let expected = generations_after(before.generations, false, true, false, false, true);
+
+        let mismatched_identity = session.apply(Event::Lifecycle {
+            at: 4,
+            identity: Identity {
+                source: before.identity.source + 1,
+                session: before.identity.session,
+            },
+            event: Lifecycle::SceneInactive {
+                generations: expected,
+            },
+        });
+        assert_eq!(
+            mismatched_identity.command_result,
+            CommandResult::Rejected(Reason::StaleLifecycle)
+        );
+        assert_policy_no_op(mismatched_identity, before);
+
+        let inexact_generations = session.apply(Event::Lifecycle {
+            at: 4,
+            identity: before.identity,
+            event: Lifecycle::SceneInactive {
+                generations: before.generations,
+            },
+        });
+        assert_eq!(
+            inexact_generations.command_result,
+            CommandResult::Rejected(Reason::InvalidLifecycle)
+        );
+        assert_policy_no_op(inexact_generations, before);
     }
 
     #[test]
