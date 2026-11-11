@@ -20,6 +20,27 @@ inline bool ff_preview_valid_rect(const ff_rect &rect)
 	       rect.height > 0.0f && rect.x + rect.width <= 1.0f && rect.y + rect.height <= 1.0f;
 }
 
+/// Estimate displayed digital zoom from a source-space crop. Full-source
+/// framing remains 1x even when aspect-fit padding is used.
+inline bool ff_preview_zoom_factor(const ff_rect &crop, uint32_t source_width, uint32_t source_height,
+				   uint32_t output_width, uint32_t output_height, double &zoom)
+{
+	if (!ff_preview_valid_rect(crop) || !source_width || !source_height || !output_width || !output_height)
+		return false;
+	if (crop.x == 0.0f && crop.y == 0.0f && crop.width == 1.0f && crop.height == 1.0f) {
+		zoom = 1.0;
+		return true;
+	}
+	const double source_aspect = static_cast<double>(source_width) / source_height;
+	const double output_aspect = static_cast<double>(output_width) / output_height;
+	const double base_width = std::min(output_aspect / source_aspect, 1.0);
+	const double result = base_width / crop.width;
+	if (!std::isfinite(result) || result < 1.0)
+		return false;
+	zoom = result;
+	return true;
+}
+
 /// Map a normalized source candidate into the displayed output image, clipping
 /// to the source crop and output viewport. All inputs are normalized rectangles.
 inline bool ff_preview_candidate_rect(const ff_rect &crop, const ff_rect &viewport, const ff_rect &candidate,

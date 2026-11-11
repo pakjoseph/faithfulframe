@@ -28,6 +28,13 @@ int main()
 	check(near(x, 0.5) && near(y, 0.5)); // HiDPI-scaled dimensions preserve normalized hit position.
 	check(!ff_preview_widget_point(4.0, 72.0, 400.0, 144.0, 1920, 1080, x, y));  // horizontal letterbox
 	check(!ff_preview_widget_point(128.0, 4.0, 144.0, 256.0, 1920, 1080, x, y)); // vertical letterbox
+	double zoom = 0.0;
+	check(ff_preview_zoom_factor(ff_rect{0.0f, 0.0f, 1.0f, 1.0f}, 3840, 2160, 1280, 960, zoom));
+	check(near(zoom, 1.0)); // Full-source framing remains 1x with aspect-fit padding.
+	check(ff_preview_zoom_factor(ff_rect{0.3125f, 0.359375f, 0.375f, 0.28125f}, 3840, 2160, 1280, 960, zoom));
+	check(near(zoom, 2.0)); // A 4:3 output crop from 16:9 input uses the crop's fit width.
+	check(!ff_preview_zoom_factor(ff_rect{NAN, 0.0f, 0.5f, 0.5f}, 3840, 2160, 1920, 1080, zoom));
+	check(!ff_preview_zoom_factor(ff_rect{0.0f, 0.0f, 1.0f, 1.0f}, 0, 2160, 1920, 1080, zoom));
 
 	const ff_rect crop{0.25f, 0.25f, 0.5f, 0.5f};
 	const ff_rect viewport{0.0f, 0.125f, 1.0f, 0.75f};

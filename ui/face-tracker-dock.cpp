@@ -338,6 +338,15 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 		return "FaithfulFrame safe tracking is unavailable";
 	}
 }
+
+static double safe_preview_zoom(const faithfulframe_safe_preview &preview)
+{
+	double zoom = 1.0;
+	if (!ff_preview_zoom_factor(preview.crop, preview.source_width, preview.source_height, preview.output_width,
+				    preview.output_height, zoom))
+		return 1.0;
+	return zoom;
+}
 #endif
 
 static std::string generate_unique_name()
@@ -805,7 +814,9 @@ void FTDock::updateState()
 	enableButton->setVisible(!safe_mode);
 	notrackButton->setVisible(!safe_mode);
 	if (safe_mode) {
-		safeStatusLabel->setText(safe_state_text(safe_preview));
+		safeStatusLabel->setText(
+			safe_state_text(safe_preview) +
+			QString("\nCurrent zoom: %1×").arg(safe_preview_zoom(safe_preview), 0, 'f', 1));
 		const QString snapshot_age = safe_preview.status_snapshot_age_ms < 0
 						     ? QString("unavailable")
 						     : QString("%1 ms").arg(safe_preview.status_snapshot_age_ms);
