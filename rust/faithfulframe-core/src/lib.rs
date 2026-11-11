@@ -1588,6 +1588,20 @@ mod tests {
     }
 
     #[test]
+    fn active_older_handles_can_update_after_newer_candidates_exist() {
+        let mut session = session();
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
+        observe(&mut session, candidate(11, 110, 2, 3), 3);
+
+        let refreshed = observe(&mut session, candidate(10, 100, 3, 4), 4);
+
+        assert_eq!(refreshed.command_result, CommandResult::NotACommand);
+        assert_eq!(refreshed.observation_version, 3);
+        assert_eq!(session.latest.get(&10).unwrap().observed_at, 4);
+        assert_eq!(session.highest_candidate_handle, 11);
+    }
+
+    #[test]
     fn reset_wide_stops_following_and_requires_explicit_rearm() {
         let mut session = session();
         send(&mut session, 1, Command::EnableAutoFollow);
