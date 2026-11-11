@@ -66,8 +66,7 @@ inline bool ff_preview_candidate_rect(const ff_rect &crop, const ff_rect &viewpo
 /// Use the complete source as the preview image when the monitor displays the
 /// untracked camera feed. Its canvas then has the source's aspect ratio.
 inline bool ff_preview_set_full_source_transform(ff_rect &crop, ff_rect &viewport, uint32_t &output_width,
-						 uint32_t &output_height, uint32_t source_width,
-						 uint32_t source_height)
+						 uint32_t &output_height, uint32_t source_width, uint32_t source_height)
 {
 	if (!source_width || !source_height)
 		return false;
