@@ -56,6 +56,8 @@ public:
 static constexpr uint64_t safe_preview_max_snapshot_age_ms = 500;
 static constexpr uint64_t safe_candidate_max_age_ms = 500;
 
+static void faithfulframe_bound_source_updated(void *data, calldata_t *params);
+
 struct faithfulframe_source_binding
 {
 	struct preview_payload
@@ -79,6 +81,7 @@ struct faithfulframe_source_binding
 	uint64_t observation_version = 0;
 	std::atomic<uint32_t> source_width{0};
 	std::atomic<uint32_t> source_height{0};
+	std::atomic<bool> source_settings_updated{false};
 	std::atomic<uint32_t> output_width{0};
 	std::atomic<uint32_t> output_height{0};
 	std::atomic<uint64_t> detector_last_work_us{0};
@@ -88,11 +91,20 @@ struct faithfulframe_source_binding
 	std::atomic<bool> source_active{false};
 	std::atomic<bool> closed{false};
 	std::atomic<bool> transition_pending{false};
+	// connect_ref keeps the source signal handler alive. Disconnect serializes
+	// with an in-flight callback before this binding can be destroyed.
+	signal_handler_t *target_update_handler = nullptr;
 	std::mutex preview_mutex;
 	preview_payload preview;
 
 	~faithfulframe_source_binding()
 	{
+		closed.store(true, std::memory_order_release);
+		if (target_update_handler) {
+			signal_handler_disconnect(target_update_handler, "update", faithfulframe_bound_source_updated,
+						  this);
+			target_update_handler = nullptr;
+		}
 		render_executor.store(nullptr, std::memory_order_release);
 		auto session = std::atomic_exchange_explicit(
 			&executor, std::shared_ptr<faithfulframe_session_executor>{}, std::memory_order_acq_rel);
@@ -103,6 +115,18 @@ struct faithfulframe_source_binding
 			obs_weak_source_release(target);
 	}
 };
+
+static void faithfulframe_bound_source_updated(void *data, calldata_t *params)
+{
+	UNUSED_PARAMETER(params);
+	auto *binding = static_cast<faithfulframe_source_binding *>(data);
+	if (binding && !binding->closed.load(std::memory_order_acquire)) {
+		// Stop using the previous crop immediately; the serialized session will
+		// invalidate candidates and publish safe framing on the next tick.
+		binding->transition_pending.store(true, std::memory_order_release);
+		binding->source_settings_updated.store(true, std::memory_order_release);
+	}
+}
 
 struct faithfulframe_source_runtime
 {
@@ -1039,6 +1063,10 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	binding->source_height.store(source_height, std::memory_order_release);
 	binding->signal_connected.store(signal_connected, std::memory_order_release);
 	binding->source_active.store(obs_source_active(target), std::memory_order_release);
+	if (signal_handler_t *handler = obs_source_get_signal_handler(target)) {
+		signal_handler_connect_ref(handler, "update", faithfulframe_bound_source_updated, binding.get());
+		binding->target_update_handler = handler;
+	}
 	if (signal_connected)
 		initialize_source_session(s, binding.get(), source_width, source_height);
 	if (!std::atomic_load_explicit(&binding->executor, std::memory_order_acquire) && signal_connected)
@@ -1072,6 +1100,8 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 static void publish_source_candidates(face_tracker_filter *s, faithfulframe_source_binding *binding, uint64_t now)
 {
 	if (!binding || binding->closed.load(std::memory_order_acquire) ||
+	    binding->transition_pending.load(std::memory_order_acquire) ||
+	    binding->source_settings_updated.load(std::memory_order_acquire) ||
 	    !binding->signal_connected.load(std::memory_order_acquire) ||
 	    !binding->source_active.load(std::memory_order_acquire))
 		return;
@@ -1142,6 +1172,8 @@ static void settle_source_transition(faithfulframe_source_binding *binding)
 {
 	if (!binding || !binding->transition_pending.load(std::memory_order_acquire))
 		return;
+	if (binding->source_settings_updated.load(std::memory_order_acquire))
+		return;
 	auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
 	if (!executor)
 		return;
@@ -1211,8 +1243,12 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 
 	const uint32_t prior_source_width = binding->source_width.load(std::memory_order_acquire);
 	const uint32_t prior_source_height = binding->source_height.load(std::memory_order_acquire);
+	const bool settings_updated = connected &&
+				      binding->source_settings_updated.exchange(false, std::memory_order_acq_rel);
+	// Source settings can change orientation or image transforms without changing
+	// dimensions. Invalidate old observations and dlib tracks for either case.
 	if (executor && connected && binding->signal_connected.load(std::memory_order_acquire) &&
-	    (width != prior_source_width || height != prior_source_height)) {
+	    (settings_updated || width != prior_source_width || height != prior_source_height)) {
 		if (enqueue_source_lifecycle(binding, FF_LIFECYCLE_GEOMETRY_CHANGED, now, width, height)) {
 			binding->source_width.store(width, std::memory_order_release);
 			binding->source_height.store(height, std::memory_order_release);
@@ -1639,7 +1675,8 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 	uint64_t displayed_snapshot_at = 0;
 	bool has_displayed_snapshot = false;
 	if (!force_black && binding && !binding->closed.load(std::memory_order_acquire) &&
-	    !binding->transition_pending.load(std::memory_order_acquire)) {
+	    !binding->transition_pending.load(std::memory_order_acquire) &&
+	    !binding->source_settings_updated.load(std::memory_order_acquire)) {
 		auto *executor = binding->render_executor.load(std::memory_order_acquire);
 		const uint64_t now = source_monotonic_millis();
 		if (executor && executor->try_snapshot(displayed_snapshot, &displayed_snapshot_at) &&
@@ -1650,7 +1687,9 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 			const bool selected_crop =
 				displayed_snapshot.crop_action != FF_CROP_TRACK ||
 				(displayed_snapshot.state == FF_STATE_LOCKED && displayed_snapshot.has_selected);
-			if (!force_wide && selected_crop && valid_normalized_rect(displayed_snapshot.crop) &&
+			if (!force_wide && !binding->transition_pending.load(std::memory_order_acquire) &&
+			    !binding->source_settings_updated.load(std::memory_order_acquire) && selected_crop &&
+			    valid_normalized_rect(displayed_snapshot.crop) &&
 			    valid_normalized_rect(displayed_snapshot.viewport)) {
 				crop = displayed_snapshot.crop;
 				viewport = displayed_snapshot.viewport;
@@ -2278,7 +2317,9 @@ static bool enqueue_safe_operator_command(face_tracker_filter *s, uint32_t kind)
 	auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
 	auto executor = binding ? std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)
 				: std::shared_ptr<faithfulframe_session_executor>{};
-	if (!binding || !executor || binding->closed.load(std::memory_order_acquire))
+	if (!binding || !executor || binding->closed.load(std::memory_order_acquire) ||
+	    binding->transition_pending.load(std::memory_order_acquire) ||
+	    binding->source_settings_updated.load(std::memory_order_acquire))
 		return false;
 	ff_snapshot snapshot{};
 	if (!executor->try_snapshot(snapshot) || snapshot.closed ||
@@ -2304,7 +2345,9 @@ static void cb_faithfulframe_command(void *data, calldata_t *cd)
 	auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
 	auto executor = binding ? std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)
 				: std::shared_ptr<faithfulframe_session_executor>{};
-	if (!binding || !executor || binding->closed.load(std::memory_order_acquire))
+	if (!binding || !executor || binding->closed.load(std::memory_order_acquire) ||
+	    binding->transition_pending.load(std::memory_order_acquire) ||
+	    binding->source_settings_updated.load(std::memory_order_acquire))
 		return;
 
 	uint64_t kind = 0, source_id = 0, session_id = 0, status_version = 0;
