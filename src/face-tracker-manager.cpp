@@ -310,7 +310,7 @@ inline void face_tracker_manager::stage_to_detector()
 		detector_in_progress = true;
 		detect_tick = tick_cnt;
 
-		struct tracker_inst_s t{};
+		auto t = tracker_inst_s{};
 		t.observed_at_ms = 0;
 		t.rect = rect_s{0, 0, 0, 0, 0.0f};
 		t.crop_rect = rectf_s{0.0f, 0.0f, 0.0f, 0.0f};
