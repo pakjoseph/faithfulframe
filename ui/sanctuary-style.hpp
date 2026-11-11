@@ -33,6 +33,7 @@ struct colors
 	QColor border;
 	QColor focus;
 	QColor accent;
+	QColor accent_text;
 	QColor success;
 	QColor warning;
 	QColor danger;
