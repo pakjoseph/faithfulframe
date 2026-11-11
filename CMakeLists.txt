@@ -181,6 +181,7 @@ target_link_libraries(${PROJECT_NAME}
 
 if (ENABLE_RUST_CORE_BRIDGE)
 	add_dependencies(${PROJECT_NAME} faithfulframe-rust-ffi-build)
+	target_compile_definitions(${PROJECT_NAME} PRIVATE ENABLE_RUST_CORE_BRIDGE=1)
 	target_include_directories(${PROJECT_NAME} PRIVATE src rust/faithfulframe-ffi/include)
 	target_link_libraries(${PROJECT_NAME} faithfulframe-rust-ffi)
 	if (UNIX AND NOT APPLE)

@@ -53,7 +53,8 @@ public:
 	bool enqueue_lifecycle(uint64_t monotonic_ms, const ff_lifecycle &lifecycle);
 	bool try_snapshot(ff_snapshot &output, uint64_t *published_at_ms = nullptr) const;
 	const ff_identity &binding_identity() const { return identity; }
-	void shutdown();
+	void shutdown(uint32_t terminal_lifecycle_kind = FF_LIFECYCLE_ADAPTER_DESTROYED, uint32_t source_width = 0,
+		      uint32_t source_height = 0);
 
 private:
 	enum class work_kind : uint8_t { tick, candidates, command, lifecycle, stop };

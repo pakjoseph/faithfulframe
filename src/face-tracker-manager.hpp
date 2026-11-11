@@ -1,6 +1,7 @@
 #pragma once
 
 #include <deque>
+#include <cstdint>
 #include <string>
 #include "face-tracker-base.h"
 
@@ -14,6 +15,8 @@ public:
 
 	struct tracker_rect_s
 	{
+		uint64_t candidate_handle;
+		uint64_t continuity_token;
 		rect_s rect;
 		rectf_s crop_rect;
 		std::vector<pointf_s> landmark;
@@ -21,6 +24,8 @@ public:
 
 	struct tracker_inst_s
 	{
+		uint64_t candidate_handle;
+		uint64_t continuity_token;
 		class face_tracker_base *tracker;
 		rect_s rect;
 		rectf_s crop_tracker; // crop corresponding to current processing image
@@ -65,6 +70,7 @@ public: /* not sure they are necessary to be public */
 	// TODO: Just have two pairs
 	std::deque<struct tracker_inst_s> trackers;
 	std::deque<struct tracker_inst_s> trackers_idlepool;
+	uint64_t next_candidate_handle;
 
 private:
 	int next_tick_stage_to_detector;
@@ -91,4 +97,5 @@ private:
 	void stage_to_detector();
 	int stage_surface_to_tracker(struct tracker_inst_s &t);
 	void stage_to_trackers();
+	uint64_t allocate_candidate_handle();
 };

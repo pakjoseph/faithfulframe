@@ -65,6 +65,43 @@ ff_result faithfulframe_core_bridge::lifecycle(uint64_t monotonic_ms, const ff_l
 
 static_assert(std::atomic<uint64_t>::is_always_lock_free, "OBS render snapshots require lock-free 64-bit atomics");
 
+static bool advance_lifecycle_generations(uint32_t kind, const ff_generations &current, ff_generations &next)
+{
+	next = current;
+	auto increment = [](uint64_t &value) {
+		if (value == std::numeric_limits<uint64_t>::max())
+			return false;
+		++value;
+		return true;
+	};
+	switch (kind) {
+	case FF_LIFECYCLE_SCENE_INACTIVE:
+	case FF_LIFECYCLE_SCENE_ACTIVE:
+		return increment(next.session) && increment(next.tracker);
+	case FF_LIFECYCLE_CAMERA_DISCONNECTED:
+	case FF_LIFECYCLE_CAMERA_RESTORED:
+		return increment(next.stream) && increment(next.tracker);
+	case FF_LIFECYCLE_SOURCE_REBOUND:
+		return increment(next.source) && increment(next.session) && increment(next.stream) &&
+		       increment(next.geometry) && increment(next.tracker);
+	case FF_LIFECYCLE_GEOMETRY_CHANGED:
+		return increment(next.stream) && increment(next.geometry) && increment(next.tracker);
+	case FF_LIFECYCLE_TRACKER_CHANGED:
+		return increment(next.tracker);
+	case FF_LIFECYCLE_FRAMING_CONFIG_CHANGED:
+		return increment(next.session) && increment(next.geometry) && increment(next.tracker);
+	case FF_LIFECYCLE_CANDIDATE_POLICY_CHANGED:
+	case FF_LIFECYCLE_ADAPTER_DESTROYED:
+		return increment(next.session) && increment(next.tracker);
+	case FF_LIFECYCLE_SOURCE_DESTROYED:
+	case FF_LIFECYCLE_OBS_SHUTDOWN:
+		return increment(next.source) && increment(next.session) && increment(next.stream) &&
+		       increment(next.tracker);
+	default:
+		return false;
+	}
+}
+
 faithfulframe_session_executor::faithfulframe_session_executor(const ff_session_config &config_,
 							       const ff_identity &identity_,
 							       const ff_generations &generations)
@@ -162,7 +199,8 @@ bool faithfulframe_session_executor::try_snapshot(ff_snapshot &output, uint64_t 
 	return worker_started.load(std::memory_order_acquire) && !closing_requested.load(std::memory_order_acquire);
 }
 
-void faithfulframe_session_executor::shutdown()
+void faithfulframe_session_executor::shutdown(uint32_t terminal_lifecycle_kind, uint32_t source_width,
+					      uint32_t source_height)
 {
 	std::lock_guard<std::mutex> shutdown_lock(shutdown_mutex);
 	closing_requested.store(true, std::memory_order_release);
@@ -176,6 +214,9 @@ void faithfulframe_session_executor::shutdown()
 		if (worker_started.load(std::memory_order_acquire)) {
 			work_item stop;
 			stop.kind = work_kind::stop;
+			stop.lifecycle.kind = terminal_lifecycle_kind;
+			stop.lifecycle.source_width = source_width;
+			stop.lifecycle.source_height = source_height;
 			stop.monotonic_ms = last_submitted_ms == std::numeric_limits<uint64_t>::max()
 						    ? last_submitted_ms
 						    : last_submitted_ms + 1;
@@ -237,6 +278,9 @@ void faithfulframe_session_executor::run()
 			return;
 		}
 		published.publish(snapshot, 0);
+		uint64_t command_message_expires_at = 0;
+		uint32_t last_command_result = FF_COMMAND_NOT_APPLICABLE;
+		uint32_t last_rejection = FF_REJECTION_NONE;
 
 		for (;;) {
 			work_item item;
@@ -252,17 +296,16 @@ void faithfulframe_session_executor::run()
 
 			if (item.kind == work_kind::stop) {
 				ff_lifecycle destroyed{};
-				destroyed.kind = FF_LIFECYCLE_ADAPTER_DESTROYED;
+				destroyed.kind = item.lifecycle.kind;
 				destroyed.identity = identity;
-				destroyed.generations = snapshot.generations;
-				const bool can_advance =
-					destroyed.generations.session != std::numeric_limits<uint64_t>::max() &&
-					destroyed.generations.tracker != std::numeric_limits<uint64_t>::max();
-				if (can_advance) {
-					++destroyed.generations.session;
-					++destroyed.generations.tracker;
-					if (bridge.lifecycle(item.monotonic_ms, destroyed, snapshot) == FF_OK)
-						published.publish(snapshot, item.monotonic_ms);
+				destroyed.source_width = item.lifecycle.source_width;
+				destroyed.source_height = item.lifecycle.source_height;
+				const bool can_advance = advance_lifecycle_generations(
+					destroyed.kind, snapshot.generations, destroyed.generations);
+				if (can_advance && bridge.lifecycle(item.monotonic_ms, destroyed, snapshot) == FF_OK) {
+					snapshot.command_result = FF_COMMAND_NOT_APPLICABLE;
+					snapshot.rejection_reason = FF_REJECTION_NONE;
+					published.publish(snapshot, item.monotonic_ms);
 				}
 				break;
 			}
@@ -286,8 +329,37 @@ void faithfulframe_session_executor::run()
 			case work_kind::stop:
 				break;
 			}
-			if (call_result == FF_OK)
+			if (call_result == FF_OK) {
+				if (item.kind == work_kind::command &&
+				    snapshot.command_result != FF_COMMAND_NOT_APPLICABLE) {
+					last_command_result = snapshot.command_result;
+					last_rejection = snapshot.command_result == FF_COMMAND_REJECTED
+								 ? snapshot.rejection_reason
+								 : FF_REJECTION_NONE;
+					const uint64_t lifetime = snapshot.command_result == FF_COMMAND_REJECTED ? 2000
+														 : 500;
+					command_message_expires_at =
+						item.monotonic_ms > std::numeric_limits<uint64_t>::max() - lifetime
+							? std::numeric_limits<uint64_t>::max()
+							: item.monotonic_ms + lifetime;
+				} else if (item.kind == work_kind::command || item.kind == work_kind::lifecycle) {
+					last_command_result = FF_COMMAND_NOT_APPLICABLE;
+					last_rejection = FF_REJECTION_NONE;
+					command_message_expires_at = 0;
+				}
+				if (last_command_result != FF_COMMAND_NOT_APPLICABLE &&
+				    item.monotonic_ms < command_message_expires_at) {
+					snapshot.command_result = last_command_result;
+					snapshot.rejection_reason = last_rejection;
+				} else {
+					last_command_result = FF_COMMAND_NOT_APPLICABLE;
+					last_rejection = FF_REJECTION_NONE;
+					command_message_expires_at = 0;
+					snapshot.command_result = FF_COMMAND_NOT_APPLICABLE;
+					snapshot.rejection_reason = FF_REJECTION_NONE;
+				}
 				published.publish(snapshot, item.monotonic_ms);
+			}
 		}
 	} catch (...) {
 		// Never allow a C++ exception to escape the worker entry point.

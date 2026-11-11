@@ -74,11 +74,25 @@ int main()
 	    snapshot.crop.y != locked.crop.y || snapshot.crop.width != locked.crop.width ||
 	    snapshot.crop.height != locked.crop.height)
 		return 6;
+	const uint64_t rejected_status_version = snapshot.status_version;
+	if (!executor.enqueue_tick(6) ||
+	    !await_snapshot(
+		    executor,
+		    [rejected_status_version](const ff_snapshot &value) {
+			    return value.status_version > rejected_status_version &&
+				   value.command_result == FF_COMMAND_REJECTED &&
+				   value.rejection_reason == FF_REJECTION_STALE_COMMAND;
+		    },
+		    snapshot) ||
+	    snapshot.state != locked.state || snapshot.selected_handle != locked.selected_handle ||
+	    snapshot.crop.x != locked.crop.x || snapshot.crop.y != locked.crop.y ||
+	    snapshot.crop.width != locked.crop.width || snapshot.crop.height != locked.crop.height)
+		return 7;
 
 	executor.shutdown();
 	if (!executor.try_snapshot(snapshot) || !snapshot.closed || snapshot.state != FF_STATE_MANUAL ||
 	    snapshot.has_selected)
-		return 7;
+		return 8;
 
 	// Teardown drops queued detector and operator work, then publishes only the
 	// worker-owned destruction transition.
@@ -86,14 +100,22 @@ int main()
 	ff_snapshot queued_snapshot{};
 	const ff_command queued_enable{FF_COMMAND_ENABLE_AUTO_FOLLOW, ff_identity{102, 202}, 0, generations, 0, 0};
 	if (!queued.enqueue_command(20, queued_enable))
-		return 8;
+		return 9;
 	const ff_candidate queued_candidate{23, 1002, ff_identity{102, 202},   1, generations,
 					    21, 500,  {0.3f, 0.2f, 0.2f, 0.3f}};
 	if (!queued.enqueue_candidates(21, &queued_candidate, 1))
-		return 9;
-	queued.shutdown();
-	if (!queued.try_snapshot(queued_snapshot) || !queued_snapshot.closed || queued_snapshot.has_selected ||
-	    queued_snapshot.crop_action != FF_CROP_WIDE)
 		return 10;
+	const ff_command stale_dock_command{FF_COMMAND_SELECT_CANDIDATE, ff_identity{102, 202}, 0, generations, 23, 1};
+	if (!queued.enqueue_command(21, stale_dock_command))
+		return 11;
+	queued.shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+	if (!queued.try_snapshot(queued_snapshot) || !queued_snapshot.closed || queued_snapshot.has_selected ||
+	    queued_snapshot.state != FF_STATE_MANUAL || queued_snapshot.crop_action != FF_CROP_WIDE)
+		return 12;
+	if (queued_snapshot.generations.source != 2 || queued_snapshot.generations.session != 2 ||
+	    queued_snapshot.generations.stream != 2 || queued_snapshot.generations.geometry != 1 ||
+	    queued_snapshot.generations.tracker != 2 || queued.enqueue_tick(22) ||
+	    queued.enqueue_candidates(22, &queued_candidate, 1))
+		return 13;
 	return 0;
 }

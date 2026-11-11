@@ -6,12 +6,24 @@
 #include "plugin-macros.generated.h"
 #include "texture-object.h"
 #include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <new>
+#include <string>
+#include <thread>
+#include <vector>
 #include <graphics/matrix4.h>
 #include "helper.hpp"
 #include "face-tracker.hpp"
 #include "face-tracker-preset.h"
 #include "face-tracker-manager.hpp"
 #include "source_list.h"
+#ifdef ENABLE_RUST_CORE_BRIDGE
+#include "faithfulframe-core-bridge.hpp"
+#endif
 
 static inline void scale_texture(struct face_tracker_filter *s, float scale);
 static inline int stage_to_surface(struct face_tracker_filter *s, float scale);
@@ -38,6 +50,84 @@ public:
 		return surface_to_cvtex(ctx, scale);
 	};
 };
+
+#ifdef ENABLE_RUST_CORE_BRIDGE
+struct faithfulframe_source_binding
+{
+	struct preview_payload
+	{
+		ff_identity identity{};
+		ff_generations generations{};
+		uint64_t observation_version = 0;
+		uint64_t published_at_ms = 0;
+		size_t candidate_count = 0;
+		std::array<ff_candidate, faithfulframe_session_executor::max_candidates> candidates{};
+	};
+
+	obs_weak_source_t *target = nullptr;
+	std::string target_name;
+	std::atomic<faithfulframe_session_executor *> executor{nullptr};
+	ff_identity identity{};
+	ff_generations generations{1, 1, 1, 1, 1};
+	uint64_t observation_version = 0;
+	std::atomic<uint32_t> source_width{0};
+	std::atomic<uint32_t> source_height{0};
+	std::atomic<uint32_t> output_width{0};
+	std::atomic<uint32_t> output_height{0};
+	std::atomic<bool> signal_connected{false};
+	std::atomic<bool> source_active{false};
+	std::atomic<bool> closed{false};
+	std::atomic<bool> transition_pending{false};
+	std::mutex preview_mutex;
+	preview_payload preview;
+
+	~faithfulframe_source_binding()
+	{
+		if (auto *session = executor.exchange(nullptr, std::memory_order_acq_rel)) {
+			session->shutdown();
+			delete session;
+		}
+		if (target)
+			obs_weak_source_release(target);
+	}
+};
+
+struct faithfulframe_source_runtime
+{
+	std::atomic<bool> enabled{false};
+	std::atomic<bool> reconfiguration_pending{false};
+	std::mutex configuration_mutex;
+	std::string requested_target_name;
+	std::atomic<uint64_t> configuration_version{0};
+	std::atomic<uint64_t> tracker_configuration_version{0};
+	std::atomic<uint32_t> last_output_width{0};
+	std::atomic<uint32_t> last_output_height{0};
+	std::mutex pending_settings_mutex;
+	obs_data_t *pending_settings = nullptr;
+	uint64_t processed_configuration_version = 0;
+	uint64_t processed_tracker_configuration_version = 0;
+	std::atomic<faithfulframe_source_binding *> active{nullptr};
+	std::vector<std::unique_ptr<faithfulframe_source_binding>> bindings;
+
+	~faithfulframe_source_runtime()
+	{
+		if (pending_settings)
+			obs_data_release(pending_settings);
+	}
+};
+
+static std::atomic<uint64_t> faithfulframe_next_identity{1};
+
+static uint64_t allocate_faithfulframe_identity()
+{
+	uint64_t value = faithfulframe_next_identity.load(std::memory_order_relaxed);
+	while (value < static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+		if (faithfulframe_next_identity.compare_exchange_weak(value, value + 1, std::memory_order_relaxed))
+			return value;
+	}
+	return 0;
+}
+#endif
 
 static const char *ftf_get_name(void *unused)
 {
@@ -98,12 +188,48 @@ static void ftf_update(void *data, obs_data_t *settings)
 static void fts_update(void *data, obs_data_t *settings)
 {
 	auto *s = (struct face_tracker_filter *)data;
-	ftf_update(data, settings);
+	bool defer_tracker_update = false;
 
 	const char *target_name = obs_data_get_string(settings, "target_name");
-	if (target_name && *target_name) {
+	const std::string requested_name = target_name ? target_name : "";
+	bool binding_changed = false;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime) {
+		{
+			std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
+			binding_changed = s->safe_runtime->requested_target_name != requested_name;
+			s->safe_runtime->requested_target_name = requested_name;
+		}
+		const bool enabled = obs_data_get_bool(settings, "safe_tracking_enabled");
+		const bool was_enabled = s->safe_runtime->enabled.exchange(enabled, std::memory_order_acq_rel);
+		defer_tracker_update = enabled || was_enabled;
+		if (binding_changed || was_enabled != enabled) {
+			s->safe_runtime->reconfiguration_pending.store(true, std::memory_order_release);
+			s->safe_runtime->configuration_version.fetch_add(1, std::memory_order_release);
+		} else {
+			s->safe_runtime->tracker_configuration_version.fetch_add(1, std::memory_order_release);
+			if (auto *binding = s->safe_runtime->active.load(std::memory_order_acquire))
+				binding->transition_pending.store(true, std::memory_order_release);
+		}
+		if (defer_tracker_update) {
+			obs_data_addref(settings);
+			obs_data_t *previous = nullptr;
+			{
+				std::lock_guard<std::mutex> lock(s->safe_runtime->pending_settings_mutex);
+				previous = s->safe_runtime->pending_settings;
+				s->safe_runtime->pending_settings = settings;
+			}
+			if (previous)
+				obs_data_release(previous);
+		}
+	}
+#endif
+	if (!defer_tracker_update)
+		ftf_update(data, settings);
+	const char *current_name = s->target_name ? s->target_name : "";
+	if (strcmp(current_name, requested_name.c_str()) != 0) {
 		bfree(s->target_name);
-		s->target_name = bstrdup(target_name);
+		s->target_name = requested_name.empty() ? nullptr : bstrdup(requested_name.c_str());
 	}
 }
 
@@ -112,12 +238,28 @@ static void cb_render_info(void *data, calldata_t *cd);
 static void cb_get_target_size(void *data, calldata_t *cd);
 static void cb_get_state(void *data, calldata_t *cd);
 static void cb_set_state(void *data, calldata_t *cd);
+#ifdef ENABLE_RUST_CORE_BRIDGE
+static void cb_get_faithfulframe_preview(void *data, calldata_t *cd);
+static void cb_faithfulframe_command(void *data, calldata_t *cd);
+static bool enqueue_safe_operator_command(struct face_tracker_filter *s, uint32_t kind);
+#endif
 static const char *ftptz_signals[] = {"void state_changed()", NULL};
 static void emit_state_changed(struct face_tracker_filter *);
 
-static void *ftf_create(obs_data_t *settings, obs_source_t *context)
+static void *ftf_create_internal(obs_data_t *settings, obs_source_t *context, bool source_adapter)
 {
 	auto *s = (struct face_tracker_filter *)bzalloc(sizeof(struct face_tracker_filter));
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (source_adapter) {
+		s->safe_runtime = new (std::nothrow) faithfulframe_source_runtime();
+		if (!s->safe_runtime) {
+			bfree(s);
+			return nullptr;
+		}
+	}
+#else
+	UNUSED_PARAMETER(source_adapter);
+#endif
 	s->ftm = new ft_manager_for_ftf(s);
 	s->ftm->crop_cur.x1 = s->ftm->crop_cur.y1 = -2;
 	s->context = context;
@@ -133,6 +275,15 @@ static void *ftf_create(obs_data_t *settings, obs_source_t *context)
 	proc_handler_add(ph, "void get_target_size(out int width, out int height)", cb_get_target_size, s);
 	proc_handler_add(ph, "void get_state()", cb_get_state, s);
 	proc_handler_add(ph, "void set_state()", cb_set_state, s);
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	proc_handler_add(ph, "void get_faithfulframe_preview()", cb_get_faithfulframe_preview, s);
+	proc_handler_add(
+		ph,
+		"void faithfulframe_command(int kind, int source_id, int session_id, int status_version, "
+		"int source_generation, int session_generation, int stream_generation, int geometry_generation, "
+		"int tracker_generation, int candidate_handle, int observation_version)",
+		cb_faithfulframe_command, s);
+#endif
 
 	signal_handler_t *sh = obs_source_get_signal_handler(context);
 	signal_handler_add_array(sh, ftptz_signals);
@@ -140,11 +291,18 @@ static void *ftf_create(obs_data_t *settings, obs_source_t *context)
 	return s;
 }
 
+static void *ftf_create(obs_data_t *settings, obs_source_t *context)
+{
+	return ftf_create_internal(settings, context, false);
+}
+
 static void register_hotkeys(struct face_tracker_filter *s, obs_source_t *target);
 
 static void *fts_create(obs_data_t *settings, obs_source_t *context)
 {
-	auto *s = (struct face_tracker_filter *)ftf_create(settings, context);
+	auto *s = (struct face_tracker_filter *)ftf_create_internal(settings, context, true);
+	if (!s)
+		return nullptr;
 
 	register_hotkeys(s, context);
 
@@ -154,6 +312,11 @@ static void *fts_create(obs_data_t *settings, obs_source_t *context)
 static void ftf_destroy(void *data)
 {
 	auto *s = (struct face_tracker_filter *)data;
+
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	delete s->safe_runtime;
+	s->safe_runtime = nullptr;
+#endif
 
 	if (s->hotkey_pause != OBS_INVALID_HOTKEY_PAIR_ID)
 		obs_hotkey_pair_unregister(s->hotkey_pause);
@@ -189,6 +352,10 @@ static void ftf_destroy(void *data)
 static bool ftf_reset_tracking(obs_properties_t *, obs_property_t *, void *data)
 {
 	auto *s = (struct face_tracker_filter *)data;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire))
+		return true;
+#endif
 
 	float w = s->known_width;
 	float h = s->known_height;
@@ -309,6 +476,10 @@ static obs_properties_t *fts_properties(void *data)
 
 	obs_properties_add_group(props, "input", obs_module_text("Input"), OBS_GROUP_NORMAL, pp);
 
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	obs_properties_add_bool(props, "safe_tracking_enabled", "Use FaithfulFrame safe tracking (experimental)");
+#endif
+
 	return props;
 }
 
@@ -331,6 +502,14 @@ static void ftf_get_defaults(obs_data_t *settings)
 	obs_data_t *presets = obs_data_create();
 	obs_data_set_default_obj(settings, "presets", presets);
 	obs_data_release(presets);
+}
+
+static void fts_get_defaults(obs_data_t *settings)
+{
+	ftf_get_defaults(settings);
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	obs_data_set_default_bool(settings, "safe_tracking_enabled", false);
+#endif
 }
 
 static void tick_filter(struct face_tracker_filter *s, float second)
@@ -406,6 +585,10 @@ static void ftf_deactivate(void *data)
 	auto *s = (struct face_tracker_filter *)data;
 	s->is_active = false;
 
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire))
+		return;
+#endif
 	if (s->inactive_reset) {
 		ftf_reset_tracking(nullptr, nullptr, data);
 		s->ftm->crop_cur = f3_to_rectf(s->filter_int_out, s->width_with_aspect, s->height_with_aspect);
@@ -435,6 +618,12 @@ static bool hotkey_cb_pause(void *data, obs_hotkey_pair_id id, obs_hotkey_t *hot
 	auto *s = (struct face_tracker_filter *)data;
 	if (!pressed)
 		return false;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+		enqueue_safe_operator_command(s, FF_COMMAND_FREEZE);
+		return true;
+	}
+#endif
 	if (s->is_paused)
 		return false;
 	s->is_paused = true;
@@ -449,6 +638,12 @@ static bool hotkey_cb_pause_resume(void *data, obs_hotkey_pair_id id, obs_hotkey
 	auto *s = (struct face_tracker_filter *)data;
 	if (!pressed)
 		return false;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+		enqueue_safe_operator_command(s, FF_COMMAND_RESUME);
+		return true;
+	}
+#endif
 	if (!s->is_paused)
 		return false;
 	s->is_paused = false;
@@ -460,8 +655,16 @@ static void hotkey_cb_reset(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, 
 {
 	UNUSED_PARAMETER(id);
 	UNUSED_PARAMETER(hotkey);
-	if (pressed)
+	if (pressed) {
+#ifdef ENABLE_RUST_CORE_BRIDGE
+		auto *s = static_cast<face_tracker_filter *>(data);
+		if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+			enqueue_safe_operator_command(s, FF_COMMAND_RESET_TO_WIDE);
+			return;
+		}
+#endif
 		ftf_reset_tracking(NULL, NULL, data);
+	}
 }
 
 static void register_hotkeys(struct face_tracker_filter *s, obs_source_t *target)
@@ -543,6 +746,416 @@ static void ftf_tick(void *data, float second)
 	ft_tick_internal(s, second, was_rendered);
 }
 
+#ifdef ENABLE_RUST_CORE_BRIDGE
+static uint64_t source_monotonic_millis()
+{
+	return os_gettime_ns() / 1000000ULL;
+}
+
+static bool advance_source_generations(uint32_t kind, const ff_generations &current, ff_generations &next)
+{
+	next = current;
+	auto increment = [](uint64_t &value) {
+		if (value == std::numeric_limits<uint64_t>::max())
+			return false;
+		++value;
+		return true;
+	};
+	switch (kind) {
+	case FF_LIFECYCLE_SCENE_INACTIVE:
+	case FF_LIFECYCLE_SCENE_ACTIVE:
+		return increment(next.session) && increment(next.tracker);
+	case FF_LIFECYCLE_CAMERA_DISCONNECTED:
+	case FF_LIFECYCLE_CAMERA_RESTORED:
+		return increment(next.stream) && increment(next.tracker);
+	case FF_LIFECYCLE_SOURCE_REBOUND:
+		return increment(next.source) && increment(next.session) && increment(next.stream) &&
+		       increment(next.geometry) && increment(next.tracker);
+	case FF_LIFECYCLE_GEOMETRY_CHANGED:
+		return increment(next.stream) && increment(next.geometry) && increment(next.tracker);
+	case FF_LIFECYCLE_TRACKER_CHANGED:
+		return increment(next.tracker);
+	case FF_LIFECYCLE_FRAMING_CONFIG_CHANGED:
+		return increment(next.session) && increment(next.geometry) && increment(next.tracker);
+	case FF_LIFECYCLE_CANDIDATE_POLICY_CHANGED:
+	case FF_LIFECYCLE_ADAPTER_DESTROYED:
+		return increment(next.session) && increment(next.tracker);
+	case FF_LIFECYCLE_SOURCE_DESTROYED:
+	case FF_LIFECYCLE_OBS_SHUTDOWN:
+		return increment(next.source) && increment(next.session) && increment(next.stream) &&
+		       increment(next.tracker);
+	default:
+		return false;
+	}
+}
+
+static void find_legacy_tracker_filter(obs_source_t *, obs_source_t *filter, void *param)
+{
+	auto *found = static_cast<bool *>(param);
+	const char *id = obs_source_get_id(filter);
+	if (obs_source_enabled(filter) && id && (!strcmp(id, "face_tracker_filter") || !strcmp(id, "face_tracker_ptz")))
+		*found = true;
+}
+
+static bool enqueue_source_lifecycle(faithfulframe_source_binding *binding, uint32_t kind, uint64_t at,
+				     uint32_t width = 0, uint32_t height = 0)
+{
+	if (!binding)
+		return false;
+	{
+		std::lock_guard<std::mutex> lock(binding->preview_mutex);
+		binding->preview.candidate_count = 0;
+	}
+	auto *executor = binding->executor.load(std::memory_order_acquire);
+	if (!executor || binding->closed.load(std::memory_order_acquire))
+		return false;
+	ff_lifecycle event{};
+	event.kind = kind;
+	event.identity = binding->identity;
+	event.source_width = width;
+	event.source_height = height;
+	if (!advance_source_generations(kind, binding->generations, event.generations)) {
+		binding->transition_pending.store(true, std::memory_order_release);
+		executor->shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+		binding->closed.store(true, std::memory_order_release);
+		return false;
+	}
+	binding->transition_pending.store(true, std::memory_order_release);
+	if (!executor->enqueue_lifecycle(at, event)) {
+		executor->shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+		binding->closed.store(true, std::memory_order_release);
+		return false;
+	}
+	binding->generations = event.generations;
+	if (kind == FF_LIFECYCLE_SOURCE_DESTROYED || kind == FF_LIFECYCLE_SOURCE_REBOUND ||
+	    kind == FF_LIFECYCLE_ADAPTER_DESTROYED || kind == FF_LIFECYCLE_OBS_SHUTDOWN)
+		binding->closed.store(true, std::memory_order_release);
+	return true;
+}
+
+static bool initialize_source_session(face_tracker_filter *s, faithfulframe_source_binding *binding,
+				      uint32_t source_width, uint32_t source_height)
+{
+	if (!source_width || !source_height || !binding || !binding->target)
+		return false;
+	s->known_width = source_width;
+	s->known_height = source_height;
+	calculate_aspect(s);
+	if (!s->width_with_aspect || !s->height_with_aspect)
+		return false;
+
+	ff_session_config config{};
+	config.loss_grace_ms = 5000;
+	config.max_evidence_age_ms = 500;
+	config.max_candidates = faithfulframe_session_executor::max_candidates;
+	config.source_width = source_width;
+	config.source_height = source_height;
+	config.output_width = s->width_with_aspect;
+	config.output_height = s->height_with_aspect;
+	config.target_coverage = 0.45f;
+	config.min_zoom = 1.0f;
+	config.max_zoom = 4.0f;
+	config.smoothing = 0.25f;
+	config.max_pan_step = 0.08f;
+	config.max_zoom_step = 0.08f;
+
+	uint64_t source_id = allocate_faithfulframe_identity();
+	uint64_t session_id = allocate_faithfulframe_identity();
+	if (!source_id || !session_id)
+		return false;
+	binding->identity = ff_identity{source_id, session_id};
+	const ff_generations initial{1, 1, 1, 1, 1};
+	try {
+		binding->executor.store(new faithfulframe_session_executor(config, binding->identity, initial),
+					std::memory_order_release);
+	} catch (...) {
+		return false;
+	}
+	binding->generations = initial;
+	binding->source_width.store(source_width, std::memory_order_release);
+	binding->source_height.store(source_height, std::memory_order_release);
+	binding->output_width.store(config.output_width, std::memory_order_release);
+	binding->output_height.store(config.output_height, std::memory_order_release);
+	binding->signal_connected.store(true, std::memory_order_release);
+	return true;
+}
+
+static void apply_safe_source_configuration(face_tracker_filter *s, faithfulframe_source_runtime *runtime)
+{
+	const uint64_t revision = runtime->configuration_version.load(std::memory_order_acquire);
+	if (revision == runtime->processed_configuration_version)
+		return;
+
+	faithfulframe_source_binding *previous = runtime->active.exchange(nullptr, std::memory_order_acq_rel);
+	const bool enabled = runtime->enabled.load(std::memory_order_acquire);
+	if (previous) {
+		auto *executor = previous->executor.load(std::memory_order_acquire);
+		if (executor && !previous->closed.load(std::memory_order_acquire)) {
+			previous->transition_pending.store(true, std::memory_order_release);
+			executor->shutdown(enabled ? FF_LIFECYCLE_SOURCE_REBOUND : FF_LIFECYCLE_ADAPTER_DESTROYED);
+			previous->closed.store(true, std::memory_order_release);
+		}
+	}
+	s->ftm->reset_requested = true;
+
+	runtime->processed_configuration_version = revision;
+	if (!enabled) {
+		runtime->reconfiguration_pending.store(false, std::memory_order_release);
+		return;
+	}
+
+	std::string target_name;
+	{
+		std::lock_guard<std::mutex> lock(runtime->configuration_mutex);
+		target_name = runtime->requested_target_name;
+	}
+	if (target_name.empty()) {
+		blog(LOG_WARNING, "FaithfulFrame safe tracking has no bound video source");
+		return;
+	}
+
+	obs_source_t *target = obs_get_source_by_name(target_name.c_str());
+	bool has_legacy_tracker = false;
+	if (target)
+		obs_source_enum_filters(target, find_legacy_tracker_filter, &has_legacy_tracker);
+	const char *target_id = target ? obs_source_get_id(target) : nullptr;
+	if (!target || target == s->context || obs_source_is_scene(target) ||
+	    obs_source_get_type(target) != OBS_SOURCE_TYPE_INPUT ||
+	    !(obs_source_get_output_flags(target) & OBS_SOURCE_VIDEO) || !target_id ||
+	    !strcmp(target_id, "face_tracker_source") || has_legacy_tracker) {
+		blog(LOG_WARNING, "FaithfulFrame rejected invalid, filtered, or unavailable source binding '%s'",
+		     target_name.c_str());
+		if (target)
+			obs_source_release(target);
+		return;
+	}
+
+	std::unique_ptr<faithfulframe_source_binding> binding(new (std::nothrow) faithfulframe_source_binding());
+	if (!binding) {
+		obs_source_release(target);
+		return;
+	}
+	binding->target_name = target_name;
+	binding->target = obs_source_get_weak_source(target);
+	const uint32_t source_width = obs_source_get_width(target);
+	const uint32_t source_height = obs_source_get_height(target);
+	const bool signal_connected = source_width > 0 && source_height > 0;
+	binding->source_width.store(source_width, std::memory_order_release);
+	binding->source_height.store(source_height, std::memory_order_release);
+	binding->signal_connected.store(signal_connected, std::memory_order_release);
+	binding->source_active.store(obs_source_active(target), std::memory_order_release);
+	if (signal_connected)
+		initialize_source_session(s, binding.get(), source_width, source_height);
+	if (!binding->executor.load(std::memory_order_acquire) && signal_connected)
+		blog(LOG_WARNING, "FaithfulFrame failed to create a safe tracking session for '%s'",
+		     target_name.c_str());
+	faithfulframe_source_binding *published = binding.get();
+	try {
+		runtime->bindings.push_back(std::move(binding));
+	} catch (...) {
+		obs_source_release(target);
+		return;
+	}
+	runtime->active.store(published, std::memory_order_release);
+	runtime->last_output_width.store(published->output_width.load(std::memory_order_acquire),
+					 std::memory_order_release);
+	runtime->last_output_height.store(published->output_height.load(std::memory_order_acquire),
+					  std::memory_order_release);
+	runtime->reconfiguration_pending.store(false, std::memory_order_release);
+	runtime->processed_tracker_configuration_version =
+		runtime->tracker_configuration_version.load(std::memory_order_acquire);
+	s->ftm->crop_cur = rectf_s{0.0f, 0.0f, (float)published->source_width.load(std::memory_order_acquire),
+				   (float)published->source_height.load(std::memory_order_acquire)};
+	if (target)
+		obs_source_release(target);
+
+	if (published->executor.load(std::memory_order_acquire) &&
+	    !published->source_active.load(std::memory_order_acquire))
+		enqueue_source_lifecycle(published, FF_LIFECYCLE_SCENE_INACTIVE, source_monotonic_millis());
+}
+
+static void publish_source_candidates(face_tracker_filter *s, faithfulframe_source_binding *binding, uint64_t now)
+{
+	if (!binding || binding->closed.load(std::memory_order_acquire) ||
+	    !binding->signal_connected.load(std::memory_order_acquire) ||
+	    !binding->source_active.load(std::memory_order_acquire))
+		return;
+	auto *executor = binding->executor.load(std::memory_order_acquire);
+	if (!executor)
+		return;
+	if (binding->observation_version >= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+		return;
+	const uint32_t source_width = binding->source_width.load(std::memory_order_acquire);
+	const uint32_t source_height = binding->source_height.load(std::memory_order_acquire);
+	if (!source_width || !source_height)
+		return;
+
+	std::array<ff_candidate, faithfulframe_session_executor::max_candidates> candidates{};
+	size_t count = 0;
+	for (const auto &tracker : s->ftm->tracker_rects) {
+		if (count == candidates.size() || !tracker.candidate_handle || !tracker.continuity_token)
+			continue;
+		const float x0 = std::max(0.0f, (float)tracker.rect.x0 / source_width);
+		const float y0 = std::max(0.0f, (float)tracker.rect.y0 / source_height);
+		const float x1 = std::min(1.0f, (float)tracker.rect.x1 / source_width);
+		const float y1 = std::min(1.0f, (float)tracker.rect.y1 / source_height);
+		if (!(x1 > x0 && y1 > y0))
+			continue;
+		auto &candidate = candidates[count++];
+		candidate.handle = tracker.candidate_handle;
+		candidate.continuity_token = tracker.continuity_token;
+		candidate.identity = binding->identity;
+		candidate.observation_version = binding->observation_version + 1;
+		candidate.generations = binding->generations;
+		candidate.observed_at_ms = now;
+		candidate.expires_at_ms = now > std::numeric_limits<uint64_t>::max() - 500
+						  ? std::numeric_limits<uint64_t>::max()
+						  : now + 500;
+		candidate.rect = ff_rect{x0, y0, x1 - x0, y1 - y0};
+	}
+	if (count) {
+		const uint64_t version = binding->observation_version + 1;
+		if (executor->enqueue_candidates(now, candidates.data(), count)) {
+			binding->observation_version = version;
+			std::lock_guard<std::mutex> lock(binding->preview_mutex);
+			binding->preview.identity = binding->identity;
+			binding->preview.generations = binding->generations;
+			binding->preview.observation_version = version;
+			binding->preview.published_at_ms = now;
+			binding->preview.candidate_count = count;
+			std::copy_n(candidates.begin(), count, binding->preview.candidates.begin());
+		}
+	} else {
+		std::lock_guard<std::mutex> lock(binding->preview_mutex);
+		binding->preview.identity = binding->identity;
+		binding->preview.generations = binding->generations;
+		binding->preview.observation_version = binding->observation_version;
+		binding->preview.published_at_ms = now;
+		binding->preview.candidate_count = 0;
+	}
+	executor->enqueue_tick(now);
+}
+
+static void settle_source_transition(faithfulframe_source_binding *binding)
+{
+	if (!binding || !binding->transition_pending.load(std::memory_order_acquire))
+		return;
+	auto *executor = binding->executor.load(std::memory_order_acquire);
+	if (!executor)
+		return;
+	ff_snapshot snapshot{};
+	if (!executor->try_snapshot(snapshot) || snapshot.identity.source != binding->identity.source ||
+	    snapshot.identity.session != binding->identity.session ||
+	    snapshot.generations.source != binding->generations.source ||
+	    snapshot.generations.session != binding->generations.session ||
+	    snapshot.generations.stream != binding->generations.stream ||
+	    snapshot.generations.geometry != binding->generations.geometry ||
+	    snapshot.generations.tracker != binding->generations.tracker)
+		return;
+	binding->transition_pending.store(false, std::memory_order_release);
+}
+
+static void tick_safe_source(face_tracker_filter *s, float second)
+{
+	faithfulframe_source_runtime *runtime = s->safe_runtime;
+	apply_safe_source_configuration(s, runtime);
+	faithfulframe_source_binding *binding = runtime->active.load(std::memory_order_acquire);
+	if (!binding) {
+		s->target_valid = false;
+		return;
+	}
+
+	obs_source_t *target = obs_weak_source_get_source(binding->target);
+	if (!target) {
+		auto *executor = binding->executor.load(std::memory_order_acquire);
+		if (executor && !binding->closed.load(std::memory_order_acquire)) {
+			binding->transition_pending.store(true, std::memory_order_release);
+			executor->shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+			binding->closed.store(true, std::memory_order_release);
+		}
+		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
+				  binding->output_height.load(std::memory_order_acquire) > 0;
+		return;
+	}
+
+	const uint32_t width = obs_source_get_width(target);
+	const uint32_t height = obs_source_get_height(target);
+	const bool connected = width > 0 && height > 0;
+	const bool active = obs_source_active(target);
+	const uint64_t now = source_monotonic_millis();
+	auto *executor = binding->executor.load(std::memory_order_acquire);
+
+	if (connected && !executor) {
+		if (!initialize_source_session(s, binding, width, height)) {
+			obs_source_release(target);
+			s->target_valid = false;
+			return;
+		}
+		binding->source_width.store(width, std::memory_order_release);
+		binding->source_height.store(height, std::memory_order_release);
+		binding->signal_connected.store(true, std::memory_order_release);
+		binding->source_active.store(active, std::memory_order_release);
+		executor = binding->executor.load(std::memory_order_acquire);
+		s->ftm->reset_requested = true;
+		if (!active)
+			enqueue_source_lifecycle(binding, FF_LIFECYCLE_SCENE_INACTIVE, now);
+	} else if (executor && connected != binding->signal_connected.load(std::memory_order_acquire)) {
+		const uint32_t lifecycle = connected ? FF_LIFECYCLE_CAMERA_RESTORED : FF_LIFECYCLE_CAMERA_DISCONNECTED;
+		if (enqueue_source_lifecycle(binding, lifecycle, now)) {
+			binding->signal_connected.store(connected, std::memory_order_release);
+			s->ftm->reset_requested = true;
+		}
+	}
+
+	const uint32_t prior_source_width = binding->source_width.load(std::memory_order_acquire);
+	const uint32_t prior_source_height = binding->source_height.load(std::memory_order_acquire);
+	if (executor && connected && binding->signal_connected.load(std::memory_order_acquire) &&
+	    (width != prior_source_width || height != prior_source_height)) {
+		if (enqueue_source_lifecycle(binding, FF_LIFECYCLE_GEOMETRY_CHANGED, now, width, height)) {
+			binding->source_width.store(width, std::memory_order_release);
+			binding->source_height.store(height, std::memory_order_release);
+			s->ftm->reset_requested = true;
+		}
+	}
+	if (executor && active != binding->source_active.load(std::memory_order_acquire)) {
+		const uint32_t lifecycle = active ? FF_LIFECYCLE_SCENE_ACTIVE : FF_LIFECYCLE_SCENE_INACTIVE;
+		if (enqueue_source_lifecycle(binding, lifecycle, now)) {
+			binding->source_active.store(active, std::memory_order_release);
+			s->ftm->reset_requested = true;
+		}
+	}
+
+	if (executor && !binding->closed.load(std::memory_order_acquire)) {
+		const uint64_t tracker_revision =
+			runtime->tracker_configuration_version.load(std::memory_order_acquire);
+		if (tracker_revision != runtime->processed_tracker_configuration_version) {
+			enqueue_source_lifecycle(binding, FF_LIFECYCLE_TRACKER_CHANGED, now);
+			runtime->processed_tracker_configuration_version = tracker_revision;
+			s->ftm->reset_requested = true;
+		}
+		const uint32_t source_width = binding->source_width.load(std::memory_order_acquire);
+		const uint32_t source_height = binding->source_height.load(std::memory_order_acquire);
+		s->known_width = source_width;
+		s->known_height = source_height;
+		s->width_with_aspect = binding->output_width.load(std::memory_order_acquire);
+		s->height_with_aspect = binding->output_height.load(std::memory_order_acquire);
+		s->ftm->crop_cur = rectf_s{0.0f, 0.0f, (float)source_width, (float)source_height};
+		s->ftm->tick(second);
+		publish_source_candidates(s, binding, now);
+	} else {
+		s->known_width = binding->source_width.load(std::memory_order_acquire);
+		s->known_height = binding->source_height.load(std::memory_order_acquire);
+		s->width_with_aspect = binding->output_width.load(std::memory_order_acquire);
+		s->height_with_aspect = binding->output_height.load(std::memory_order_acquire);
+		s->ftm->tracker_rects.clear();
+	}
+	settle_source_transition(binding);
+	s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
+			  binding->output_height.load(std::memory_order_acquire) > 0;
+	obs_source_release(target);
+}
+#endif
+
 static void fts_tick(void *data, float second)
 {
 	auto *s = (struct face_tracker_filter *)data;
@@ -550,18 +1163,54 @@ static void fts_tick(void *data, float second)
 	s->rendered = false;
 	s->target_valid = false;
 
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime) {
+		obs_data_t *settings = nullptr;
+		{
+			std::lock_guard<std::mutex> lock(s->safe_runtime->pending_settings_mutex);
+			settings = s->safe_runtime->pending_settings;
+			s->safe_runtime->pending_settings = nullptr;
+		}
+		if (settings) {
+			ftf_update(s, settings);
+			obs_data_release(settings);
+		}
+		apply_safe_source_configuration(s, s->safe_runtime);
+	}
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+		tick_safe_source(s, second);
+		return;
+	}
+#endif
+
 	s->ftm->tick(second);
 
-	obs_source_t *target = obs_weak_source_get_source(s->target_ref);
-	const char *name = obs_source_get_name(target);
+	std::string configured_target_name;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime) {
+		std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
+		configured_target_name = s->safe_runtime->requested_target_name;
+	} else
+#endif
+		configured_target_name = s->target_name ? s->target_name : "";
 
-	if (s->target_name && (!target || !name || strcmp(name, s->target_name))) {
+	obs_source_t *target = s->target_ref ? obs_weak_source_get_source(s->target_ref) : nullptr;
+	const char *name = target ? obs_source_get_name(target) : nullptr;
+
+	if (!configured_target_name.empty() && (!target || !name || strcmp(name, configured_target_name.c_str()))) {
 		obs_source_release(target);
 		obs_weak_source_release(s->target_ref);
-		target = obs_get_source_by_name(s->target_name);
-		s->target_ref = obs_source_get_weak_source(target);
+		target = obs_get_source_by_name(configured_target_name.c_str());
+		s->target_ref = target ? obs_source_get_weak_source(target) : nullptr;
 		blog(LOG_INFO, "fts_tick: target=%p", target);
+	} else if (configured_target_name.empty() && s->target_ref) {
+		obs_source_release(target);
+		obs_weak_source_release(s->target_ref);
+		s->target_ref = nullptr;
+		target = nullptr;
 	}
+	if (!target)
+		return;
 
 	s->known_width = obs_source_get_width(target);
 	s->known_height = obs_source_get_height(target);
@@ -772,6 +1421,132 @@ static inline void draw_sprite_crop(float width, float height, float x0, float y
 	gs_render_stop(GS_TRISTRIP);
 }
 
+static inline void draw_sprite_crop_to_rect(float x0, float y0, float x1, float y1, float u0, float v0, float u1,
+					    float v1)
+{
+	gs_render_start(false);
+	gs_vertex2f(x0, y0);
+	gs_vertex2f(x1, y0);
+	gs_vertex2f(x0, y1);
+	gs_vertex2f(x1, y1);
+	struct vec2 tv;
+	vec2_set(&tv, u0, v0);
+	gs_texcoord2v(&tv, 0);
+	vec2_set(&tv, u1, v0);
+	gs_texcoord2v(&tv, 0);
+	vec2_set(&tv, u0, v1);
+	gs_texcoord2v(&tv, 0);
+	vec2_set(&tv, u1, v1);
+	gs_texcoord2v(&tv, 0);
+	gs_render_stop(GS_TRISTRIP);
+}
+
+#ifdef ENABLE_RUST_CORE_BRIDGE
+static bool valid_normalized_rect(const ff_rect &rect)
+{
+	return std::isfinite(rect.x) && std::isfinite(rect.y) && std::isfinite(rect.width) &&
+	       std::isfinite(rect.height) && rect.x >= 0.0f && rect.y >= 0.0f && rect.width > 0.0f &&
+	       rect.height > 0.0f && rect.x + rect.width <= 1.0f && rect.y + rect.height <= 1.0f;
+}
+
+static ff_rect full_source_viewport(uint32_t source_width, uint32_t source_height, uint32_t output_width,
+				    uint32_t output_height)
+{
+	if (!source_width || !source_height || !output_width || !output_height)
+		return ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
+	const float source_aspect = (float)source_width / source_height;
+	const float output_aspect = (float)output_width / output_height;
+	if (source_aspect > output_aspect) {
+		const float height = output_aspect / source_aspect;
+		return ff_rect{0.0f, (1.0f - height) * 0.5f, 1.0f, height};
+	}
+	if (source_aspect < output_aspect) {
+		const float width = source_aspect / output_aspect;
+		return ff_rect{(1.0f - width) * 0.5f, 0.0f, width, 1.0f};
+	}
+	return ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
+}
+
+static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_binding *binding,
+				   faithfulframe_source_runtime *runtime = nullptr, bool force_black = false)
+{
+	const uint32_t output_width = binding   ? binding->output_width.load(std::memory_order_acquire)
+				      : runtime ? runtime->last_output_width.load(std::memory_order_acquire)
+						: s->width_with_aspect;
+	const uint32_t output_height = binding   ? binding->output_height.load(std::memory_order_acquire)
+				       : runtime ? runtime->last_output_height.load(std::memory_order_acquire)
+						 : s->height_with_aspect;
+	const uint32_t source_width = force_black ? 0
+				      : binding   ? binding->source_width.load(std::memory_order_acquire)
+						  : s->known_width;
+	const uint32_t source_height = force_black ? 0
+				       : binding   ? binding->source_height.load(std::memory_order_acquire)
+						   : s->known_height;
+	if (!output_width || !output_height)
+		return;
+
+	ff_rect crop{0.0f, 0.0f, 1.0f, 1.0f};
+	ff_rect viewport = full_source_viewport(source_width, source_height, output_width, output_height);
+	if (!force_black && binding && !binding->closed.load(std::memory_order_acquire) &&
+	    !binding->transition_pending.load(std::memory_order_acquire)) {
+		auto *executor = binding->executor.load(std::memory_order_acquire);
+		ff_snapshot snapshot{};
+		uint64_t snapshot_time = 0;
+		const uint64_t now = source_monotonic_millis();
+		if (executor && executor->try_snapshot(snapshot, &snapshot_time) && snapshot_time <= now &&
+		    now - snapshot_time <= 500 && snapshot.identity.source == binding->identity.source &&
+		    snapshot.identity.session == binding->identity.session && !snapshot.closed) {
+			const bool selected_crop = snapshot.crop_action != FF_CROP_TRACK ||
+						   (snapshot.state == FF_STATE_LOCKED && snapshot.has_selected);
+			if (selected_crop && valid_normalized_rect(snapshot.crop) &&
+			    valid_normalized_rect(snapshot.viewport)) {
+				crop = snapshot.crop;
+				viewport = snapshot.viewport;
+			}
+		}
+	}
+	if (!valid_normalized_rect(crop) || !valid_normalized_rect(viewport)) {
+		crop = ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
+		viewport = full_source_viewport(source_width, source_height, output_width, output_height);
+	}
+
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+	if (solid) {
+		gs_effect_set_color(gs_effect_get_param_by_name(solid, "color"), 0x000000FF);
+		while (gs_effect_loop(solid, "Solid")) {
+			gs_render_start(false);
+			gs_vertex2f(0.0f, 0.0f);
+			gs_vertex2f((float)output_width, 0.0f);
+			gs_vertex2f(0.0f, (float)output_height);
+			gs_vertex2f((float)output_width, (float)output_height);
+			gs_render_stop(GS_TRISTRIP);
+		}
+	}
+
+	const bool source_available = !force_black && binding && !binding->closed.load(std::memory_order_acquire) &&
+				      binding->signal_connected.load(std::memory_order_acquire) &&
+				      binding->source_active.load(std::memory_order_acquire);
+	gs_texture_t *texture = source_available && s->texrender ? gs_texrender_get_texture(s->texrender) : nullptr;
+	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	if (texture && effect && source_width && source_height) {
+		gs_effect_set_texture(gs_effect_get_param_by_name(effect, "image"), texture);
+		const float dx0 = viewport.x * output_width;
+		const float dy0 = viewport.y * output_height;
+		const float dx1 = (viewport.x + viewport.width) * output_width;
+		const float dy1 = (viewport.y + viewport.height) * output_height;
+		const float u0 = crop.x;
+		const float v0 = crop.y;
+		const float u1 = crop.x + crop.width;
+		const float v1 = crop.y + crop.height;
+		while (gs_effect_loop(effect, "Draw"))
+			draw_sprite_crop_to_rect(dx0, dy0, dx1, dy1, u0, v0, u1, v1);
+	}
+	gs_blend_state_pop();
+}
+#endif
+
 static inline void draw_frame_texture(struct face_tracker_filter *s, bool debug_notrack)
 {
 	uint32_t width = s->width_with_aspect;
@@ -913,6 +1688,31 @@ static void ftf_render(void *data, gs_effect_t *)
 static void fts_render(void *data, gs_effect_t *)
 {
 	auto *s = (struct face_tracker_filter *)data;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+		if (s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire)) {
+			draw_safe_source_frame(s, s->safe_runtime->active.load(std::memory_order_acquire),
+					       s->safe_runtime, true);
+			return;
+		}
+		faithfulframe_source_binding *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+		if (!binding)
+			return;
+		obs_source_t *safe_target = binding && binding->target ? obs_weak_source_get_source(binding->target)
+								       : nullptr;
+		if (!s->rendered) {
+			s->rendered = true;
+			if (safe_target && binding && binding->signal_connected.load(std::memory_order_acquire) &&
+			    binding->source_active.load(std::memory_order_acquire)) {
+				render_target(s, safe_target, NULL);
+				s->ftm->post_render();
+			}
+		}
+		draw_safe_source_frame(s, binding, s->safe_runtime);
+		obs_source_release(safe_target);
+		return;
+	}
+#endif
 	if (!s->target_valid)
 		return;
 
@@ -936,6 +1736,14 @@ static void fts_render(void *data, gs_effect_t *)
 static uint32_t ftf_width(void *data)
 {
 	auto *s = (struct face_tracker_filter *)data;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+		auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+		const uint32_t width = binding ? binding->output_width.load(std::memory_order_acquire)
+					       : s->safe_runtime->last_output_width.load(std::memory_order_acquire);
+		return width;
+	}
+#endif
 	const bool debug_notrack = s->debug_notrack && (!s->is_active || s->debug_always_show);
 	return debug_notrack ? s->known_width : s->width_with_aspect;
 }
@@ -943,6 +1751,14 @@ static uint32_t ftf_width(void *data)
 static uint32_t ftf_height(void *data)
 {
 	auto *s = (struct face_tracker_filter *)data;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+		auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+		const uint32_t height = binding ? binding->output_height.load(std::memory_order_acquire)
+						: s->safe_runtime->last_output_height.load(std::memory_order_acquire);
+		return height;
+	}
+#endif
 	const bool debug_notrack = s->debug_notrack && (!s->is_active || s->debug_always_show);
 	return debug_notrack ? s->known_height : s->height_with_aspect;
 }
@@ -980,12 +1796,32 @@ static void cb_get_target_size(void *data, calldata_t *cd)
 static void cb_get_state(void *data, calldata_t *cd)
 {
 	auto *s = (struct face_tracker_filter *)data;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+		bool paused = false;
+		if (auto *binding = s->safe_runtime->active.load(std::memory_order_acquire)) {
+			if (auto *executor = binding->executor.load(std::memory_order_acquire)) {
+				ff_snapshot snapshot{};
+				if (executor->try_snapshot(snapshot))
+					paused = snapshot.state == FF_STATE_FROZEN;
+			}
+		}
+		calldata_set_bool(cd, "paused", paused);
+		return;
+	}
+#endif
 	calldata_set_bool(cd, "paused", s->is_paused);
 }
 
 static void cb_set_state(void *data, calldata_t *cd)
 {
 	auto *s = (struct face_tracker_filter *)data;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	// Legacy callers do not carry session identity or version tokens. Once the
+	// safety policy is enabled, those commands must not mutate its state.
+	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire))
+		return;
+#endif
 	bool is_paused = s->is_paused;
 	calldata_get_bool(cd, "paused", &is_paused);
 	if (is_paused != s->is_paused) {
@@ -998,6 +1834,189 @@ static void cb_set_state(void *data, calldata_t *cd)
 	if (reset)
 		ftf_reset_tracking(NULL, NULL, s);
 }
+
+#ifdef ENABLE_RUST_CORE_BRIDGE
+static long long ffi_integer(uint64_t value)
+{
+	return value <= static_cast<uint64_t>(std::numeric_limits<long long>::max()) ? static_cast<long long>(value)
+										     : 0;
+}
+
+static void set_generation_fields(calldata_t *cd, const ff_generations &generations, const char *prefix)
+{
+	const std::string key_prefix = prefix ? prefix : "";
+	calldata_set_int(cd, (key_prefix + "source_generation").c_str(), ffi_integer(generations.source));
+	calldata_set_int(cd, (key_prefix + "session_generation").c_str(), ffi_integer(generations.session));
+	calldata_set_int(cd, (key_prefix + "stream_generation").c_str(), ffi_integer(generations.stream));
+	calldata_set_int(cd, (key_prefix + "geometry_generation").c_str(), ffi_integer(generations.geometry));
+	calldata_set_int(cd, (key_prefix + "tracker_generation").c_str(), ffi_integer(generations.tracker));
+}
+
+static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
+{
+	auto *s = static_cast<face_tracker_filter *>(data);
+	const bool enabled = s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire);
+	calldata_set_bool(cd, "safe_enabled", enabled);
+	calldata_set_bool(cd, "available", false);
+	calldata_set_int(cd, "candidate_count", 0);
+	if (!enabled)
+		return;
+	if (s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire))
+		return;
+
+	auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+	auto *executor = binding ? binding->executor.load(std::memory_order_acquire) : nullptr;
+	if (!binding || !executor || binding->closed.load(std::memory_order_acquire) ||
+	    binding->transition_pending.load(std::memory_order_acquire))
+		return;
+
+	ff_snapshot snapshot{};
+	uint64_t snapshot_at = 0;
+	const uint64_t now = source_monotonic_millis();
+	if (!executor->try_snapshot(snapshot, &snapshot_at) || snapshot.closed || snapshot_at > now ||
+	    now - snapshot_at > 1000 || snapshot.identity.source != binding->identity.source ||
+	    snapshot.identity.session != binding->identity.session || !valid_normalized_rect(snapshot.crop) ||
+	    !valid_normalized_rect(snapshot.viewport))
+		return;
+
+	faithfulframe_source_binding::preview_payload preview;
+	{
+		std::lock_guard<std::mutex> lock(binding->preview_mutex);
+		preview = binding->preview;
+	}
+	const bool candidates_current = preview.identity.source == snapshot.identity.source &&
+					preview.identity.session == snapshot.identity.session &&
+					preview.generations.source == snapshot.generations.source &&
+					preview.generations.session == snapshot.generations.session &&
+					preview.generations.stream == snapshot.generations.stream &&
+					preview.generations.geometry == snapshot.generations.geometry &&
+					preview.generations.tracker == snapshot.generations.tracker &&
+					preview.observation_version == snapshot.observation_version &&
+					preview.published_at_ms <= now && now - preview.published_at_ms <= 500;
+
+	calldata_set_bool(cd, "available", true);
+	calldata_set_int(cd, "source_id", ffi_integer(snapshot.identity.source));
+	calldata_set_int(cd, "session_id", ffi_integer(snapshot.identity.session));
+	calldata_set_int(cd, "status_version", ffi_integer(snapshot.status_version));
+	calldata_set_int(cd, "observation_version", ffi_integer(snapshot.observation_version));
+	set_generation_fields(cd, snapshot.generations, "");
+	calldata_set_int(cd, "state", snapshot.state);
+	calldata_set_int(cd, "reason", snapshot.reason);
+	calldata_set_int(cd, "crop_action", snapshot.crop_action);
+	calldata_set_int(cd, "command_result", snapshot.command_result);
+	calldata_set_int(cd, "rejection_reason", snapshot.rejection_reason);
+	calldata_set_int(cd, "selected_handle", ffi_integer(snapshot.selected_handle));
+	calldata_set_int(cd, "source_width", binding->source_width.load(std::memory_order_acquire));
+	calldata_set_int(cd, "source_height", binding->source_height.load(std::memory_order_acquire));
+	calldata_set_int(cd, "output_width", binding->output_width.load(std::memory_order_acquire));
+	calldata_set_int(cd, "output_height", binding->output_height.load(std::memory_order_acquire));
+	calldata_set_float(cd, "crop_x", snapshot.crop.x);
+	calldata_set_float(cd, "crop_y", snapshot.crop.y);
+	calldata_set_float(cd, "crop_width", snapshot.crop.width);
+	calldata_set_float(cd, "crop_height", snapshot.crop.height);
+	calldata_set_float(cd, "viewport_x", snapshot.viewport.x);
+	calldata_set_float(cd, "viewport_y", snapshot.viewport.y);
+	calldata_set_float(cd, "viewport_width", snapshot.viewport.width);
+	calldata_set_float(cd, "viewport_height", snapshot.viewport.height);
+	calldata_set_string(cd, "target_name", binding->target_name.c_str());
+	calldata_set_bool(cd, "target_active", binding->source_active.load(std::memory_order_acquire));
+	calldata_set_bool(cd, "signal_connected", binding->signal_connected.load(std::memory_order_acquire));
+
+	if (!candidates_current)
+		return;
+	const size_t count = std::min(preview.candidate_count, preview.candidates.size());
+	calldata_set_int(cd, "candidate_count", static_cast<long long>(count));
+	calldata_set_int(cd, "candidate_source_id", ffi_integer(preview.identity.source));
+	calldata_set_int(cd, "candidate_session_id", ffi_integer(preview.identity.session));
+	calldata_set_int(cd, "candidate_observation_version", ffi_integer(preview.observation_version));
+	set_generation_fields(cd, preview.generations, "candidate_");
+	for (size_t i = 0; i < count; ++i) {
+		const ff_candidate &candidate = preview.candidates[i];
+		if (candidate.expires_at_ms < now || !valid_normalized_rect(candidate.rect))
+			continue;
+		const std::string suffix = std::to_string(i);
+		calldata_set_int(cd, ("candidate_handle_" + suffix).c_str(), ffi_integer(candidate.handle));
+		calldata_set_int(cd, ("candidate_expires_" + suffix).c_str(), ffi_integer(candidate.expires_at_ms));
+		calldata_set_float(cd, ("candidate_x_" + suffix).c_str(), candidate.rect.x);
+		calldata_set_float(cd, ("candidate_y_" + suffix).c_str(), candidate.rect.y);
+		calldata_set_float(cd, ("candidate_width_" + suffix).c_str(), candidate.rect.width);
+		calldata_set_float(cd, ("candidate_height_" + suffix).c_str(), candidate.rect.height);
+	}
+}
+
+static bool get_unsigned_field(calldata_t *cd, const char *name, uint64_t &value)
+{
+	long long raw = 0;
+	if (!calldata_get_int(cd, name, &raw) || raw < 0)
+		return false;
+	value = static_cast<uint64_t>(raw);
+	return true;
+}
+
+static bool enqueue_safe_operator_command(face_tracker_filter *s, uint32_t kind)
+{
+	if (!s || !s->safe_runtime || !s->safe_runtime->enabled.load(std::memory_order_acquire) ||
+	    s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire) || kind > FF_COMMAND_RESET_TO_WIDE)
+		return false;
+	auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+	auto *executor = binding ? binding->executor.load(std::memory_order_acquire) : nullptr;
+	if (!binding || !executor || binding->closed.load(std::memory_order_acquire))
+		return false;
+	ff_snapshot snapshot{};
+	if (!executor->try_snapshot(snapshot) || snapshot.closed ||
+	    snapshot.identity.source != binding->identity.source ||
+	    snapshot.identity.session != binding->identity.session)
+		return false;
+	ff_command command{};
+	command.kind = kind;
+	command.identity = snapshot.identity;
+	command.status_version = snapshot.status_version;
+	command.generations = snapshot.generations;
+	command.observation_version = snapshot.observation_version;
+	return executor->enqueue_command(source_monotonic_millis(), command);
+}
+
+static void cb_faithfulframe_command(void *data, calldata_t *cd)
+{
+	auto *s = static_cast<face_tracker_filter *>(data);
+	calldata_set_bool(cd, "queued", false);
+	if (!s->safe_runtime || !s->safe_runtime->enabled.load(std::memory_order_acquire) ||
+	    s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire))
+		return;
+	auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+	auto *executor = binding ? binding->executor.load(std::memory_order_acquire) : nullptr;
+	if (!binding || !executor || binding->closed.load(std::memory_order_acquire))
+		return;
+
+	uint64_t kind = 0, source_id = 0, session_id = 0, status_version = 0;
+	uint64_t source_generation = 0, session_generation = 0, stream_generation = 0;
+	uint64_t geometry_generation = 0, tracker_generation = 0, candidate_handle = 0;
+	uint64_t observation_version = 0;
+	if (!get_unsigned_field(cd, "kind", kind) || !get_unsigned_field(cd, "source_id", source_id) ||
+	    !get_unsigned_field(cd, "session_id", session_id) ||
+	    !get_unsigned_field(cd, "status_version", status_version) ||
+	    !get_unsigned_field(cd, "source_generation", source_generation) ||
+	    !get_unsigned_field(cd, "session_generation", session_generation) ||
+	    !get_unsigned_field(cd, "stream_generation", stream_generation) ||
+	    !get_unsigned_field(cd, "geometry_generation", geometry_generation) ||
+	    !get_unsigned_field(cd, "tracker_generation", tracker_generation) ||
+	    !get_unsigned_field(cd, "candidate_handle", candidate_handle) ||
+	    !get_unsigned_field(cd, "observation_version", observation_version) || kind > FF_COMMAND_RESET_TO_WIDE ||
+	    !source_id || !session_id || !status_version)
+		return;
+
+	ff_command command{};
+	command.kind = static_cast<uint32_t>(kind);
+	command.identity = ff_identity{source_id, session_id};
+	command.status_version = status_version;
+	command.generations = ff_generations{source_generation, session_generation, stream_generation,
+					     geometry_generation, tracker_generation};
+	command.candidate_handle = candidate_handle;
+	command.observation_version = observation_version;
+	if (executor->enqueue_command(source_monotonic_millis(), command))
+		calldata_set_bool(cd, "queued", true);
+}
+#endif
 
 static void emit_state_changed(struct face_tracker_filter *s)
 {
@@ -1042,6 +2061,7 @@ extern "C" void register_face_tracker_filter(bool hide_filter, bool hide_source)
 	info.create = fts_create;
 	info.update = fts_update;
 	info.get_properties = fts_properties;
+	info.get_defaults = fts_get_defaults;
 	info.video_tick = fts_tick;
 	info.video_render = fts_render;
 	obs_register_source(&info);

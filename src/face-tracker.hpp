@@ -4,6 +4,10 @@
 #include <deque>
 #include "helper.hpp"
 
+#ifdef ENABLE_RUST_CORE_BRIDGE
+struct faithfulframe_source_runtime;
+#endif
+
 struct face_tracker_filter
 {
 	obs_source_t *context;
@@ -40,6 +44,9 @@ struct face_tracker_filter
 	// face tracker source
 	char *target_name;
 	obs_weak_source_t *target_ref;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	faithfulframe_source_runtime *safe_runtime;
+#endif
 
 	bool inactive_reset = false;
 	bool debug_faces;

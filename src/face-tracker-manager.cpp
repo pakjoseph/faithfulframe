@@ -1,4 +1,5 @@
 #include <obs-module.h>
+#include <limits>
 #include "plugin-macros.generated.h"
 #include "face-tracker-manager.hpp"
 #include "face-detector-dlib-hog.h"
@@ -25,6 +26,7 @@ face_tracker_manager::face_tracker_manager()
 	landmark_detection_data = NULL;
 	crop_cur.x0 = crop_cur.x1 = crop_cur.y0 = crop_cur.y1 = 0.0f;
 	tick_cnt = detect_tick = next_tick_stage_to_detector = 0;
+	next_candidate_handle = 1;
 	detector_in_progress = false;
 	detect = NULL;
 }
@@ -58,6 +60,16 @@ inline void face_tracker_manager::retire_tracker(int ix)
 	trackers_idlepool.push_back(trackers[ix]);
 	trackers[ix].tracker->request_suspend();
 	trackers.erase(trackers.begin() + ix);
+}
+
+uint64_t face_tracker_manager::allocate_candidate_handle()
+{
+	const uint64_t maximum = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+	if (next_candidate_handle == 0 || next_candidate_handle > maximum)
+		return 0;
+	const uint64_t handle = next_candidate_handle;
+	next_candidate_handle = handle == maximum ? 0 : handle + 1;
+	return handle;
 }
 
 inline bool face_tracker_manager::is_low_confident(const tracker_inst_s &t, float th1)
@@ -220,6 +232,8 @@ inline void face_tracker_manager::stage_to_detector()
 			}
 		}
 		t.crop_tracker = crop_cur;
+		t.candidate_handle = allocate_candidate_handle();
+		t.continuity_token = t.candidate_handle;
 		t.state = tracker_inst_s::tracker_state_e::tracker_state_reset_texture;
 		t.tick_cnt = tick_cnt;
 		t.tracker->set_texture(cvtex);
@@ -300,7 +314,8 @@ static inline void make_tracker_rects(std::vector<face_tracker_manager::tracker_
 {
 	size_t n = 0;
 	for (size_t i = 0; i < trackers.size(); i++) {
-		if (trackers[i].state != face_tracker_manager::tracker_inst_s::tracker_state_available)
+		if (trackers[i].state != face_tracker_manager::tracker_inst_s::tracker_state_available ||
+		    trackers[i].candidate_handle == 0)
 			continue;
 
 		float score = trackers[i].rect.score * trackers[i].att;
@@ -312,6 +327,8 @@ static inline void make_tracker_rects(std::vector<face_tracker_manager::tracker_
 			tracker_rects.resize(n + 1);
 		auto &r = tracker_rects[n++];
 
+		r.candidate_handle = trackers[i].candidate_handle;
+		r.continuity_token = trackers[i].continuity_token;
 		r.rect = trackers[i].rect;
 		r.rect.score = score;
 		r.crop_rect = trackers[i].crop_rect;
