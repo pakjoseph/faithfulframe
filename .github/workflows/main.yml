@@ -106,6 +106,8 @@ jobs:
 
       - name: 'Upload logs of onsdriver'
         if: always()
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: test-${{ env.artifactName }}-linux-obs${{ matrix.obs }}-${{ matrix.ubuntu }}
@@ -324,6 +326,8 @@ jobs:
 
       - name: 'Upload logs of onsdriver'
         if: ${{ always() && startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' }}
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: test-${{ env.artifactName }}-macos-obs${{ matrix.obs }}-${{ matrix.arch }}
@@ -414,6 +418,8 @@ jobs:
 
       - name: 'Upload logs of onsdriver'
         if: always()
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: test-${{ env.artifactName }}-windows-obs${{ matrix.obs }}-${{ matrix.arch }}
