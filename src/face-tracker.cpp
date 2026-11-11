@@ -57,6 +57,7 @@ static constexpr uint64_t safe_preview_max_snapshot_age_ms = 500;
 static constexpr uint64_t safe_candidate_max_age_ms = 500;
 
 static void faithfulframe_bound_source_updated(void *data, calldata_t *params);
+static void set_safe_adapter_activation(face_tracker_filter *s, bool active);
 
 struct faithfulframe_source_binding
 {
@@ -71,12 +72,21 @@ struct faithfulframe_source_binding
 	};
 
 	obs_weak_source_t *target = nullptr;
+	// The adapter source outlives its bindings. OBS requires a custom parent to
+	// register active children while active, then remove them before the binding
+	// or parent is destroyed.
+	obs_source_t *parent_context = nullptr;
+	std::mutex active_child_mutex;
+	bool active_child_registered = false;
 	std::string target_name;
 	std::shared_ptr<faithfulframe_session_executor> executor;
 	// Non-owning render view. The runtime retains this binding and its owning
 	// shared_ptr until OBS finishes callbacks for the adapter source.
 	std::atomic<faithfulframe_session_executor *> render_executor{nullptr};
 	ff_identity identity{};
+	// Lifecycle producers include OBS activation callbacks and the video tick.
+	// Serialize generation changes and effective-active transitions together.
+	std::mutex lifecycle_mutex;
 	ff_generations generations{1, 1, 1, 1, 1};
 	uint64_t observation_version = 0;
 	std::atomic<uint32_t> source_width{0};
@@ -89,6 +99,8 @@ struct faithfulframe_source_binding
 	std::atomic<uint64_t> detector_work_count{0};
 	std::atomic<bool> signal_connected{false};
 	std::atomic<bool> source_active{false};
+	std::atomic<bool> adapter_active{false};
+	std::atomic<bool> effective_active{false};
 	std::atomic<bool> closed{false};
 	std::atomic<bool> transition_pending{false};
 	// connect_ref keeps the source signal handler alive. Disconnect serializes
@@ -97,9 +109,37 @@ struct faithfulframe_source_binding
 	std::mutex preview_mutex;
 	preview_payload preview;
 
+	bool set_active_child(bool active)
+	{
+		std::lock_guard<std::mutex> lock(active_child_mutex);
+		if (!active) {
+			if (active_child_registered && parent_context && target) {
+				obs_source_t *source = obs_weak_source_get_source(target);
+				if (source) {
+					obs_source_remove_active_child(parent_context, source);
+					obs_source_release(source);
+				}
+			}
+			active_child_registered = false;
+			return true;
+		}
+
+		if (!parent_context || !target)
+			return false;
+		obs_source_t *source = obs_weak_source_get_source(target);
+		if (!source)
+			return false;
+		const bool added = active_child_registered ||
+				   (!obs_source_removed(source) && obs_source_add_active_child(parent_context, source));
+		active_child_registered = added;
+		obs_source_release(source);
+		return added;
+	}
+
 	~faithfulframe_source_binding()
 	{
 		closed.store(true, std::memory_order_release);
+		set_active_child(false);
 		if (target_update_handler) {
 			signal_handler_disconnect(target_update_handler, "update", faithfulframe_bound_source_updated,
 						  this);
@@ -131,6 +171,7 @@ static void faithfulframe_bound_source_updated(void *data, calldata_t *params)
 struct faithfulframe_source_runtime
 {
 	std::atomic<bool> enabled{false};
+	std::atomic<bool> adapter_active{false};
 	std::atomic<bool> reconfiguration_pending{false};
 	std::mutex configuration_mutex;
 	std::string requested_target_name;
@@ -162,6 +203,7 @@ struct faithfulframe_source_runtime
 			if (!owned_binding)
 				continue;
 			auto *binding = owned_binding.get();
+			binding->set_active_child(false);
 			binding->transition_pending.store(true, std::memory_order_release);
 			binding->closed.store(true, std::memory_order_release);
 			binding->render_executor.store(nullptr, std::memory_order_release);
@@ -394,6 +436,25 @@ static void *fts_create(obs_data_t *settings, obs_source_t *context)
 	register_hotkeys(s, context);
 
 	return s;
+}
+
+static void fts_enum_active_sources(void *data, obs_source_enum_proc_t enum_callback, void *param)
+{
+	auto *s = static_cast<face_tracker_filter *>(data);
+	if (!s || !enum_callback || !s->safe_runtime || !s->safe_runtime->enabled.load(std::memory_order_acquire))
+		return;
+	auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+	if (!binding || binding->closed.load(std::memory_order_acquire) ||
+	    !binding->adapter_active.load(std::memory_order_acquire) || !binding->target)
+		return;
+	// This source has exactly one child: its explicitly bound camera. Never
+	// enumerate scene cameras or candidates from other OBS sources here.
+	obs_source_t *target = obs_weak_source_get_source(binding->target);
+	if (!target)
+		return;
+	if (!obs_source_removed(target))
+		enum_callback(s->context, target, param);
+	obs_source_release(target);
 }
 
 static void ftf_destroy(void *data)
@@ -701,6 +762,9 @@ static void ftf_activate(void *data)
 {
 	auto *s = (struct face_tracker_filter *)data;
 	s->is_active = true;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	set_safe_adapter_activation(s, true);
+#endif
 }
 
 static void ftf_deactivate(void *data)
@@ -709,8 +773,11 @@ static void ftf_deactivate(void *data)
 	s->is_active = false;
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
-	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire))
-		return;
+	if (s->safe_runtime) {
+		set_safe_adapter_activation(s, false);
+		if (s->safe_runtime->enabled.load(std::memory_order_acquire))
+			return;
+	}
 #endif
 	if (s->inactive_reset) {
 		ftf_reset_tracking(nullptr, nullptr, data);
@@ -883,8 +950,9 @@ static void find_legacy_tracker_filter(obs_source_t *, obs_source_t *filter, voi
 		*found = true;
 }
 
-static bool enqueue_source_lifecycle(faithfulframe_source_binding *binding, uint32_t kind, uint64_t at,
-				     uint32_t width = 0, uint32_t height = 0)
+// Caller owns binding->lifecycle_mutex.
+static bool enqueue_source_lifecycle_locked(faithfulframe_source_binding *binding, uint32_t kind, uint64_t at,
+					    uint32_t width = 0, uint32_t height = 0)
 {
 	if (!binding)
 		return false;
@@ -919,6 +987,76 @@ static bool enqueue_source_lifecycle(faithfulframe_source_binding *binding, uint
 	    kind == FF_LIFECYCLE_ADAPTER_DESTROYED || kind == FF_LIFECYCLE_OBS_SHUTDOWN)
 		binding->closed.store(true, std::memory_order_release);
 	return true;
+}
+
+static bool enqueue_source_lifecycle(faithfulframe_source_binding *binding, uint32_t kind, uint64_t at,
+				     uint32_t width = 0, uint32_t height = 0)
+{
+	if (!binding)
+		return false;
+	std::lock_guard<std::mutex> lock(binding->lifecycle_mutex);
+	return enqueue_source_lifecycle_locked(binding, kind, at, width, height);
+}
+
+static void update_effective_source_activation(faithfulframe_source_binding *binding, bool adapter_active,
+					       bool source_active, uint64_t now)
+{
+	if (!binding)
+		return;
+	std::lock_guard<std::mutex> lock(binding->lifecycle_mutex);
+	binding->adapter_active.store(adapter_active, std::memory_order_release);
+	binding->source_active.store(source_active, std::memory_order_release);
+	const bool effective_active = adapter_active && source_active;
+	const bool was_active = binding->effective_active.exchange(effective_active, std::memory_order_acq_rel);
+	if (was_active == effective_active)
+		return;
+	const uint32_t lifecycle = effective_active ? FF_LIFECYCLE_SCENE_ACTIVE : FF_LIFECYCLE_SCENE_INACTIVE;
+	if (!enqueue_source_lifecycle_locked(binding, lifecycle, now))
+		binding->transition_pending.store(true, std::memory_order_release);
+}
+
+static void set_safe_adapter_activation(face_tracker_filter *s, bool active)
+{
+	if (!s || !s->safe_runtime)
+		return;
+	auto *runtime = s->safe_runtime;
+	runtime->adapter_active.store(active, std::memory_order_release);
+	auto *binding = runtime->active.load(std::memory_order_acquire);
+	if (!binding)
+		return;
+	if (!runtime->enabled.load(std::memory_order_acquire)) {
+		if (!active)
+			binding->set_active_child(false);
+		return;
+	}
+
+	// The source must be active as a child of this adapter for OBS to activate
+	// its capture. Keep that relationship scoped to the immutable binding.
+	if (!binding->set_active_child(active)) {
+		blog(LOG_WARNING, "FaithfulFrame could not %s bound source '%s'", active ? "activate" : "deactivate",
+		     binding->target_name.c_str());
+		binding->transition_pending.store(true, std::memory_order_release);
+		binding->closed.store(true, std::memory_order_release);
+		if (auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire))
+			executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+		return;
+	}
+
+	obs_source_t *target = binding->target ? obs_weak_source_get_source(binding->target) : nullptr;
+	if (!target || obs_source_removed(target)) {
+		if (target)
+			obs_source_release(target);
+		enqueue_source_lifecycle(binding, FF_LIFECYCLE_SOURCE_DESTROYED, source_monotonic_millis());
+		binding->set_active_child(false);
+		return;
+	}
+	const bool source_active = obs_source_active(target);
+	obs_source_release(target);
+	// Effective activation and its generation change are one serialized update,
+	// even if OBS activation and video-tick callbacks arrive concurrently.
+	update_effective_source_activation(binding, active, source_active, source_monotonic_millis());
+	if (s->ftm)
+		s->ftm->reset_requested = true;
 }
 
 static bool initialize_source_session(face_tracker_filter *s, faithfulframe_source_binding *binding,
@@ -982,7 +1120,10 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 	} catch (...) {
 		return false;
 	}
-	binding->generations = initial;
+	{
+		std::lock_guard<std::mutex> lock(binding->lifecycle_mutex);
+		binding->generations = initial;
+	}
 	binding->source_width.store(source_width, std::memory_order_release);
 	binding->source_height.store(source_height, std::memory_order_release);
 	binding->output_width.store(config.output_width, std::memory_order_release);
@@ -1000,6 +1141,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	faithfulframe_source_binding *previous = runtime->active.exchange(nullptr, std::memory_order_acq_rel);
 	const bool enabled = runtime->enabled.load(std::memory_order_acquire);
 	if (previous) {
+		previous->set_active_child(false);
 		auto executor = std::atomic_load_explicit(&previous->executor, std::memory_order_acquire);
 		if (executor && !previous->closed.load(std::memory_order_acquire)) {
 			previous->transition_pending.store(true, std::memory_order_release);
@@ -1031,7 +1173,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	if (target)
 		obs_source_enum_filters(target, find_legacy_tracker_filter, &has_legacy_tracker);
 	const char *target_id = target ? obs_source_get_id(target) : nullptr;
-	if (!target || target == s->context || obs_source_is_scene(target) ||
+	if (!target || obs_source_removed(target) || target == s->context || obs_source_is_scene(target) ||
 	    obs_source_get_type(target) != OBS_SOURCE_TYPE_INPUT ||
 	    !(obs_source_get_output_flags(target) & OBS_SOURCE_VIDEO) || !target_id ||
 	    !strcmp(target_id, "face_tracker_source") || has_legacy_tracker) {
@@ -1058,6 +1200,14 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	}
 	binding->target_name = target_name;
 	binding->target = obs_source_get_weak_source(target);
+	binding->parent_context = s->context;
+	const bool adapter_active = runtime->adapter_active.load(std::memory_order_acquire);
+	binding->adapter_active.store(adapter_active, std::memory_order_release);
+	if (!binding->set_active_child(adapter_active)) {
+		blog(LOG_WARNING, "FaithfulFrame could not activate bound source '%s'", target_name.c_str());
+		obs_source_release(target);
+		return;
+	}
 	const uint32_t source_width = obs_source_get_width(target);
 	const uint32_t source_height = obs_source_get_height(target);
 	const bool signal_connected = source_width > 0 && source_height > 0;
@@ -1065,6 +1215,8 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	binding->source_height.store(source_height, std::memory_order_release);
 	binding->signal_connected.store(signal_connected, std::memory_order_release);
 	binding->source_active.store(obs_source_active(target), std::memory_order_release);
+	binding->effective_active.store(adapter_active && binding->source_active.load(std::memory_order_acquire),
+					std::memory_order_release);
 	if (signal_handler_t *handler = obs_source_get_signal_handler(target)) {
 		signal_handler_connect_ref(handler, "update", faithfulframe_bound_source_updated, binding.get());
 		binding->target_update_handler = handler;
@@ -1082,6 +1234,10 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		return;
 	}
 	runtime->active.store(published, std::memory_order_release);
+	// Activation can race configuration on OBS's frontend/video threads. Re-read
+	// the runtime state after publication so a just-completed activate/deactivate
+	// callback cannot leave the new binding with a stale child relationship.
+	set_safe_adapter_activation(s, runtime->adapter_active.load(std::memory_order_acquire));
 	runtime->last_output_width.store(published->output_width.load(std::memory_order_acquire),
 					 std::memory_order_release);
 	runtime->last_output_height.store(published->output_height.load(std::memory_order_acquire),
@@ -1093,10 +1249,6 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 				   (float)published->source_height.load(std::memory_order_acquire)};
 	if (target)
 		obs_source_release(target);
-
-	if (std::atomic_load_explicit(&published->executor, std::memory_order_acquire) &&
-	    !published->source_active.load(std::memory_order_acquire))
-		enqueue_source_lifecycle(published, FF_LIFECYCLE_SCENE_INACTIVE, source_monotonic_millis());
 }
 
 static void publish_source_candidates(face_tracker_filter *s, faithfulframe_source_binding *binding, uint64_t now)
@@ -1105,7 +1257,7 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 	    binding->transition_pending.load(std::memory_order_acquire) ||
 	    binding->source_settings_updated.load(std::memory_order_acquire) ||
 	    !binding->signal_connected.load(std::memory_order_acquire) ||
-	    !binding->source_active.load(std::memory_order_acquire))
+	    !binding->effective_active.load(std::memory_order_acquire))
 		return;
 	auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
 	if (!executor)
@@ -1116,6 +1268,11 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 	const uint32_t source_height = binding->source_height.load(std::memory_order_acquire);
 	if (!source_width || !source_height)
 		return;
+	ff_generations generations{};
+	{
+		std::lock_guard<std::mutex> lock(binding->lifecycle_mutex);
+		generations = binding->generations;
+	}
 
 	std::array<ff_candidate, faithfulframe_session_executor::max_candidates> candidates{};
 	size_t count = 0;
@@ -1135,7 +1292,7 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		candidate.continuity_token = tracker.continuity_token;
 		candidate.identity = binding->identity;
 		candidate.observation_version = binding->observation_version + 1;
-		candidate.generations = binding->generations;
+		candidate.generations = generations;
 		candidate.observed_at_ms = tracker.observed_at_ms;
 		candidate.expires_at_ms =
 			tracker.observed_at_ms > std::numeric_limits<uint64_t>::max() - safe_candidate_max_age_ms
@@ -1150,7 +1307,7 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 			std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
 			if (lock.owns_lock()) {
 				binding->preview.identity = binding->identity;
-				binding->preview.generations = binding->generations;
+				binding->preview.generations = generations;
 				binding->preview.observation_version = version;
 				binding->preview.published_at_ms = now;
 				binding->preview.candidate_count = count;
@@ -1161,7 +1318,7 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
 		if (lock.owns_lock()) {
 			binding->preview.identity = binding->identity;
-			binding->preview.generations = binding->generations;
+			binding->preview.generations = generations;
 			binding->preview.observation_version = binding->observation_version;
 			binding->preview.published_at_ms = now;
 			binding->preview.candidate_count = 0;
@@ -1179,14 +1336,15 @@ static void settle_source_transition(faithfulframe_source_binding *binding)
 	auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
 	if (!executor)
 		return;
+	std::lock_guard<std::mutex> lock(binding->lifecycle_mutex);
+	const ff_generations generations = binding->generations;
 	ff_snapshot snapshot{};
 	if (!executor->try_snapshot(snapshot) || snapshot.identity.source != binding->identity.source ||
 	    snapshot.identity.session != binding->identity.session ||
-	    snapshot.generations.source != binding->generations.source ||
-	    snapshot.generations.session != binding->generations.session ||
-	    snapshot.generations.stream != binding->generations.stream ||
-	    snapshot.generations.geometry != binding->generations.geometry ||
-	    snapshot.generations.tracker != binding->generations.tracker)
+	    snapshot.generations.source != generations.source || snapshot.generations.session != generations.session ||
+	    snapshot.generations.stream != generations.stream ||
+	    snapshot.generations.geometry != generations.geometry ||
+	    snapshot.generations.tracker != generations.tracker)
 		return;
 	binding->transition_pending.store(false, std::memory_order_release);
 }
@@ -1203,6 +1361,7 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 
 	obs_source_t *target = obs_weak_source_get_source(binding->target);
 	if (!target) {
+		binding->set_active_child(false);
 		auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
 		if (executor && !binding->closed.load(std::memory_order_acquire)) {
 			binding->transition_pending.store(true, std::memory_order_release);
@@ -1211,6 +1370,19 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 		}
 		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
 				  binding->output_height.load(std::memory_order_acquire) > 0;
+		return;
+	}
+	if (obs_source_removed(target)) {
+		binding->set_active_child(false);
+		auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
+		if (executor && !binding->closed.load(std::memory_order_acquire)) {
+			binding->transition_pending.store(true, std::memory_order_release);
+			executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+			binding->closed.store(true, std::memory_order_release);
+		}
+		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
+				  binding->output_height.load(std::memory_order_acquire) > 0;
+		obs_source_release(target);
 		return;
 	}
 
@@ -1230,10 +1402,12 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 		binding->source_width.store(width, std::memory_order_release);
 		binding->source_height.store(height, std::memory_order_release);
 		binding->signal_connected.store(true, std::memory_order_release);
+		const bool adapter_active = binding->adapter_active.load(std::memory_order_acquire);
 		binding->source_active.store(active, std::memory_order_release);
+		binding->effective_active.store(adapter_active && active, std::memory_order_release);
 		executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
 		s->ftm->reset_requested = true;
-		if (!active)
+		if (!adapter_active || !active)
 			enqueue_source_lifecycle(binding, FF_LIFECYCLE_SCENE_INACTIVE, now);
 	} else if (executor && connected != binding->signal_connected.load(std::memory_order_acquire)) {
 		const uint32_t lifecycle = connected ? FF_LIFECYCLE_CAMERA_RESTORED : FF_LIFECYCLE_CAMERA_DISCONNECTED;
@@ -1258,11 +1432,9 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 		}
 	}
 	if (executor && active != binding->source_active.load(std::memory_order_acquire)) {
-		const uint32_t lifecycle = active ? FF_LIFECYCLE_SCENE_ACTIVE : FF_LIFECYCLE_SCENE_INACTIVE;
-		if (enqueue_source_lifecycle(binding, lifecycle, now)) {
-			binding->source_active.store(active, std::memory_order_release);
-			s->ftm->reset_requested = true;
-		}
+		update_effective_source_activation(binding, binding->adapter_active.load(std::memory_order_acquire),
+						   active, now);
+		s->ftm->reset_requested = true;
 	}
 
 	if (executor && !binding->closed.load(std::memory_order_acquire)) {
@@ -1293,7 +1465,13 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 			binding->detector_max_work_us.store(0, std::memory_order_relaxed);
 			binding->detector_work_count.store(0, std::memory_order_relaxed);
 		}
-		publish_source_candidates(s, binding, now);
+		if (binding->effective_active.load(std::memory_order_acquire) &&
+		    binding->signal_connected.load(std::memory_order_acquire)) {
+			publish_source_candidates(s, binding, now);
+		} else {
+			s->ftm->tracker_rects.clear();
+			executor->enqueue_tick(now);
+		}
 	} else {
 		s->known_width = binding->source_width.load(std::memory_order_acquire);
 		s->known_height = binding->source_height.load(std::memory_order_acquire);
@@ -1728,8 +1906,9 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 					     ff_preview_source_geometry_matches(source_width, source_height,
 										obs_source_get_width(bound_source),
 										obs_source_get_height(bound_source));
-	const bool source_available = !force_black && source_geometry_current && obs_source_active(bound_source) &&
-				      binding && !binding->closed.load(std::memory_order_acquire) &&
+	const bool source_available = !force_black && source_geometry_current && !obs_source_removed(bound_source) &&
+				      obs_source_active(bound_source) && binding &&
+				      !binding->closed.load(std::memory_order_acquire) &&
 				      binding->signal_connected.load(std::memory_order_acquire) &&
 				      binding->source_active.load(std::memory_order_acquire);
 	gs_texture_t *texture = source_available && s->texrender ? gs_texrender_get_texture(s->texrender) : nullptr;
@@ -2007,7 +2186,8 @@ static void fts_render(void *data, gs_effect_t *)
 					binding->source_width.load(std::memory_order_acquire),
 					binding->source_height.load(std::memory_order_acquire),
 					obs_source_get_width(safe_target), obs_source_get_height(safe_target));
-			if (safe_target && source_geometry_current && obs_source_active(safe_target) &&
+			if (safe_target && source_geometry_current && !obs_source_removed(safe_target) &&
+			    binding->adapter_active.load(std::memory_order_acquire) && obs_source_active(safe_target) &&
 			    binding->signal_connected.load(std::memory_order_acquire) &&
 			    binding->source_active.load(std::memory_order_acquire)) {
 				render_target(s, safe_target, NULL);
@@ -2266,7 +2446,7 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	calldata_set_float(cd, "viewport_width", snapshot.viewport.width);
 	calldata_set_float(cd, "viewport_height", snapshot.viewport.height);
 	calldata_set_string(cd, "target_name", binding->target_name.c_str());
-	calldata_set_bool(cd, "target_active", binding->source_active.load(std::memory_order_acquire));
+	calldata_set_bool(cd, "target_active", binding->effective_active.load(std::memory_order_acquire));
 	calldata_set_bool(cd, "signal_connected", binding->signal_connected.load(std::memory_order_acquire));
 
 	faithfulframe_source_binding::preview_payload preview;
@@ -2327,7 +2507,9 @@ static bool enqueue_safe_operator_command(face_tracker_filter *s, uint32_t kind)
 				: std::shared_ptr<faithfulframe_session_executor>{};
 	if (!binding || !executor || binding->closed.load(std::memory_order_acquire) ||
 	    binding->transition_pending.load(std::memory_order_acquire) ||
-	    binding->source_settings_updated.load(std::memory_order_acquire))
+	    binding->source_settings_updated.load(std::memory_order_acquire) ||
+	    !binding->effective_active.load(std::memory_order_acquire) ||
+	    !binding->signal_connected.load(std::memory_order_acquire))
 		return false;
 	ff_snapshot snapshot{};
 	if (!executor->try_snapshot(snapshot) || snapshot.closed ||
@@ -2355,7 +2537,9 @@ static void cb_faithfulframe_command(void *data, calldata_t *cd)
 				: std::shared_ptr<faithfulframe_session_executor>{};
 	if (!binding || !executor || binding->closed.load(std::memory_order_acquire) ||
 	    binding->transition_pending.load(std::memory_order_acquire) ||
-	    binding->source_settings_updated.load(std::memory_order_acquire))
+	    binding->source_settings_updated.load(std::memory_order_acquire) ||
+	    !binding->effective_active.load(std::memory_order_acquire) ||
+	    !binding->signal_connected.load(std::memory_order_acquire))
 		return;
 
 	uint64_t kind = 0, source_id = 0, session_id = 0, status_version = 0;
@@ -2425,11 +2609,13 @@ extern "C" void register_face_tracker_filter(bool hide_filter, bool hide_source)
 
 	info.id = "face_tracker_source";
 	info.type = OBS_SOURCE_TYPE_INPUT;
-	info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_DO_NOT_DUPLICATE;
+	info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_DO_NOT_DUPLICATE |
+			    OBS_SOURCE_COMPOSITE;
 	if (hide_source)
 		info.output_flags |= OBS_SOURCE_CAP_DISABLED;
 	info.create = fts_create;
 	info.update = fts_update;
+	info.enum_active_sources = fts_enum_active_sources;
 	info.get_properties = fts_properties;
 	info.get_defaults = fts_get_defaults;
 	info.video_tick = fts_tick;

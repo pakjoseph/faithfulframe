@@ -438,6 +438,95 @@ int run_smoke()
 		}
 		lifecycle_executor.shutdown();
 	}
+
+	// Scene deactivation must invalidate a previously locked target. A click
+	// captured before deactivation is delivered afterward and must be a strict
+	// no-op; activation requires a fresh explicit selection.
+	const ff_identity scene_identity{800, 900};
+	faithfulframe_session_executor scene_executor(config, scene_identity, initial_generations);
+	ff_snapshot scene_snapshot{};
+	if (!await_snapshot(
+		    scene_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    scene_snapshot))
+		return 50;
+	const ff_command scene_enable{FF_COMMAND_ENABLE_AUTO_FOLLOW,
+				      scene_snapshot.identity,
+				      scene_snapshot.status_version,
+				      scene_snapshot.generations,
+				      0,
+				      0};
+	const ff_candidate scene_candidate{81, 810, scene_identity,          1, initial_generations,
+					   3,  503, {0.4f, 0.2f, 0.1f, 0.2f}};
+	if (!scene_executor.enqueue_command(2, scene_enable) ||
+	    !await_snapshot(
+		    scene_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_SEARCHING; },
+		    scene_snapshot) ||
+	    !scene_executor.enqueue_candidates(3, &scene_candidate, 1) ||
+	    !await_snapshot(
+		    scene_executor,
+		    [](const ff_snapshot &value) {
+			    return value.state == FF_STATE_SEARCHING && value.observation_version == 1;
+		    },
+		    scene_snapshot))
+		return 51;
+	const ff_command delayed_scene_selection{FF_COMMAND_SELECT_CANDIDATE,   scene_snapshot.identity,
+						 scene_snapshot.status_version, scene_snapshot.generations,
+						 scene_candidate.handle,        scene_candidate.observation_version};
+	if (!scene_executor.enqueue_command(4, delayed_scene_selection) ||
+	    !await_snapshot(
+		    scene_executor,
+		    [](const ff_snapshot &value) { return value.state == FF_STATE_LOCKED && value.has_selected; },
+		    scene_snapshot))
+		return 52;
+	const ff_snapshot scene_locked = scene_snapshot;
+	ff_generations inactive_generations{};
+	ff_lifecycle scene_inactive{FF_LIFECYCLE_SCENE_INACTIVE, scene_identity, {}};
+	if (!faithfulframe_next_lifecycle_generations(FF_LIFECYCLE_SCENE_INACTIVE, initial_generations,
+						      inactive_generations))
+		return 53;
+	scene_inactive.generations = inactive_generations;
+	if (!scene_executor.enqueue_lifecycle(5, scene_inactive) ||
+	    !await_snapshot(
+		    scene_executor,
+		    [&inactive_generations, &same_generations](const ff_snapshot &value) {
+			    return value.state == FF_STATE_MANUAL && !value.has_selected &&
+				   same_generations(value.generations, inactive_generations);
+		    },
+		    scene_snapshot) ||
+	    scene_snapshot.crop.x != scene_locked.crop.x || scene_snapshot.crop.y != scene_locked.crop.y ||
+	    scene_snapshot.crop.width != scene_locked.crop.width ||
+	    scene_snapshot.crop.height != scene_locked.crop.height)
+		return 54;
+	if (!scene_executor.enqueue_command(6, delayed_scene_selection) ||
+	    !await_snapshot(
+		    scene_executor,
+		    [](const ff_snapshot &value) {
+			    return value.command_result == FF_COMMAND_REJECTED &&
+				   value.rejection_reason == FF_REJECTION_STALE_COMMAND;
+		    },
+		    scene_snapshot) ||
+	    scene_snapshot.state != FF_STATE_MANUAL || scene_snapshot.has_selected ||
+	    !same_generations(scene_snapshot.generations, inactive_generations) ||
+	    scene_snapshot.crop.x != scene_locked.crop.x || scene_snapshot.crop.y != scene_locked.crop.y ||
+	    scene_snapshot.crop.width != scene_locked.crop.width ||
+	    scene_snapshot.crop.height != scene_locked.crop.height)
+		return 55;
+	ff_generations active_generations{};
+	ff_lifecycle scene_active{FF_LIFECYCLE_SCENE_ACTIVE, scene_identity, {}};
+	if (!faithfulframe_next_lifecycle_generations(FF_LIFECYCLE_SCENE_ACTIVE, inactive_generations,
+						      active_generations))
+		return 56;
+	scene_active.generations = active_generations;
+	if (!scene_executor.enqueue_lifecycle(7, scene_active) ||
+	    !await_snapshot(
+		    scene_executor,
+		    [&active_generations, &same_generations](const ff_snapshot &value) {
+			    return value.state == FF_STATE_MANUAL && !value.has_selected &&
+				   same_generations(value.generations, active_generations);
+		    },
+		    scene_snapshot))
+		return 57;
+	scene_executor.shutdown();
 	return 0;
 }
 
