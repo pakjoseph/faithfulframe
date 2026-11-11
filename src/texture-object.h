@@ -1,6 +1,7 @@
 #pragma once
 #include <obs-module.h>
 #include <util/threading.h>
+#include <cstdint>
 #include <vector>
 #include <dlib/array2d/array2d_kernel.h>
 #include "plugin-macros.generated.h"
@@ -18,4 +19,6 @@ public:
 public:
 	int tick;
 	float scale;
+	// Monotonic time when these pixels were copied, not when asynchronous tracking finishes.
+	uint64_t captured_at_ms = 0;
 };

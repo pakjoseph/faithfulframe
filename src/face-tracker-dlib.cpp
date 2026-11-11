@@ -187,7 +187,7 @@ void face_tracker_dlib::track_main()
 	}
 	p->last_ns = ns;
 	if (observed)
-		p->last_observation_ms = ns / 1000000ULL;
+		p->last_observation_ms = tex->captured_at_ms;
 }
 
 bool face_tracker_dlib::get_face(struct rect_s &rect, uint64_t &observed_at_ms)

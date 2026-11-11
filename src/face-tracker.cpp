@@ -1503,6 +1503,7 @@ static inline std::shared_ptr<texture_object> surface_to_cvtex(struct face_track
 	std::shared_ptr<texture_object> cvtex(new texture_object);
 	cvtex->scale = scale;
 	cvtex->tick = s->ftm->tick_cnt;
+	cvtex->captured_at_ms = os_gettime_ns() / 1000000ULL;
 
 	struct obs_source_frame frame;
 	memset(&frame, 0, sizeof(frame));
