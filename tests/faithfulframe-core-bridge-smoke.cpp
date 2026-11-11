@@ -6,8 +6,9 @@
 static_assert(sizeof(ff_generations) == 40);
 static_assert(sizeof(ff_identity) == 16);
 static_assert(sizeof(ff_rect) == 16);
-static_assert(sizeof(ff_session_config) == 64);
+static_assert(sizeof(ff_session_config) == 72);
 static_assert(offsetof(ff_session_config, dead_zone_fraction) == 60);
+static_assert(offsetof(ff_session_config, zoom_smoothing) == 64);
 static_assert(sizeof(ff_candidate) == 112);
 static_assert(sizeof(ff_command) == 88);
 static_assert(sizeof(ff_lifecycle) == 72);
@@ -21,8 +22,8 @@ static_assert(offsetof(ff_snapshot, generations) == 112);
 
 int main()
 {
-	const ff_session_config config{5000,  500,  8,    3840,  2160,  1920,  1080,
-				       0.45f, 1.0f, 4.0f, 0.25f, 0.08f, 0.08f, 0.05f};
+	const ff_session_config config{5000, 500,  8,     3840,  2160,  1920,  1080, 0.45f,
+				       1.0f, 4.0f, 0.25f, 0.08f, 0.08f, 0.05f, 0.25f};
 	const ff_identity identity{101, 201};
 	ff_generations generations{1, 1, 1, 1, 1};
 	ff_result zero_status_result = FF_OK;

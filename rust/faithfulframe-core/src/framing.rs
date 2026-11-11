@@ -9,7 +9,8 @@ pub struct FramingConfig {
     pub target_coverage: f32,
     pub min_zoom: f32,
     pub max_zoom: f32,
-    pub smoothing: f32,
+    pub pan_smoothing: f32,
+    pub zoom_smoothing: f32,
     /// Fraction inset from each edge of the current crop. Pan holds while the
     /// complete target rectangle stays inside this inner crop region.
     pub dead_zone_fraction: f32,
@@ -25,7 +26,8 @@ impl Default for FramingConfig {
             target_coverage: 0.45,
             min_zoom: 1.0,
             max_zoom: 4.0,
-            smoothing: 0.25,
+            pan_smoothing: 0.25,
+            zoom_smoothing: 0.25,
             dead_zone_fraction: 0.05,
             max_pan_step: 0.08,
             max_zoom_step: 0.08,
@@ -64,7 +66,8 @@ impl FramingController {
             || !config.target_coverage.is_finite()
             || !config.min_zoom.is_finite()
             || !config.max_zoom.is_finite()
-            || !config.smoothing.is_finite()
+            || !config.pan_smoothing.is_finite()
+            || !config.zoom_smoothing.is_finite()
             || !config.dead_zone_fraction.is_finite()
             || !config.max_pan_step.is_finite()
             || !config.max_zoom_step.is_finite()
@@ -74,7 +77,8 @@ impl FramingController {
             || !(0.0 < config.target_coverage && config.target_coverage <= 1.0)
             || config.min_zoom < 1.0
             || config.max_zoom < config.min_zoom
-            || !(0.0 < config.smoothing && config.smoothing <= 1.0)
+            || !(0.0 < config.pan_smoothing && config.pan_smoothing <= 1.0)
+            || !(0.0 < config.zoom_smoothing && config.zoom_smoothing <= 1.0)
             || !(0.0..0.5).contains(&config.dead_zone_fraction)
             || config.max_pan_step <= 0.0
             || config.max_zoom_step <= 0.0
@@ -139,7 +143,7 @@ impl FramingController {
             current.x + current.width * 0.5,
             current.y + current.height * 0.5,
         );
-        let max_pan_delta = self.config.max_pan_step * self.config.smoothing;
+        let max_pan_delta = self.config.max_pan_step * self.config.pan_smoothing;
         let target_inside_dead_zone = self.config.dead_zone_fraction > 0.0
             && current != Rect::full_frame()
             && target.x >= current.x + current.width * self.config.dead_zone_fraction
@@ -160,17 +164,17 @@ impl FramingController {
                     + bounded_delta(
                         desired_center.0 - current_center.0,
                         self.config.max_pan_step,
-                    ) * self.config.smoothing,
+                    ) * self.config.pan_smoothing,
                 current_center.1
                     + bounded_delta(
                         desired_center.1 - current_center.1,
                         self.config.max_pan_step,
-                    ) * self.config.smoothing,
+                    ) * self.config.pan_smoothing,
             )
         };
         let mut width = current.width
             + bounded_delta(desired.width - current.width, self.config.max_zoom_step)
-                * self.config.smoothing;
+                * self.config.zoom_smoothing;
         // Keep pan within its configured step. If that center cannot yet
         // contain the target, widen temporarily instead of teleporting the
         // crop across the source.
@@ -389,7 +393,7 @@ mod tests {
     #[test]
     fn smoothing_preserves_aspect_and_target_containment() {
         let mut controller = FramingController::new(FramingConfig {
-            smoothing: 0.5,
+            pan_smoothing: 0.5,
             max_pan_step: 0.2,
             max_zoom_step: 0.2,
             ..FramingConfig::default()
@@ -416,7 +420,7 @@ mod tests {
     fn dead_zone_holds_pan_until_target_leaves_inner_crop_region() {
         let mut controller = FramingController::new(FramingConfig {
             dead_zone_fraction: 0.1,
-            smoothing: 0.5,
+            pan_smoothing: 0.5,
             max_pan_step: 0.2,
             ..FramingConfig::default()
         })
@@ -439,7 +443,7 @@ mod tests {
     fn dead_zone_allows_zoom_to_adjust_without_pan() {
         let mut controller = FramingController::new(FramingConfig {
             dead_zone_fraction: 0.1,
-            smoothing: 0.5,
+            pan_smoothing: 0.5,
             max_zoom: 8.0,
             max_zoom_step: 0.2,
             ..FramingConfig::default()
@@ -460,6 +464,44 @@ mod tests {
         assert_eq!(next_center, first_center);
         assert!(next.source_crop.width < first.source_crop.width);
         assert!(contains(next.source_crop, narrower_target));
+    }
+
+    #[test]
+    fn pan_and_zoom_smoothing_are_independently_configurable() {
+        let make_controller = |pan_smoothing, zoom_smoothing| {
+            FramingController::new(FramingConfig {
+                dead_zone_fraction: 0.0,
+                max_zoom: 8.0,
+                max_pan_step: 0.2,
+                max_zoom_step: 0.2,
+                pan_smoothing,
+                zoom_smoothing,
+                ..FramingConfig::default()
+            })
+            .unwrap()
+        };
+
+        let mut fast_pan = make_controller(0.8, 0.1);
+        let mut slow_pan = make_controller(0.1, 0.1);
+        let initial = target(0.46, 0.46, 0.08, 0.08);
+        fast_pan.plan(initial).unwrap();
+        slow_pan.plan(initial).unwrap();
+        let moved_target = target(0.53, 0.46, 0.08, 0.08);
+        let fast_pan_plan = fast_pan.plan(moved_target).unwrap();
+        let slow_pan_plan = slow_pan.plan(moved_target).unwrap();
+        let fast_pan_center = fast_pan_plan.source_crop.x + fast_pan_plan.source_crop.width * 0.5;
+        let slow_pan_center = slow_pan_plan.source_crop.x + slow_pan_plan.source_crop.width * 0.5;
+        assert!(fast_pan_center > slow_pan_center);
+
+        let mut fast_zoom = make_controller(0.8, 0.8);
+        let mut slow_zoom = make_controller(0.8, 0.1);
+        let initial = target(0.46, 0.46, 0.08, 0.08);
+        fast_zoom.plan(initial).unwrap();
+        slow_zoom.plan(initial).unwrap();
+        let smaller_target = target(0.48, 0.48, 0.04, 0.04);
+        let fast_zoom_plan = fast_zoom.plan(smaller_target).unwrap();
+        let slow_zoom_plan = slow_zoom.plan(smaller_target).unwrap();
+        assert!(fast_zoom_plan.source_crop.width < slow_zoom_plan.source_crop.width);
     }
 
     #[test]
@@ -490,6 +532,20 @@ mod tests {
         assert!(matches!(
             FramingController::new(FramingConfig {
                 dead_zone_fraction: 0.5,
+                ..FramingConfig::default()
+            }),
+            Err(FramingError::InvalidConfig)
+        ));
+        assert!(matches!(
+            FramingController::new(FramingConfig {
+                pan_smoothing: 0.0,
+                ..FramingConfig::default()
+            }),
+            Err(FramingError::InvalidConfig)
+        ));
+        assert!(matches!(
+            FramingController::new(FramingConfig {
+                zoom_smoothing: f32::INFINITY,
                 ..FramingConfig::default()
             }),
             Err(FramingError::InvalidConfig)

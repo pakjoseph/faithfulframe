@@ -50,10 +50,11 @@ pub struct FfSessionConfig {
     target_coverage: f32,
     min_zoom: f32,
     max_zoom: f32,
-    smoothing: f32,
+    pan_smoothing: f32,
     max_pan_step: f32,
     max_zoom_step: f32,
     dead_zone_fraction: f32,
+    zoom_smoothing: f32,
 }
 
 #[repr(C)]
@@ -269,7 +270,7 @@ fn lifecycle(value: FfLifecycle) -> Result<Lifecycle, i32> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn faithfulframe_ffi_abi_version() -> u32 {
-    6
+    7
 }
 
 #[unsafe(no_mangle)]
@@ -303,7 +304,8 @@ pub unsafe extern "C" fn ff_session_create(
             target_coverage: config.target_coverage,
             min_zoom: config.min_zoom,
             max_zoom: config.max_zoom,
-            smoothing: config.smoothing,
+            pan_smoothing: config.pan_smoothing,
+            zoom_smoothing: config.zoom_smoothing,
             dead_zone_fraction: config.dead_zone_fraction,
             max_pan_step: config.max_pan_step,
             max_zoom_step: config.max_zoom_step,
@@ -482,7 +484,7 @@ mod tests {
 
     #[test]
     fn abi_version_is_stable() {
-        assert_eq!(faithfulframe_ffi_abi_version(), 6);
+        assert_eq!(faithfulframe_ffi_abi_version(), 7);
     }
 
     #[test]
@@ -513,10 +515,11 @@ mod tests {
             target_coverage: 0.45,
             min_zoom: 1.0,
             max_zoom: 4.0,
-            smoothing: 0.25,
+            pan_smoothing: 0.25,
             max_pan_step: 0.08,
             max_zoom_step: 0.08,
             dead_zone_fraction: 0.5,
+            zoom_smoothing: 0.25,
         };
         let identity = FfIdentity {
             source: 1,
@@ -544,7 +547,7 @@ mod tests {
         assert_eq!(size_of::<FfGenerations>(), 40);
         assert_eq!(size_of::<FfIdentity>(), 16);
         assert_eq!(size_of::<FfRect>(), 16);
-        assert_eq!(size_of::<FfSessionConfig>(), 64);
+        assert_eq!(size_of::<FfSessionConfig>(), 72);
         assert_eq!(size_of::<FfCandidate>(), 112);
         assert_eq!(size_of::<FfCommand>(), 88);
         assert_eq!(size_of::<FfLifecycle>(), 72);
@@ -555,6 +558,7 @@ mod tests {
         assert_eq!(offset_of!(FfCandidate, generations), 40);
         assert_eq!(offset_of!(FfCandidate, rect), 96);
         assert_eq!(offset_of!(FfSessionConfig, dead_zone_fraction), 60);
+        assert_eq!(offset_of!(FfSessionConfig, zoom_smoothing), 64);
         assert_eq!(offset_of!(FfCommand, generations), 32);
         assert_eq!(offset_of!(FfLifecycle, generations), 24);
         assert_eq!(offset_of!(FfSnapshot, crop), 76);

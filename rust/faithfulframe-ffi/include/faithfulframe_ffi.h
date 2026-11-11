@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-enum { FAITHFULFRAME_FFI_ABI_VERSION = 6 };
+enum { FAITHFULFRAME_FFI_ABI_VERSION = 7 };
 
 typedef enum ff_result { FF_OK = 0, FF_INVALID_ARGUMENT = 1, FF_PANIC = 2 } ff_result;
 
@@ -97,11 +97,13 @@ typedef struct ff_session_config
 	float target_coverage;
 	float min_zoom;
 	float max_zoom;
-	float smoothing;
+	/* Response factors in (0, 1]; larger values move faster. */
+	float pan_smoothing;
 	float max_pan_step;
 	float max_zoom_step;
 	/* Fraction inset from each crop edge before pan begins; range [0, 0.5). */
 	float dead_zone_fraction;
+	float zoom_smoothing;
 } ff_session_config;
 
 typedef struct ff_candidate
