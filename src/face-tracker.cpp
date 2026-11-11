@@ -107,6 +107,7 @@ struct faithfulframe_source_runtime
 	std::mutex configuration_mutex;
 	std::string requested_target_name;
 	double requested_dead_zone_percent = 5.0;
+	double requested_max_zoom = 4.0;
 	std::atomic<uint64_t> configuration_version{0};
 	std::atomic<uint64_t> tracker_configuration_version{0};
 	std::atomic<uint32_t> last_output_width{0};
@@ -206,6 +207,7 @@ static void fts_update(void *data, obs_data_t *settings)
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	bool binding_changed = false;
 	bool dead_zone_changed = false;
+	bool max_zoom_changed = false;
 	if (s->safe_runtime) {
 		{
 			std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
@@ -215,11 +217,14 @@ static void fts_update(void *data, obs_data_t *settings)
 				obs_data_get_double(settings, "safe_tracking_dead_zone_percent");
 			dead_zone_changed = s->safe_runtime->requested_dead_zone_percent != requested_dead_zone;
 			s->safe_runtime->requested_dead_zone_percent = requested_dead_zone;
+			const double requested_max_zoom = obs_data_get_double(settings, "safe_tracking_max_zoom");
+			max_zoom_changed = s->safe_runtime->requested_max_zoom != requested_max_zoom;
+			s->safe_runtime->requested_max_zoom = requested_max_zoom;
 		}
 		const bool enabled = obs_data_get_bool(settings, "safe_tracking_enabled");
 		const bool was_enabled = s->safe_runtime->enabled.exchange(enabled, std::memory_order_acq_rel);
 		defer_tracker_update = enabled || was_enabled;
-		if (binding_changed || was_enabled != enabled || (dead_zone_changed && enabled)) {
+		if (binding_changed || was_enabled != enabled || ((dead_zone_changed || max_zoom_changed) && enabled)) {
 			s->safe_runtime->reconfiguration_pending.store(true, std::memory_order_release);
 			s->safe_runtime->configuration_version.fetch_add(1, std::memory_order_release);
 		} else {
@@ -497,8 +502,9 @@ static obs_properties_t *fts_properties(void *data)
 							    "Use FaithfulFrame safe tracking (experimental)");
 	obs_properties_t *safe_options = obs_properties_create();
 	obs_properties_add_float(safe_options, "safe_tracking_dead_zone_percent", "Pan dead zone (%)", 0.0, 24.0, 0.5);
+	obs_properties_add_float(safe_options, "safe_tracking_max_zoom", "Maximum zoom (×)", 1.0, 8.0, 0.25);
 	obs_property_t *safe_options_group = obs_properties_add_group(
-		props, "safe_tracking_options", "Safe tracking motion", OBS_GROUP_NORMAL, safe_options);
+		props, "safe_tracking_options", "Safe tracking framing", OBS_GROUP_NORMAL, safe_options);
 	obs_data_t *current_settings = obs_source_get_settings(s->context);
 	if (current_settings) {
 		obs_property_set_visible(safe_options_group,
@@ -524,6 +530,7 @@ static void ftf_get_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, "preset_mask_track", true);
 	obs_data_set_default_bool(settings, "preset_mask_control", true);
 	obs_data_set_default_double(settings, "safe_tracking_dead_zone_percent", 5.0);
+	obs_data_set_default_double(settings, "safe_tracking_max_zoom", 4.0);
 	face_tracker_manager::get_defaults(settings);
 	obs_data_set_default_double(settings, "track_z", 0.70);  //  1.00  0.50  0.35
 	obs_data_set_default_double(settings, "track_y", +0.00); // +0.00 +0.10 +0.30
@@ -891,13 +898,15 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 	config.output_height = s->height_with_aspect;
 	config.target_coverage = 0.45f;
 	config.min_zoom = 1.0f;
-	config.max_zoom = 4.0f;
+	double max_zoom = 4.0;
 	config.smoothing = 0.25f;
 	double dead_zone_percent = 5.0;
 	if (s->safe_runtime) {
 		std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
 		dead_zone_percent = s->safe_runtime->requested_dead_zone_percent;
+		max_zoom = s->safe_runtime->requested_max_zoom;
 	}
+	config.max_zoom = static_cast<float>(max_zoom);
 	config.dead_zone_fraction = static_cast<float>(dead_zone_percent * 0.01);
 	config.max_pan_step = 0.08f;
 	config.max_zoom_step = 0.08f;
