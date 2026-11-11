@@ -816,13 +816,13 @@ static bool enqueue_source_lifecycle(faithfulframe_source_binding *binding, uint
 	event.source_height = height;
 	if (!advance_source_generations(kind, binding->generations, event.generations)) {
 		binding->transition_pending.store(true, std::memory_order_release);
-		executor->shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+		executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
 		binding->closed.store(true, std::memory_order_release);
 		return false;
 	}
 	binding->transition_pending.store(true, std::memory_order_release);
 	if (!executor->enqueue_lifecycle(at, event)) {
-		executor->shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+		executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
 		binding->closed.store(true, std::memory_order_release);
 		return false;
 	}
@@ -892,7 +892,8 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		auto *executor = previous->executor.load(std::memory_order_acquire);
 		if (executor && !previous->closed.load(std::memory_order_acquire)) {
 			previous->transition_pending.store(true, std::memory_order_release);
-			executor->shutdown(enabled ? FF_LIFECYCLE_SOURCE_REBOUND : FF_LIFECYCLE_ADAPTER_DESTROYED);
+			executor->request_shutdown(enabled ? FF_LIFECYCLE_SOURCE_REBOUND
+							   : FF_LIFECYCLE_ADAPTER_DESTROYED);
 			previous->closed.store(true, std::memory_order_release);
 		}
 	}
@@ -1070,7 +1071,7 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 		auto *executor = binding->executor.load(std::memory_order_acquire);
 		if (executor && !binding->closed.load(std::memory_order_acquire)) {
 			binding->transition_pending.store(true, std::memory_order_release);
-			executor->shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+			executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
 			binding->closed.store(true, std::memory_order_release);
 		}
 		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&

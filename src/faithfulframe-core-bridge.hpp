@@ -53,6 +53,10 @@ public:
 	bool enqueue_lifecycle(uint64_t monotonic_ms, const ff_lifecycle &lifecycle);
 	bool try_snapshot(ff_snapshot &output, uint64_t *published_at_ms = nullptr) const;
 	const ff_identity &binding_identity() const { return identity; }
+	/// Closes the queue and schedules terminal lifecycle work without waiting.
+	/// Use from OBS callbacks; call shutdown later from an allowed teardown owner.
+	void request_shutdown(uint32_t terminal_lifecycle_kind = FF_LIFECYCLE_ADAPTER_DESTROYED,
+			      uint32_t source_width = 0, uint32_t source_height = 0);
 	void shutdown(uint32_t terminal_lifecycle_kind = FF_LIFECYCLE_ADAPTER_DESTROYED, uint32_t source_width = 0,
 		      uint32_t source_height = 0);
 
@@ -91,6 +95,7 @@ private:
 	size_t queue_size = 0;
 	uint64_t last_submitted_ms = 0;
 	mutable std::mutex queue_mutex;
+	std::mutex shutdown_request_mutex;
 	std::mutex shutdown_mutex;
 	std::condition_variable queue_condition;
 	bool closing = false;

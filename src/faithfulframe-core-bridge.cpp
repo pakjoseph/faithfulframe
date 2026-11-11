@@ -202,10 +202,12 @@ bool faithfulframe_session_executor::try_snapshot(ff_snapshot &output, uint64_t 
 	return worker_started.load(std::memory_order_acquire) && !closing_requested.load(std::memory_order_acquire);
 }
 
-void faithfulframe_session_executor::shutdown(uint32_t terminal_lifecycle_kind, uint32_t source_width,
-					      uint32_t source_height)
+void faithfulframe_session_executor::request_shutdown(uint32_t terminal_lifecycle_kind, uint32_t source_width,
+						      uint32_t source_height)
 {
-	std::lock_guard<std::mutex> shutdown_lock(shutdown_mutex);
+	std::lock_guard<std::mutex> request_lock(shutdown_request_mutex);
+	if (closing_requested.load(std::memory_order_acquire))
+		return;
 	closing_requested.store(true, std::memory_order_release);
 	{
 		std::lock_guard<std::mutex> lock(queue_mutex);
@@ -228,6 +230,13 @@ void faithfulframe_session_executor::shutdown(uint32_t terminal_lifecycle_kind, 
 		}
 	}
 	queue_condition.notify_one();
+}
+
+void faithfulframe_session_executor::shutdown(uint32_t terminal_lifecycle_kind, uint32_t source_width,
+					      uint32_t source_height)
+{
+	request_shutdown(terminal_lifecycle_kind, source_width, source_height);
+	std::lock_guard<std::mutex> shutdown_lock(shutdown_mutex);
 	if (worker.joinable())
 		worker.join();
 	worker_started.store(false, std::memory_order_release);

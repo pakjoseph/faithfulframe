@@ -109,7 +109,10 @@ int run_smoke()
 	const ff_command stale_dock_command{FF_COMMAND_SELECT_CANDIDATE, ff_identity{102, 202}, 0, generations, 23, 1};
 	if (!queued.enqueue_command(21, stale_dock_command))
 		return 11;
-	queued.shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+	queued.request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+	if (queued.enqueue_tick(22) || queued.enqueue_command(22, stale_dock_command))
+		return 14;
+	queued.shutdown();
 	if (!queued.try_snapshot(queued_snapshot) || !queued_snapshot.closed || queued_snapshot.has_selected ||
 	    queued_snapshot.state != FF_STATE_MANUAL || queued_snapshot.crop_action != FF_CROP_WIDE)
 		return 12;
