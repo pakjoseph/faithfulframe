@@ -817,9 +817,19 @@ void FTDock::updateState()
 	if (safe_mode) {
 		const QString tracking_source = safe_preview.target_name.isEmpty() ? "Unavailable"
 										   : safe_preview.target_name;
-		safeStatusLabel->setText(QString("Tracking source: %1\n%2\nCurrent zoom: %3×")
-						 .arg(tracking_source, safe_state_text(safe_preview))
-						 .arg(safe_preview_zoom(safe_preview), 0, 'f', 1));
+		const QString resolution = safe_preview.source_width && safe_preview.source_height &&
+							   safe_preview.output_width && safe_preview.output_height
+						   ? QString("Input: %1 × %2  ·  Output: %3 × %4")
+							     .arg(safe_preview.source_width)
+							     .arg(safe_preview.source_height)
+							     .arg(safe_preview.output_width)
+							     .arg(safe_preview.output_height)
+						   : QString("Resolution unavailable");
+		safeStatusLabel->setText(QString("Tracking source: %1\n%2\nCurrent zoom: %3×\n%4")
+						 .arg(tracking_source)
+						 .arg(safe_state_text(safe_preview))
+						 .arg(safe_preview_zoom(safe_preview), 0, 'f', 1)
+						 .arg(resolution));
 		const QString snapshot_age = safe_preview.status_snapshot_age_ms < 0
 						     ? QString("unavailable")
 						     : QString("%1 ms").arg(safe_preview.status_snapshot_age_ms);
