@@ -475,8 +475,32 @@ pub unsafe extern "C" fn ff_session_lifecycle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn abi_version_is_stable() {
         assert_eq!(faithfulframe_ffi_abi_version(), 5);
+    }
+
+    #[test]
+    fn c_abi_records_keep_the_versioned_layout() {
+        use std::mem::{align_of, offset_of, size_of};
+
+        assert_eq!(size_of::<FfGenerations>(), 40);
+        assert_eq!(size_of::<FfIdentity>(), 16);
+        assert_eq!(size_of::<FfRect>(), 16);
+        assert_eq!(size_of::<FfSessionConfig>(), 64);
+        assert_eq!(size_of::<FfCandidate>(), 112);
+        assert_eq!(size_of::<FfCommand>(), 88);
+        assert_eq!(size_of::<FfLifecycle>(), 72);
+        assert_eq!(size_of::<FfSnapshot>(), 152);
+        assert_eq!(align_of::<FfGenerations>(), 8);
+        assert_eq!(align_of::<FfIdentity>(), 8);
+        assert_eq!(align_of::<FfSnapshot>(), 8);
+        assert_eq!(offset_of!(FfCandidate, generations), 40);
+        assert_eq!(offset_of!(FfCandidate, rect), 96);
+        assert_eq!(offset_of!(FfCommand, generations), 32);
+        assert_eq!(offset_of!(FfLifecycle, generations), 24);
+        assert_eq!(offset_of!(FfSnapshot, crop), 76);
+        assert_eq!(offset_of!(FfSnapshot, generations), 112);
     }
 }

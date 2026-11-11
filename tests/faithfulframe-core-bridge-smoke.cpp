@@ -1,6 +1,22 @@
 #include "faithfulframe-core-bridge.hpp"
 
 #include <cmath>
+#include <cstddef>
+
+static_assert(sizeof(ff_generations) == 40);
+static_assert(sizeof(ff_identity) == 16);
+static_assert(sizeof(ff_rect) == 16);
+static_assert(sizeof(ff_session_config) == 64);
+static_assert(sizeof(ff_candidate) == 112);
+static_assert(sizeof(ff_command) == 88);
+static_assert(sizeof(ff_lifecycle) == 72);
+static_assert(sizeof(ff_snapshot) == 152);
+static_assert(offsetof(ff_candidate, generations) == 40);
+static_assert(offsetof(ff_candidate, rect) == 96);
+static_assert(offsetof(ff_command, generations) == 32);
+static_assert(offsetof(ff_lifecycle, generations) == 24);
+static_assert(offsetof(ff_snapshot, crop) == 76);
+static_assert(offsetof(ff_snapshot, generations) == 112);
 
 int main()
 {
