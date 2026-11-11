@@ -229,6 +229,54 @@ int run_smoke()
 		if (command_accepted || !lifetime.expired())
 			return 19;
 	}
+
+	// A late detector result must not reacquire a target after the stale-lock
+	// grace deadline, even when the executor has not received a Tick at that
+	// deadline. This exercises timer ordering through the C++/Rust bridge.
+	faithfulframe_session_executor deadline_executor(config, ff_identity{401, 501}, generations);
+	ff_snapshot deadline_snapshot{};
+	if (!await_snapshot(
+		    deadline_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    deadline_snapshot))
+		return 25;
+	const ff_command start_follow{FF_COMMAND_ENABLE_AUTO_FOLLOW,
+				      deadline_snapshot.identity,
+				      deadline_snapshot.status_version,
+				      deadline_snapshot.generations,
+				      0,
+				      0};
+	if (!deadline_executor.enqueue_command(1, start_follow) ||
+	    !await_snapshot(
+		    deadline_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_SEARCHING; },
+		    deadline_snapshot))
+		return 26;
+	const ff_candidate initial_candidate{77, 900, deadline_snapshot.identity, 1, generations,
+					     2,  502, {0.4f, 0.2f, 0.1f, 0.2f}};
+	if (!deadline_executor.enqueue_candidates(2, &initial_candidate, 1) ||
+	    !await_snapshot(
+		    deadline_executor, [](const ff_snapshot &value) { return value.observation_version == 1; },
+		    deadline_snapshot))
+		return 27;
+	const ff_command select_initial{FF_COMMAND_SELECT_CANDIDATE,      deadline_snapshot.identity,
+					deadline_snapshot.status_version, deadline_snapshot.generations,
+					initial_candidate.handle,         initial_candidate.observation_version};
+	if (!deadline_executor.enqueue_command(3, select_initial) ||
+	    !await_snapshot(
+		    deadline_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_LOCKED; },
+		    deadline_snapshot))
+		return 28;
+	const ff_candidate late_candidate{78,   900,  deadline_snapshot.identity, 2, generations,
+					  5503, 6003, {0.5f, 0.2f, 0.1f, 0.2f}};
+	if (!deadline_executor.enqueue_candidates(5503, &late_candidate, 1) ||
+	    !await_snapshot(
+		    deadline_executor,
+		    [](const ff_snapshot &value) {
+			    return value.observation_version == 2 && value.state == FF_STATE_LOST;
+		    },
+		    deadline_snapshot) ||
+	    deadline_snapshot.has_selected || deadline_snapshot.crop_action != FF_CROP_HOLD)
+		return 29;
+	deadline_executor.shutdown();
 	return 0;
 }
 

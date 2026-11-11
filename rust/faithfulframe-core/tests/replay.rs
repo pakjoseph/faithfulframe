@@ -525,8 +525,9 @@ fn parse_fixture(path: &PathBuf) -> Fixture {
 /// unique and increasing; monotonic time may repeat but never decreases. At a
 /// shared timestamp the lower queue order wins, so a timer tick and an operator
 /// command have an explicit order. Expiry is checked by policy at the event's
-/// timestamp (`expires_at >= at` is valid), and timer deadlines are explicit
-/// `tick` rows rather than implicit wall-clock work.
+/// timestamp (`expires_at >= at` is valid). Due timer transitions run before
+/// the queued event at the same or a later timestamp, so detector work cannot
+/// bypass a deadline when no periodic tick was queued.
 fn replay(fixture: &Fixture) -> Vec<CanonicalTraceRow> {
     let mut engine = TrackingEngine::new(
         Config {

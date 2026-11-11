@@ -360,6 +360,14 @@ impl TrackingSession {
         if at < self.last_at {
             return self.reject(Reason::NonMonotonicEvent);
         }
+
+        // Deadlines are authoritative at their monotonic timestamp, even if
+        // the executor receives a candidate, command, or lifecycle event
+        // before the next periodic Tick. This prevents queued detector results
+        // from reviving a session after its grace period.
+        let timer_advanced = self.advance_due_timers(at);
+        let tick_event = matches!(&event, Event::Tick { .. });
+
         let result = match event {
             Event::Command { envelope, .. } => {
                 if envelope.identity != self.identity || envelope.generations != self.generations {
@@ -369,7 +377,7 @@ impl TrackingSession {
                 }
             }
             Event::Candidate { at, candidate } => self.apply_candidate(candidate, at),
-            Event::Tick { .. } => self.apply_tick(at),
+            Event::Tick { .. } => CommandResult::NotACommand,
             Event::Lifecycle {
                 identity, event, ..
             } => {
@@ -382,7 +390,9 @@ impl TrackingSession {
         };
         if !matches!(result, CommandResult::Rejected(_)) {
             self.last_at = at;
-            self.status_version = self.status_version.saturating_add(1);
+            if !timer_advanced || !tick_event {
+                self.status_version = self.status_version.saturating_add(1);
+            }
         }
         let mut snapshot = self.snapshot();
         snapshot.command_result = result;
@@ -543,25 +553,39 @@ impl TrackingSession {
         CommandResult::NotACommand
     }
 
-    fn apply_tick(&mut self, at: Millis) -> CommandResult {
+    fn advance_due_timers(&mut self, at: Millis) -> bool {
+        let mut advanced = false;
         if self.state == State::Locked
             && self.selected.is_some_and(|target| {
                 at.saturating_sub(target.last_seen) > self.config.max_evidence_age_ms
             })
         {
+            let last_seen = self.selected.map_or(at, |target| target.last_seen);
+            let stale_at = last_seen
+                .saturating_add(self.config.max_evidence_age_ms)
+                .saturating_add(1);
             self.state = State::Searching;
             self.reason = Reason::TargetEvidenceStale;
             self.crop_action = CropAction::Hold;
-            self.loss_deadline = Some(at.saturating_add(self.config.loss_grace_ms));
-        } else if self.state == State::Searching
+            self.loss_deadline = Some(stale_at.saturating_add(self.config.loss_grace_ms));
+            self.last_at = stale_at;
+            self.status_version = self.status_version.saturating_add(1);
+            advanced = true;
+        }
+        if self.state == State::Searching
             && self.loss_deadline.is_some_and(|deadline| at >= deadline)
         {
+            let deadline = self.loss_deadline.unwrap_or(at);
             self.state = State::Lost;
             self.reason = Reason::TargetLossDeadlineExpired;
             self.crop_action = CropAction::Hold;
             self.loss_deadline = None;
+            self.selected = None;
+            self.last_at = deadline;
+            self.status_version = self.status_version.saturating_add(1);
+            advanced = true;
         }
-        CommandResult::NotACommand
+        advanced
     }
 
     fn apply_lifecycle(&mut self, event: Lifecycle) -> CommandResult {
@@ -1202,6 +1226,74 @@ mod tests {
             observe(&mut session, candidate(11, 100, 2, 30), 30).state,
             State::Locked
         );
+    }
+
+    #[test]
+    fn delayed_same_identity_candidate_cannot_reacquire_after_deadline() {
+        let mut session = session();
+        lock_test_target(&mut session);
+        let before = session.snapshot();
+
+        // Last evidence was at 2 ms, so the lock becomes stale at 13 ms and
+        // its 100 ms grace period expires at 113 ms. No periodic Tick is
+        // queued between the detector result and that deadline.
+        let late = candidate(11, 100, 2, 113);
+        let after = observe(&mut session, late, 113);
+
+        assert_eq!(after.state, State::Lost);
+        assert_eq!(after.reason, Reason::TargetLossDeadlineExpired);
+        assert_eq!(after.selected, None);
+        assert_eq!(after.crop, before.crop);
+        assert_eq!(after.crop_action, CropAction::Hold);
+    }
+
+    #[test]
+    fn evidence_arriving_after_lock_staleness_enters_searching_before_recovery() {
+        let mut session = session();
+        lock_test_target(&mut session);
+
+        // The result is fresh, but a prior periodic Tick was delayed. The
+        // executor must still recognize the stale interval before applying
+        // the result. Matching continuity may recover inside the grace.
+        let recovered = observe(&mut session, candidate(11, 100, 2, 14), 14);
+
+        assert_eq!(recovered.state, State::Locked);
+        assert_eq!(recovered.reason, Reason::ContinuityRecovered);
+        assert_eq!(recovered.selected, Some(11));
+        assert_eq!(recovered.crop_action, CropAction::Track);
+        assert_eq!(recovered.status_version, 5);
+    }
+
+    #[test]
+    fn deadline_transition_is_independent_of_rejected_command() {
+        let mut session = session();
+        lock_test_target(&mut session);
+        let stale_preview = session.snapshot();
+
+        let after = session.apply(Event::Command {
+            at: 113,
+            envelope: CommandEnvelope {
+                identity: stale_preview.identity,
+                status_version: stale_preview.status_version,
+                generations: stale_preview.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: stale_preview.observation_version,
+                },
+            },
+        });
+
+        assert_eq!(
+            after.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        assert_eq!(after.state, State::Lost);
+        assert_eq!(after.reason, Reason::TargetLossDeadlineExpired);
+        assert_eq!(after.selected, None);
+        assert_eq!(after.crop, stale_preview.crop);
+        assert_eq!(after.crop_action, CropAction::Hold);
+        assert_eq!(after.loss_deadline, None);
+        assert_eq!(after.status_version, stale_preview.status_version + 2);
     }
 
     #[test]
