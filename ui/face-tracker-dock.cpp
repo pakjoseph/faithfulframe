@@ -16,6 +16,7 @@
 #include <QTimer>
 #include <QSignalBlocker>
 #include <QVariantMap>
+#include "sanctuary-style.hpp"
 #include "plugin-macros.generated.h"
 #include "face-tracker-dock.hpp"
 #include "face-tracker-widget.hpp"
@@ -31,6 +32,13 @@
 void FTDock::closeEvent(QCloseEvent *event)
 {
 	QFrame::closeEvent(event);
+}
+
+void FTDock::changeEvent(QEvent *event)
+{
+	QFrame::changeEvent(event);
+	if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange)
+		applyDesignTokens();
 }
 
 // accessed only from UI thread
@@ -590,6 +598,8 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 		this, &FTDock::notrackButtonChanged);
 
 	setLayout(mainLayout);
+	design_tokens_ready = true;
+	applyDesignTokens();
 
 	connect(this, &FTDock::scenesMayChanged, this, &FTDock::checkTargetSelector);
 	updateState();
@@ -601,6 +611,32 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	statusTimer->start();
 
 	obs_frontend_add_event_callback(frontendEvent_cb, this);
+}
+
+void FTDock::applyDesignTokens()
+{
+	if (!design_tokens_ready)
+		return;
+	mainLayout->setContentsMargins(sanctuary::style::space_4, sanctuary::style::space_4, sanctuary::style::space_4,
+				       sanctuary::style::space_4);
+	mainLayout->setSpacing(sanctuary::style::space_2);
+
+	const QString button_style =
+		sanctuary::style::control_stylesheet(sanctuary::style::colors_from_palette(palette()));
+	for (QPushButton *button : {pauseButton, resetButton, enableButton, propertyButton, autoFollowButton,
+				    manualOverrideButton, selectCandidateButton}) {
+		if (button)
+			button->setStyleSheet(button_style);
+	}
+	for (QPushButton *button :
+	     {pauseButton, resetButton, autoFollowButton, manualOverrideButton, selectCandidateButton}) {
+		if (button)
+			button->setMinimumHeight(sanctuary::style::control_primary_height);
+	}
+	if (targetSelector)
+		targetSelector->setMinimumHeight(sanctuary::style::control_standard_height);
+	if (candidateSelector)
+		candidateSelector->setMinimumHeight(sanctuary::style::control_standard_height);
 }
 
 FTDock::~FTDock()

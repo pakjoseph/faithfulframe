@@ -36,17 +36,20 @@ public:
 	bool updating_widget = false;
 	bool in_updateState = false;
 	bool frontend_shutdown_started = false;
+	bool design_tokens_ready = false;
 
 public:
 	FTDock(QWidget *parent = nullptr);
 	~FTDock();
 	void closeEvent(QCloseEvent *event) override;
+	void changeEvent(QEvent *event) override;
 
 	static void default_properties(obs_data_t *);
 	void save_properties(obs_data_t *);
 	void load_properties(obs_data_t *);
 
 private:
+	void applyDesignTokens();
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
 
