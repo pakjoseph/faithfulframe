@@ -103,3 +103,12 @@ void face_detector_base::stop()
 		thread.join();
 	detector_log(LOG_INFO, "face_detector_base: stopped the thread...");
 }
+
+bool face_detector_base::try_idle()
+{
+	if (trylock() != 0)
+		return false;
+	const bool idle = !request_stop && !work_pending;
+	unlock();
+	return idle;
+}

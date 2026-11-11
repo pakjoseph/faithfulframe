@@ -19,15 +19,26 @@ class probe_detector final : public face_detector_base {
 	std::mutex detection_mutex;
 	std::condition_variable detection_condition;
 	bool detecting = false;
+	bool hold_detection = false;
+	bool release_detection = false;
 
 	void detect_main() override
 	{
+		bool should_hold = false;
 		{
 			std::lock_guard<std::mutex> lock(detection_mutex);
 			detecting = true;
+			should_hold = hold_detection;
 		}
 		detection_condition.notify_all();
-		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		if (should_hold) {
+			std::unique_lock<std::mutex> lock(detection_mutex);
+			detection_condition.wait(lock, [this] { return release_detection; });
+			hold_detection = false;
+			release_detection = false;
+		} else {
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
 		if (!lifetime_state->resource_available.load(std::memory_order_acquire))
 			lifetime_state->accessed_after_release.store(true, std::memory_order_release);
 		{
@@ -51,6 +62,23 @@ public:
 		std::unique_lock<std::mutex> lock(detection_mutex);
 		return detection_condition.wait_for(lock, std::chrono::seconds(2), [this] { return detecting; });
 	}
+	void hold_next_detection()
+	{
+		std::lock_guard<std::mutex> lock(detection_mutex);
+		detecting = false;
+		hold_detection = true;
+		release_detection = false;
+	}
+	void release_held_detection()
+	{
+		// Preserve the existing minimum-duration timing assertion for this work.
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		{
+			std::lock_guard<std::mutex> lock(detection_mutex);
+			release_detection = true;
+		}
+		detection_condition.notify_all();
+	}
 };
 
 static bool wait_for_runs(const probe_detector &detector, uint32_t expected)
@@ -58,6 +86,17 @@ static bool wait_for_runs(const probe_detector &detector, uint32_t expected)
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
 	while (std::chrono::steady_clock::now() < deadline) {
 		if (detector.completed_work_count() >= expected && detector.last_work_duration_us() >= 3'000)
+			return true;
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	return false;
+}
+
+static bool wait_until_idle(probe_detector &detector)
+{
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (std::chrono::steady_clock::now() < deadline) {
+		if (detector.try_idle())
 			return true;
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
@@ -97,20 +136,37 @@ int main()
 	if (detector.completed_work_count() != 0) {
 		std::fprintf(stderr, "detector worker ran before receiving work\n");
 		result = 1;
+	} else if (!detector.try_idle()) {
+		std::fprintf(stderr, "idle detector was reported busy\n");
+		result = 1;
 	} else {
 		report_stage("signaling first work item");
+		detector.hold_next_detection();
 		signal_work(detector);
-		if (!wait_for_runs(detector, 1) || detector.last_work_duration_us() < 3'000) {
-			std::fprintf(stderr, "detector work was lost or not timed\n");
+		const bool detection_started = detector.wait_for_detection();
+		if (!detection_started) {
+			std::fprintf(stderr, "held detector work did not begin\n");
 			result = 2;
-		} else {
+		} else if (detector.try_idle()) {
+			std::fprintf(stderr, "active detector work was reported idle\n");
+			result = 3;
+		}
+		detector.release_held_detection();
+		if (detection_started) {
+			if (!wait_for_runs(detector, 1) || detector.last_work_duration_us() < 3'000) {
+				std::fprintf(stderr, "detector work was lost or not timed\n");
+				result = 4;
+			} else if (!wait_until_idle(detector)) {
+				std::fprintf(stderr, "completed detector was not reported idle\n");
+				result = 5;
+			}
 			report_stage("first work item completed");
 			report_stage("signaling second work item");
 			signal_work(detector);
 			if (!wait_for_runs(detector, 2) || detector.last_work_duration_us() < 3'000 ||
 			    detector.max_work_duration_us() < detector.last_work_duration_us()) {
 				std::fprintf(stderr, "detector timing did not update consistently\n");
-				result = 3;
+				result = 6;
 			} else {
 				report_stage("second work item completed");
 			}
@@ -125,19 +181,19 @@ int main()
 		report_stage("restarting worker");
 		if (!detector.start()) {
 			std::fprintf(stderr, "detector worker did not restart after join\n");
-			result = 4;
+			result = 7;
 		} else {
 			signal_work(detector);
 			if (!detector.wait_for_detection()) {
 				std::fprintf(stderr, "restarted detector worker did not begin work\n");
-				result = 5;
+				result = 8;
 			}
 			detector.stop();
 			const uint64_t completed_at_stop = detector.completed_work_count();
 			std::this_thread::sleep_for(std::chrono::milliseconds(20));
 			if (completed_at_stop < 3 || detector.completed_work_count() != completed_at_stop) {
 				std::fprintf(stderr, "detector worker did not drain active work before stopping\n");
-				result = 6;
+				result = 9;
 			}
 		}
 	}
@@ -148,19 +204,19 @@ int main()
 		probe_detector teardown_detector(lifetime_state);
 		if (!teardown_detector.start()) {
 			std::fprintf(stderr, "teardown detector did not start\n");
-			result = 7;
+			result = 10;
 		} else {
 			signal_work(teardown_detector);
 			if (!teardown_detector.wait_for_detection()) {
 				std::fprintf(stderr, "teardown detector did not begin active work\n");
-				result = 8;
+				result = 11;
 			}
 		}
 	}
 	if (lifetime_state->resource_available.load(std::memory_order_acquire) ||
 	    lifetime_state->accessed_after_release.load(std::memory_order_acquire)) {
 		std::fprintf(stderr, "derived resources were released before active detection stopped\n");
-		result = 9;
+		result = 12;
 	}
 	return result;
 }

@@ -57,6 +57,8 @@ public:
 
 	bool start();
 	void stop();
+	/// Nonblocking readiness check; false means active or queued work owns the worker.
+	bool try_idle();
 	uint64_t last_work_duration_us() const { return last_work_us.load(std::memory_order_relaxed); }
 	uint64_t max_work_duration_us() const { return max_work_us.load(std::memory_order_relaxed); }
 	uint64_t completed_work_count() const { return completed_work.load(std::memory_order_relaxed); }

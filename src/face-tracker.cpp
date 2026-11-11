@@ -1269,8 +1269,27 @@ static void fts_tick(void *data, float second)
 			s->safe_runtime->pending_settings = nullptr;
 		}
 		if (settings) {
-			ftf_update(s, settings);
-			obs_data_release(settings);
+			// Updating the detector engine stops and joins its worker. Only apply
+			// deferred settings while that worker is idle so a slow CNN frame can
+			// never stall OBS's graphics tick while teardown waits for it.
+			bool detector_idle = true;
+			if (s->ftm->detect)
+				detector_idle = s->ftm->detect->try_idle();
+			if (detector_idle) {
+				ftf_update(s, settings);
+				obs_data_release(settings);
+			} else {
+				obs_data_t *superseded = nullptr;
+				{
+					std::lock_guard<std::mutex> lock(s->safe_runtime->pending_settings_mutex);
+					if (!s->safe_runtime->pending_settings)
+						s->safe_runtime->pending_settings = settings;
+					else
+						superseded = settings;
+				}
+				if (superseded)
+					obs_data_release(superseded);
+			}
 		}
 		apply_safe_source_configuration(s, s->safe_runtime);
 	}
