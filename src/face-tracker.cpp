@@ -128,6 +128,23 @@ struct faithfulframe_source_runtime
 
 	~faithfulframe_source_runtime()
 	{
+		// Stop new callback access before releasing any binding. Request shutdown
+		// for every session first so queued commands/results are neutralized before
+		// the first binding destructor joins its executor.
+		enabled.store(false, std::memory_order_release);
+		reconfiguration_pending.store(true, std::memory_order_release);
+		active.exchange(nullptr, std::memory_order_acq_rel);
+		for (const auto &owned_binding : bindings) {
+			if (!owned_binding)
+				continue;
+			auto *binding = owned_binding.get();
+			binding->transition_pending.store(true, std::memory_order_release);
+			binding->closed.store(true, std::memory_order_release);
+			binding->render_executor.store(nullptr, std::memory_order_release);
+			auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
+			if (executor)
+				executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+		}
 		if (pending_settings)
 			obs_data_release(pending_settings);
 	}
