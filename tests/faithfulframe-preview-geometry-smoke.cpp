@@ -36,10 +36,26 @@ int main()
 	check(!ff_preview_zoom_factor(ff_rect{NAN, 0.0f, 0.5f, 0.5f}, 3840, 2160, 1920, 1080, zoom));
 	check(!ff_preview_zoom_factor(ff_rect{0.0f, 0.0f, 1.0f, 1.0f}, 0, 2160, 1920, 1080, zoom));
 
+	ff_rect source_crop{0.25f, 0.25f, 0.5f, 0.5f};
+	ff_rect source_viewport{0.1f, 0.1f, 0.8f, 0.8f};
+	ff_preview_rect_d mapped{};
+	uint32_t source_preview_width = 1920, source_preview_height = 1080;
+	check(ff_preview_set_full_source_transform(source_crop, source_viewport, source_preview_width,
+						   source_preview_height, 3840, 2160));
+	check(source_preview_width == 3840 && source_preview_height == 2160);
+	check(ff_preview_valid_rect(source_crop) && source_crop.x == 0.0f && source_crop.y == 0.0f &&
+	      source_crop.width == 1.0f && source_crop.height == 1.0f);
+	check(ff_preview_valid_rect(source_viewport) && source_viewport.x == 0.0f && source_viewport.y == 0.0f &&
+	      source_viewport.width == 1.0f && source_viewport.height == 1.0f);
+	const ff_rect source_candidate{0.25f, 0.25f, 0.25f, 0.25f};
+	check(ff_preview_candidate_rect(source_crop, source_viewport, source_candidate, mapped));
+	check(near(mapped.x, 0.25) && near(mapped.y, 0.25) && near(mapped.width, 0.25) && near(mapped.height, 0.25));
+	check(!ff_preview_set_full_source_transform(source_crop, source_viewport, source_preview_width,
+						    source_preview_height, 0, 2160));
+
 	const ff_rect crop{0.25f, 0.25f, 0.5f, 0.5f};
 	const ff_rect viewport{0.0f, 0.125f, 1.0f, 0.75f};
 	const ff_rect candidate{0.5f, 0.375f, 0.25f, 0.25f};
-	ff_preview_rect_d mapped{};
 	check(ff_preview_candidate_rect(crop, viewport, candidate, mapped));
 	check(near(mapped.x, 0.5) && near(mapped.y, 0.3125));
 	check(near(mapped.width, 0.5) && near(mapped.height, 0.375));

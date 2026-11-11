@@ -63,6 +63,21 @@ inline bool ff_preview_candidate_rect(const ff_rect &crop, const ff_rect &viewpo
 	return true;
 }
 
+/// Use the complete source as the preview image when the monitor displays the
+/// untracked camera feed. Its canvas then has the source's aspect ratio.
+inline bool ff_preview_set_full_source_transform(ff_rect &crop, ff_rect &viewport, uint32_t &output_width,
+						 uint32_t &output_height, uint32_t source_width,
+						 uint32_t source_height)
+{
+	if (!source_width || !source_height)
+		return false;
+	crop = ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
+	viewport = ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
+	output_width = source_width;
+	output_height = source_height;
+	return true;
+}
+
 /// Convert a widget-local point into normalized output-image coordinates after
 /// aspect-fit letterboxing. Logical or physical pixels work as long as point
 /// and widget dimensions use the same units.

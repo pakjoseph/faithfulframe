@@ -294,12 +294,8 @@ static bool candidate_output_rect(const faithfulframe_safe_preview &preview, con
 
 static void use_full_source_preview_transform(faithfulframe_safe_preview &preview)
 {
-	if (!preview.source_width || !preview.source_height)
-		return;
-	preview.crop = ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
-	preview.viewport = ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
-	preview.output_width = preview.source_width;
-	preview.output_height = preview.source_height;
+	ff_preview_set_full_source_transform(preview.crop, preview.viewport, preview.output_width,
+					     preview.output_height, preview.source_width, preview.source_height);
 }
 
 static bool send_safe_command(obs_source_t *source, uint32_t kind, const QVariantMap *candidate = nullptr)
