@@ -284,11 +284,20 @@ inline void face_tracker_manager::stage_to_detector()
 	// get previous results
 	if (detector_in_progress) {
 		detect->get_faces(detect_rects);
-		for (size_t i = 0; i < detect_rects.size(); i++)
-			debug_detect("stage_to_detector: detect_rects %d %d %d %d %d %f", i, detect_rects[i].x0,
-				     detect_rects[i].y0, detect_rects[i].x1, detect_rects[i].y1, detect_rects[i].score);
-		attenuate_tracker();
-		copy_detector_to_tracker();
+		const uint64_t current_epoch = detection_epoch.load(std::memory_order_acquire);
+		if (face_detector_result_epoch_is_current(detect->completed_result_epoch(), current_epoch)) {
+			for (size_t i = 0; i < detect_rects.size(); i++)
+				debug_detect("stage_to_detector: detect_rects %d %d %d %d %d %f", i, detect_rects[i].x0,
+					     detect_rects[i].y0, detect_rects[i].x1, detect_rects[i].y1,
+					     detect_rects[i].score);
+			attenuate_tracker();
+			copy_detector_to_tracker();
+		} else {
+			// Geometry/configuration invalidation may happen while dlib is
+			// processing a previously captured frame. Never seed a new tracker
+			// from that result under the new session generation.
+			detect_rects.clear();
+		}
 		detector_in_progress = false;
 	}
 
@@ -298,6 +307,11 @@ inline void face_tracker_manager::stage_to_detector()
 	}
 
 	if (auto cvtex = get_cvtex()) {
+		if (!face_detector_result_epoch_is_current(cvtex->detection_epoch,
+							   detection_epoch.load(std::memory_order_acquire))) {
+			detect->unlock();
+			return;
+		}
 		detect->set_texture(cvtex, detector_crop_l, detector_crop_r, detector_crop_t, detector_crop_b);
 		if (detector_engine == engine_dlib_hog) {
 			if (auto *d = dynamic_cast<face_detector_dlib_hog *>(detect))
@@ -438,8 +452,12 @@ static inline void make_tracker_rects(std::vector<face_tracker_manager::tracker_
 void face_tracker_manager::tick(float second)
 {
 	if (reset_requested.exchange(false, std::memory_order_acq_rel)) {
-		for (int i = trackers.size() - 1; i >= 0; i--)
-			trackers[i].att = 0.0f;
+		const uint64_t current_epoch = detection_epoch.load(std::memory_order_relaxed);
+		const uint64_t next_epoch = current_epoch == std::numeric_limits<uint64_t>::max() ? 0
+												  : current_epoch + 1;
+		detection_epoch.store(next_epoch, std::memory_order_release);
+		while (!trackers.empty())
+			retire_tracker(static_cast<int>(trackers.size() - 1));
 		detect_rects.clear();
 	}
 

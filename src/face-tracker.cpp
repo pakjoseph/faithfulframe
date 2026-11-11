@@ -1391,6 +1391,11 @@ static void fts_tick(void *data, float second)
 
 static inline void render_target(struct face_tracker_filter *s, obs_source_t *target, obs_source_t *parent)
 {
+	// Keep the generation associated with this rendered image. The asynchronous
+	// detector must not relabel old pixels with a newer generation if an OBS
+	// lifecycle update lands before surface readback/submission.
+	s->ftm->detector_input_epoch.store(s->ftm->detection_epoch.load(std::memory_order_acquire),
+					   std::memory_order_release);
 	if (!s->texrender)
 		s->texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 	const uint32_t cx = s->known_width, cy = s->known_height;
@@ -1557,6 +1562,7 @@ static inline std::shared_ptr<texture_object> surface_to_cvtex(struct face_track
 	cvtex->scale = scale;
 	cvtex->tick = s->ftm->tick_cnt;
 	cvtex->captured_at_ms = os_gettime_ns() / 1000000ULL;
+	cvtex->detection_epoch = s->ftm->detector_input_epoch.load(std::memory_order_acquire);
 
 	struct obs_source_frame frame;
 	memset(&frame, 0, sizeof(frame));

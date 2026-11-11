@@ -1013,11 +1013,13 @@ static struct obs_source_frame *ftptz_filter_video(void *data, struct obs_source
 		return NULL;
 
 	auto *s = (struct face_tracker_ptz *)data;
+	const uint64_t input_epoch = s->ftm->detection_epoch.load(std::memory_order_acquire);
 	const float scale = s->ftm->scale.load(std::memory_order_relaxed);
 
 	std::shared_ptr<texture_object> cvtex(new texture_object());
 	cvtex->scale = scale;
 	cvtex->tick = s->ftm->tick_cnt;
+	cvtex->detection_epoch = input_epoch;
 
 	if (is_rgb_format(frame->format)) {
 		cvtex->set_texture_obsframe(frame, scale);

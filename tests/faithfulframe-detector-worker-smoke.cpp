@@ -18,12 +18,16 @@ class probe_detector final : public face_detector_base {
 	std::shared_ptr<probe_lifetime_state> lifetime_state;
 	std::mutex detection_mutex;
 	std::condition_variable detection_condition;
+	std::atomic<uint64_t> queued_result_epoch{0};
 	bool detecting = false;
 	bool hold_detection = false;
 	bool release_detection = false;
 
 	void detect_main() override
 	{
+		// Model the detector retaining the generation of its captured frame while
+		// inference is in progress.
+		set_result_epoch(queued_result_epoch.exchange(0, std::memory_order_acq_rel));
 		bool should_hold = false;
 		{
 			std::lock_guard<std::mutex> lock(detection_mutex);
@@ -69,6 +73,7 @@ public:
 		hold_detection = true;
 		release_detection = false;
 	}
+	void queue_result_epoch(uint64_t epoch) { queued_result_epoch.store(epoch, std::memory_order_release); }
 	void release_held_detection()
 	{
 		// Preserve the existing minimum-duration timing assertion for this work.
@@ -118,6 +123,10 @@ static void report_stage(const char *stage)
 
 int main()
 {
+	if (!face_detector_result_epoch_is_current(4, 4) || face_detector_result_epoch_is_current(3, 4) ||
+	    face_detector_result_epoch_is_current(0, 0))
+		return 13;
+
 	probe_detector detector(std::make_shared<probe_lifetime_state>());
 	report_stage("starting worker");
 	if (!detector.start()) {
@@ -142,6 +151,7 @@ int main()
 	} else {
 		report_stage("signaling first work item");
 		detector.hold_next_detection();
+		detector.queue_result_epoch(4);
 		signal_work(detector);
 		const bool detection_started = detector.wait_for_detection();
 		if (!detection_started) {
@@ -156,7 +166,20 @@ int main()
 			if (!wait_for_runs(detector, 1) || detector.last_work_duration_us() < 3'000) {
 				std::fprintf(stderr, "detector work was lost or not timed\n");
 				result = 4;
-			} else if (!wait_until_idle(detector)) {
+			} else {
+				detector.lock();
+				const uint64_t completed_epoch = detector.completed_result_epoch();
+				const bool stale_epoch_accepted =
+					face_detector_result_epoch_is_current(completed_epoch, 5);
+				detector.unlock();
+				if (completed_epoch != 4 || stale_epoch_accepted) {
+					std::fprintf(
+						stderr,
+						"completed detector result was not tagged and rejected as stale\n");
+					result = 10;
+				}
+			}
+			if (result == 0 && !wait_until_idle(detector)) {
 				std::fprintf(stderr, "completed detector was not reported idle\n");
 				result = 5;
 			}

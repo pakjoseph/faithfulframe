@@ -16,6 +16,7 @@ struct rect_s;
 
 class face_detector_base {
 	std::thread thread;
+	uint64_t result_epoch = 0;
 	std::mutex mutex;
 	std::mutex lifecycle_mutex;
 	std::condition_variable cond;
@@ -27,6 +28,9 @@ class face_detector_base {
 
 	static void thread_routine(face_detector_base *);
 	virtual void detect_main() = 0;
+
+protected:
+	void set_result_epoch(uint64_t epoch) { result_epoch = epoch; }
 
 public:
 	face_detector_base();
@@ -54,6 +58,7 @@ public:
 	virtual void set_texture(std::shared_ptr<class texture_object> &, int crop_l, int crop_r, int crop_t,
 				 int crop_b) = 0;
 	virtual void get_faces(std::vector<struct rect_s> &) = 0;
+	uint64_t completed_result_epoch() const { return result_epoch; }
 
 	bool start();
 	void stop();
@@ -63,3 +68,8 @@ public:
 	uint64_t max_work_duration_us() const { return max_work_us.load(std::memory_order_relaxed); }
 	uint64_t completed_work_count() const { return completed_work.load(std::memory_order_relaxed); }
 };
+
+inline bool face_detector_result_epoch_is_current(uint64_t result_epoch, uint64_t current_epoch)
+{
+	return current_epoch != 0 && result_epoch == current_epoch;
+}

@@ -21,4 +21,7 @@ public:
 	float scale;
 	// Monotonic time when these pixels were copied, not when asynchronous tracking finishes.
 	uint64_t captured_at_ms = 0;
+	// Detector results from a prior epoch are invalid after source geometry or
+	// tracker policy is reset, even if inference completes afterward.
+	uint64_t detection_epoch = 0;
 };

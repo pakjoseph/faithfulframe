@@ -75,6 +75,8 @@ public: /* not sure they are necessary to be public */
 	std::deque<struct tracker_inst_s> trackers;
 	std::deque<struct tracker_inst_s> trackers_idlepool;
 	uint64_t next_candidate_handle;
+	std::atomic<uint64_t> detection_epoch{1};
+	std::atomic<uint64_t> detector_input_epoch{0};
 
 private:
 	int next_tick_stage_to_detector;

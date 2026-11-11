@@ -65,6 +65,7 @@ void face_detector_dlib_cnn::detect_main()
 	// A failed frame must not leave the previous detections looking current.
 	p->rects.clear();
 	std::shared_ptr<texture_object> tex = std::move(p->tex);
+	set_result_epoch(tex ? tex->detection_epoch : 0);
 	if (!tex)
 		return;
 
