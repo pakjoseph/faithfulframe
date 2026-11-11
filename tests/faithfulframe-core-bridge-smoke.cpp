@@ -141,5 +141,39 @@ int main()
 	faithfulframe_core_bridge invalid(config, invalid_identity, generations, invalid_result);
 	if (invalid_result != FF_INVALID_ARGUMENT)
 		return 16;
+
+	ff_session_config deadline_config = config;
+	deadline_config.loss_grace_ms = 1500;
+	const ff_identity deadline_identity{104, 204};
+	const ff_generations deadline_generations{1, 1, 1, 1, 1};
+	ff_result deadline_result = FF_OK;
+	faithfulframe_core_bridge deadline_bridge(deadline_config, deadline_identity, deadline_generations,
+						  deadline_result);
+	ff_snapshot deadline_snapshot{};
+	if (deadline_result != FF_OK || deadline_bridge.tick(1, deadline_snapshot) != FF_OK)
+		return 20;
+	const ff_command deadline_enable{FF_COMMAND_ENABLE_AUTO_FOLLOW,
+					 deadline_identity,
+					 deadline_snapshot.status_version,
+					 deadline_generations,
+					 0,
+					 0};
+	if (deadline_bridge.apply_command(2, deadline_enable, deadline_snapshot) != FF_OK)
+		return 21;
+	const ff_candidate deadline_candidate{31, 3001, deadline_identity,       1, deadline_generations,
+					      3,  500,  {0.4f, 0.2f, 0.1f, 0.2f}};
+	if (deadline_bridge.publish_candidate(3, deadline_candidate, deadline_snapshot) != FF_OK)
+		return 22;
+	const ff_command deadline_select{FF_COMMAND_SELECT_CANDIDATE,      deadline_identity,
+					 deadline_snapshot.status_version, deadline_generations,
+					 deadline_candidate.handle,        deadline_candidate.observation_version};
+	if (deadline_bridge.apply_command(4, deadline_select, deadline_snapshot) != FF_OK ||
+	    deadline_snapshot.state != FF_STATE_LOCKED || deadline_bridge.tick(504, deadline_snapshot) != FF_OK ||
+	    deadline_snapshot.state != FF_STATE_SEARCHING || !deadline_snapshot.has_loss_deadline ||
+	    deadline_snapshot.loss_deadline_ms != 2004)
+		return 23;
+	if (deadline_bridge.tick(2004, deadline_snapshot) != FF_OK || deadline_snapshot.state != FF_STATE_LOST ||
+	    deadline_snapshot.has_loss_deadline)
+		return 24;
 	return 0;
 }
