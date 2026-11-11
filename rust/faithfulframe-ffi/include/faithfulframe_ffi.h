@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -177,4 +178,26 @@ ff_result ff_session_lifecycle(ff_session *session, uint64_t monotonic_ms, const
 
 #ifdef __cplusplus
 }
+
+/* Keep the duplicated Rust repr(C) records ABI-compatible on all supported
+ * 64-bit targets. Rust has matching compile-time assertions in its FFI crate. */
+static_assert(sizeof(ff_generations) == 40, "ff_generations ABI layout changed");
+static_assert(sizeof(ff_identity) == 16, "ff_identity ABI layout changed");
+static_assert(sizeof(ff_rect) == 16, "ff_rect ABI layout changed");
+static_assert(sizeof(ff_session_config) == 72, "ff_session_config ABI layout changed");
+static_assert(sizeof(ff_candidate) == 112, "ff_candidate ABI layout changed");
+static_assert(sizeof(ff_command) == 88, "ff_command ABI layout changed");
+static_assert(sizeof(ff_lifecycle) == 72, "ff_lifecycle ABI layout changed");
+static_assert(sizeof(ff_snapshot) == 152, "ff_snapshot ABI layout changed");
+static_assert(alignof(ff_generations) == 8, "ff_generations alignment changed");
+static_assert(alignof(ff_identity) == 8, "ff_identity alignment changed");
+static_assert(alignof(ff_snapshot) == 8, "ff_snapshot alignment changed");
+static_assert(offsetof(ff_session_config, dead_zone_fraction) == 60, "ff_session_config field offset changed");
+static_assert(offsetof(ff_session_config, zoom_smoothing) == 64, "ff_session_config field offset changed");
+static_assert(offsetof(ff_candidate, generations) == 40, "ff_candidate field offset changed");
+static_assert(offsetof(ff_candidate, rect) == 96, "ff_candidate field offset changed");
+static_assert(offsetof(ff_command, generations) == 32, "ff_command field offset changed");
+static_assert(offsetof(ff_lifecycle, generations) == 24, "ff_lifecycle field offset changed");
+static_assert(offsetof(ff_snapshot, crop) == 76, "ff_snapshot field offset changed");
+static_assert(offsetof(ff_snapshot, generations) == 112, "ff_snapshot field offset changed");
 #endif

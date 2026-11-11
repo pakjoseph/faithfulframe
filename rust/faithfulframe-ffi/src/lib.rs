@@ -112,6 +112,21 @@ pub struct FfSnapshot {
     generations: FfGenerations,
 }
 
+// The public C header intentionally mirrors these repr(C) value records.
+// Fail the Rust build if a field addition or platform layout change drifts
+// from the C++ bridge's compile-time ABI assertions.
+const _: () = {
+    assert!(std::mem::size_of::<FfGenerations>() == 40);
+    assert!(std::mem::size_of::<FfIdentity>() == 16);
+    assert!(std::mem::size_of::<FfRect>() == 16);
+    assert!(std::mem::size_of::<FfSessionConfig>() == 72);
+    assert!(std::mem::size_of::<FfCandidate>() == 112);
+    assert!(std::mem::size_of::<FfCommand>() == 88);
+    assert!(std::mem::size_of::<FfLifecycle>() == 72);
+    assert!(std::mem::size_of::<FfSnapshot>() == 152);
+    assert!(std::mem::offset_of!(FfSnapshot, generations) == 112);
+};
+
 pub struct FfSession {
     inner: TrackingEngine,
 }
