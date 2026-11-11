@@ -59,8 +59,8 @@ struct faithfulframe_safe_preview
 	uint32_t source_height = 0;
 	uint32_t output_width = 0;
 	uint32_t output_height = 0;
-	int64_t status_snapshot_age_ms = -1;
-	int64_t loss_remaining_ms = -1;
+	long long status_snapshot_age_ms = -1;
+	long long loss_remaining_ms = -1;
 	uint64_t executor_queue_depth = 0;
 	uint64_t executor_queue_high_water = 0;
 	uint64_t executor_accepted_work = 0;
