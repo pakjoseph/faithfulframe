@@ -74,7 +74,11 @@ void face_detector_base::start()
 	request_stop = 0;
 	work_pending = false;
 	unlock();
-	pthread_create(&thread, NULL, thread_routine, (void *)this);
+	const int result = pthread_create(&thread, NULL, thread_routine, (void *)this);
+	if (result != 0) {
+		blog(LOG_ERROR, "face_detector_base: failed to start thread (error %d)", result);
+		return;
+	}
 	running = 1;
 }
 
