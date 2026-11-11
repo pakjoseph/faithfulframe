@@ -1,7 +1,9 @@
 #pragma once
 
 #include <obs.h>
+#include <QMouseEvent>
 #include <QWidget>
+#include <QPointF>
 #include <memory>
 
 #define SCOPE_WIDGET_N_SRC 4
@@ -16,9 +18,11 @@ class FTWidget : public QWidget {
 	void paintEvent(QPaintEvent *event) override;
 	class QPaintEngine *paintEngine() const override;
 	void closeEvent(QCloseEvent *event) override;
+	void mousePressEvent(QMouseEvent *event) override;
 
 signals:
 	void removeDock();
+	void previewClicked(const QPointF &position);
 
 public:
 	FTWidget(struct face_tracker_dock_s *data, QWidget *parent);

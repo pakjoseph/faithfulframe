@@ -2,6 +2,7 @@
 
 #ifdef __cplusplus
 #include <QFrame>
+#include <QPointF>
 #include <string>
 #include <obs.h>
 #include <obs.hpp>
@@ -23,6 +24,12 @@ public:
 	class QPushButton *propertyButton;
 	class FTWidget *ftWidget;
 	class QCheckBox *notrackButton;
+	class QLabel *safeStatusLabel;
+	class QComboBox *candidateSelector;
+	class QPushButton *autoFollowButton;
+	class QPushButton *manualOverrideButton;
+	class QPushButton *selectCandidateButton;
+	class QTimer *statusTimer;
 
 	bool updating_widget = false;
 	bool in_updateState = false;
@@ -71,6 +78,10 @@ private slots:
 		Qt::CheckState state
 #endif
 	);
+	void autoFollowButtonClicked();
+	void manualOverrideButtonClicked();
+	void selectCandidateButtonClicked();
+	void handlePreviewClick(const QPointF &position);
 };
 
 extern "C" {

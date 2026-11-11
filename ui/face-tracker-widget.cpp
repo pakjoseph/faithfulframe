@@ -120,6 +120,20 @@ void FTWidget::paintEvent(QPaintEvent *)
 	CreateDisplay();
 }
 
+void FTWidget::mousePressEvent(QMouseEvent *event)
+{
+	if (event->button() == Qt::LeftButton) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+		emit previewClicked(event->position());
+#else
+		emit previewClicked(event->localPos());
+#endif
+		event->accept();
+		return;
+	}
+	QWidget::mousePressEvent(event);
+}
+
 class QPaintEngine *FTWidget::paintEngine() const
 {
 	return NULL;
