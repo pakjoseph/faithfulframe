@@ -16,6 +16,8 @@
 libvisca_thread::libvisca_thread()
 {
 	debug("libvisca_thread::libvisca_thread");
+	mutex_initialized = false;
+	worker_started = false;
 	iface = NULL;
 	camera = NULL;
 	data = NULL;
@@ -26,7 +28,12 @@ libvisca_thread::libvisca_thread()
 	data_changed = false;
 	preset_changed = false;
 	preset_rsvd = 0;
-	pthread_mutex_init(&mutex, 0);
+	const int mutex_result = pthread_mutex_init(&mutex, 0);
+	if (mutex_result != 0) {
+		blog(LOG_ERROR, "failed to initialize VISCA worker mutex: %d", mutex_result);
+		return;
+	}
+	mutex_initialized = true;
 
 	add_ref(); // release inside thread_main
 	pthread_t thread;
@@ -36,6 +43,7 @@ libvisca_thread::libvisca_thread()
 		release();
 		return;
 	}
+	worker_started = true;
 	const int detach_result = pthread_detach(thread);
 	if (detach_result != 0)
 		blog(LOG_ERROR, "failed to detach VISCA worker thread: %d", detach_result);
@@ -51,7 +59,8 @@ libvisca_thread::~libvisca_thread()
 		bfree(camera);
 	if (data)
 		obs_data_release(data);
-	pthread_mutex_destroy(&mutex);
+	if (mutex_initialized)
+		pthread_mutex_destroy(&mutex);
 }
 
 void libvisca_thread::thread_connect()
@@ -255,7 +264,7 @@ void libvisca_thread::thread_loop()
 
 void libvisca_thread::set_config(struct obs_data *data_)
 {
-	if (!data_)
+	if (!data_ || !mutex_initialized)
 		return;
 
 	obs_data_addref(data_);

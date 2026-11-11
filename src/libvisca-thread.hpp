@@ -6,6 +6,8 @@
 
 class libvisca_thread : public ptz_backend {
 	pthread_mutex_t mutex;
+	bool mutex_initialized;
+	bool worker_started;
 	struct _VISCA_interface *iface;
 	struct _VISCA_camera *camera;
 	struct obs_data *data;
@@ -25,6 +27,7 @@ public:
 	~libvisca_thread() override;
 
 	void set_config(struct obs_data *data) override; // and attempt to connect
+	bool can_send() override { return worker_started; }
 
 	void set_pantilt_speed(int pan, int tilt) override
 	{
