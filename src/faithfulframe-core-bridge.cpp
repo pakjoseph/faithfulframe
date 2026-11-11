@@ -193,6 +193,10 @@ bool faithfulframe_session_executor::enqueue(work_item item, bool coalesce)
 		rejected_work.fetch_add(1, std::memory_order_relaxed);
 		return false;
 	}
+	// Producers capture timestamps before acquiring this mutex. A delayed
+	// producer must not place an older event after newer accepted work, because
+	// the Rust session rejects non-monotonic events and status age would regress.
+	item.monotonic_ms = std::max(item.monotonic_ms, last_submitted_ms);
 
 	if (coalesce && queue_size) {
 		const size_t tail = (queue_head + queue_size - 1) % queue.size();

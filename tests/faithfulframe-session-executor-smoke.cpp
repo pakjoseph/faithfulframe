@@ -102,6 +102,35 @@ int run_smoke()
 	    completed_diagnostics.coalesced_work != 0)
 		return 15;
 
+	// Cross-thread ingress can acquire the queue mutex in a different order
+	// from timestamp sampling. Event time and snapshot publication must remain
+	// monotonic in the actual serialized work order.
+	faithfulframe_session_executor ordered(config, ff_identity{103, 203}, generations);
+	ff_snapshot ordered_snapshot{};
+	if (!await_snapshot(
+		    ordered, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, ordered_snapshot))
+		return 20;
+	const uint64_t initial_version = ordered_snapshot.status_version;
+	if (!ordered.enqueue_tick(100) ||
+	    !await_snapshot(
+		    ordered,
+		    [initial_version](const ff_snapshot &value) { return value.status_version > initial_version; },
+		    ordered_snapshot))
+		return 21;
+	uint64_t first_published_at = 0;
+	if (!ordered.try_snapshot(ordered_snapshot, &first_published_at) || first_published_at != 100)
+		return 22;
+	const uint64_t first_version = ordered_snapshot.status_version;
+	if (!ordered.enqueue_tick(99) ||
+	    !await_snapshot(
+		    ordered, [first_version](const ff_snapshot &value) { return value.status_version > first_version; },
+		    ordered_snapshot))
+		return 23;
+	uint64_t second_published_at = 0;
+	if (!ordered.try_snapshot(ordered_snapshot, &second_published_at) || second_published_at != first_published_at)
+		return 24;
+	ordered.shutdown();
+
 	// Teardown drops queued detector and operator work, then publishes only the
 	// worker-owned destruction transition.
 	faithfulframe_session_executor queued(config, ff_identity{102, 202}, generations);
