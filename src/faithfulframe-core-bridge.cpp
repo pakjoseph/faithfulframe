@@ -1,5 +1,9 @@
 #include "faithfulframe-core-bridge.hpp"
 
+#include <algorithm>
+#include <cstring>
+#include <limits>
+
 void faithfulframe_core_bridge::deleter::operator()(ff_session *session) const
 {
 	ff_session_destroy(session);
@@ -57,4 +61,236 @@ ff_result faithfulframe_core_bridge::lifecycle(uint64_t monotonic_ms, const ff_l
 	if (!session)
 		return FF_INVALID_ARGUMENT;
 	return ff_session_lifecycle(session.get(), monotonic_ms, &event, &output);
+}
+
+static_assert(std::atomic<uint64_t>::is_always_lock_free, "OBS render snapshots require lock-free 64-bit atomics");
+
+faithfulframe_session_executor::faithfulframe_session_executor(const ff_session_config &config_,
+							       const ff_identity &identity_,
+							       const ff_generations &generations)
+	: config(config_), identity(identity_), initial_generations(generations)
+{
+	worker_started.store(true, std::memory_order_release);
+	try {
+		worker = std::thread(&faithfulframe_session_executor::run, this);
+	} catch (...) {
+		worker_started.store(false, std::memory_order_release);
+	}
+}
+
+faithfulframe_session_executor::~faithfulframe_session_executor()
+{
+	shutdown();
+}
+
+bool faithfulframe_session_executor::enqueue_tick(uint64_t monotonic_ms)
+{
+	work_item item;
+	item.kind = work_kind::tick;
+	item.monotonic_ms = monotonic_ms;
+	return enqueue(item, true);
+}
+
+bool faithfulframe_session_executor::enqueue_candidates(uint64_t monotonic_ms, const ff_candidate *candidates,
+							size_t count)
+{
+	if ((count && !candidates) || count > max_candidates)
+		return false;
+	work_item item;
+	item.kind = work_kind::candidates;
+	item.monotonic_ms = monotonic_ms;
+	item.candidate_count = count;
+	for (size_t i = 0; i < count; ++i)
+		item.candidates[i] = candidates[i];
+	return enqueue(item, true);
+}
+
+bool faithfulframe_session_executor::enqueue_command(uint64_t monotonic_ms, const ff_command &command)
+{
+	work_item item;
+	item.kind = work_kind::command;
+	item.monotonic_ms = monotonic_ms;
+	item.command = command;
+	return enqueue(item, false);
+}
+
+bool faithfulframe_session_executor::enqueue_lifecycle(uint64_t monotonic_ms, const ff_lifecycle &lifecycle)
+{
+	work_item item;
+	item.kind = work_kind::lifecycle;
+	item.monotonic_ms = monotonic_ms;
+	item.lifecycle = lifecycle;
+	return enqueue(item, false);
+}
+
+bool faithfulframe_session_executor::enqueue(const work_item &item, bool coalesce)
+{
+	if (!worker_started.load(std::memory_order_acquire))
+		return false;
+	std::unique_lock<std::mutex> lock(queue_mutex, std::try_to_lock);
+	if (!lock.owns_lock() || closing || closing_requested.load(std::memory_order_acquire))
+		return false;
+
+	if (coalesce && queue_size) {
+		const size_t tail = (queue_head + queue_size - 1) % queue.size();
+		if (queue[tail].kind == item.kind) {
+			queue[tail] = item;
+			last_submitted_ms = std::max(last_submitted_ms, item.monotonic_ms);
+			lock.unlock();
+			queue_condition.notify_one();
+			return true;
+		}
+	}
+	// Keep one slot reserved so shutdown can always enqueue its final lifecycle event.
+	if (queue_size == max_queued_work)
+		return false;
+	const size_t tail = (queue_head + queue_size) % queue.size();
+	queue[tail] = item;
+	++queue_size;
+	last_submitted_ms = std::max(last_submitted_ms, item.monotonic_ms);
+	lock.unlock();
+	queue_condition.notify_one();
+	return true;
+}
+
+bool faithfulframe_session_executor::try_snapshot(ff_snapshot &output, uint64_t *published_at_ms) const
+{
+	if (!published.try_read(output, published_at_ms))
+		return false;
+	if (output.closed)
+		return true;
+	return worker_started.load(std::memory_order_acquire) && !closing_requested.load(std::memory_order_acquire);
+}
+
+void faithfulframe_session_executor::shutdown()
+{
+	std::lock_guard<std::mutex> shutdown_lock(shutdown_mutex);
+	closing_requested.store(true, std::memory_order_release);
+	{
+		std::lock_guard<std::mutex> lock(queue_mutex);
+		closing = true;
+		// Pending detector results and operator commands are neutralized. The
+		// worker will derive the destroy generation from Rust's latest state.
+		queue_head = 0;
+		queue_size = 0;
+		if (worker_started.load(std::memory_order_acquire)) {
+			work_item stop;
+			stop.kind = work_kind::stop;
+			stop.monotonic_ms = last_submitted_ms == std::numeric_limits<uint64_t>::max()
+						    ? last_submitted_ms
+						    : last_submitted_ms + 1;
+			queue[0] = stop;
+			queue_size = 1;
+		}
+	}
+	queue_condition.notify_one();
+	if (worker.joinable())
+		worker.join();
+	worker_started.store(false, std::memory_order_release);
+}
+
+void faithfulframe_session_executor::snapshot_publisher::publish(const ff_snapshot &snapshot, uint64_t published_at)
+{
+	std::array<uint64_t, word_count> copy{};
+	std::memcpy(copy.data(), &snapshot, sizeof(snapshot));
+	sequence.fetch_add(1, std::memory_order_seq_cst);
+	for (size_t i = 0; i < word_count; ++i)
+		words[i].store(copy[i], std::memory_order_seq_cst);
+	published_at_ms.store(published_at, std::memory_order_seq_cst);
+	sequence.fetch_add(1, std::memory_order_seq_cst);
+}
+
+bool faithfulframe_session_executor::snapshot_publisher::try_read(ff_snapshot &snapshot, uint64_t *published_at) const
+{
+	const uint64_t before = sequence.load(std::memory_order_seq_cst);
+	if (before == 0 || (before & 1))
+		return false;
+	std::array<uint64_t, word_count> copy{};
+	for (size_t i = 0; i < word_count; ++i)
+		copy[i] = words[i].load(std::memory_order_seq_cst);
+	const uint64_t time = published_at_ms.load(std::memory_order_seq_cst);
+	if (sequence.load(std::memory_order_seq_cst) != before)
+		return false;
+	std::memcpy(&snapshot, copy.data(), sizeof(snapshot));
+	if (published_at)
+		*published_at = time;
+	return true;
+}
+
+void faithfulframe_session_executor::run()
+{
+	auto mark_stopped = [this] {
+		worker_started.store(false, std::memory_order_release);
+		queue_condition.notify_all();
+	};
+	try {
+		ff_result result = FF_OK;
+		faithfulframe_core_bridge bridge(config, identity, initial_generations, result);
+		if (result != FF_OK) {
+			mark_stopped();
+			return;
+		}
+
+		ff_snapshot snapshot{};
+		if (bridge.snapshot(snapshot) != FF_OK) {
+			mark_stopped();
+			return;
+		}
+		published.publish(snapshot, 0);
+
+		for (;;) {
+			work_item item;
+			{
+				std::unique_lock<std::mutex> lock(queue_mutex);
+				queue_condition.wait(lock, [this] { return queue_size != 0 || closing; });
+				if (!queue_size)
+					break;
+				item = queue[queue_head];
+				queue_head = (queue_head + 1) % queue.size();
+				--queue_size;
+			}
+
+			if (item.kind == work_kind::stop) {
+				ff_lifecycle destroyed{};
+				destroyed.kind = FF_LIFECYCLE_ADAPTER_DESTROYED;
+				destroyed.identity = identity;
+				destroyed.generations = snapshot.generations;
+				const bool can_advance =
+					destroyed.generations.session != std::numeric_limits<uint64_t>::max() &&
+					destroyed.generations.tracker != std::numeric_limits<uint64_t>::max();
+				if (can_advance) {
+					++destroyed.generations.session;
+					++destroyed.generations.tracker;
+					if (bridge.lifecycle(item.monotonic_ms, destroyed, snapshot) == FF_OK)
+						published.publish(snapshot, item.monotonic_ms);
+				}
+				break;
+			}
+
+			ff_result call_result = FF_OK;
+			switch (item.kind) {
+			case work_kind::tick:
+				call_result = bridge.tick(item.monotonic_ms, snapshot);
+				break;
+			case work_kind::candidates:
+				for (size_t i = 0; i < item.candidate_count && call_result == FF_OK; ++i)
+					call_result = bridge.publish_candidate(item.monotonic_ms, item.candidates[i],
+									       snapshot);
+				break;
+			case work_kind::command:
+				call_result = bridge.apply_command(item.monotonic_ms, item.command, snapshot);
+				break;
+			case work_kind::lifecycle:
+				call_result = bridge.lifecycle(item.monotonic_ms, item.lifecycle, snapshot);
+				break;
+			case work_kind::stop:
+				break;
+			}
+			if (call_result == FF_OK)
+				published.publish(snapshot, item.monotonic_ms);
+		}
+	} catch (...) {
+		// Never allow a C++ exception to escape the worker entry point.
+	}
+	mark_stopped();
 }
