@@ -107,6 +107,11 @@ typedef struct ff_session_config
 	float zoom_smoothing;
 } ff_session_config;
 
+/*
+ * Candidate handles are monotonically increasing within a session. An
+ * already-issued handle may only be repeated with its original continuity
+ * token; retired handles cannot be reused for another candidate.
+ */
 typedef struct ff_candidate
 {
 	uint64_t handle;

@@ -189,6 +189,7 @@ pub enum Lifecycle {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Candidate {
+    /// Monotonically allocated within a session. Issued handles are never reused.
     pub handle: CandidateHandle,
     pub continuity: ContinuityToken,
     pub identity: Identity,
@@ -281,7 +282,7 @@ pub struct TrackingSession {
     reason: Reason,
     selected: Option<SelectedTarget>,
     latest: BTreeMap<CandidateHandle, Candidate>,
-    handles: BTreeMap<CandidateHandle, ContinuityToken>,
+    highest_candidate_handle: CandidateHandle,
     held_crop: Rect,
     crop_action: CropAction,
     loss_started_at: Option<Millis>,
@@ -323,7 +324,7 @@ impl TrackingSession {
             reason: Reason::Startup,
             selected: None,
             latest: BTreeMap::new(),
-            handles: BTreeMap::new(),
+            highest_candidate_handle: 0,
             held_crop: safe_wide,
             crop_action: CropAction::None,
             loss_started_at: None,
@@ -513,9 +514,13 @@ impl TrackingSession {
         {
             return self.reject_command(Reason::InvalidCandidate);
         }
-        if let Some(previous) = self.handles.get(&candidate.handle)
-            && *previous != candidate.continuity
-        {
+        if let Some(previous) = self.latest.get(&candidate.handle) {
+            if previous.continuity != candidate.continuity {
+                return self.reject_command(Reason::InvalidCandidate);
+            }
+        } else if candidate.handle <= self.highest_candidate_handle {
+            // A bounded high-water mark rejects recycled/late handles without
+            // retaining every candidate ever seen during a long session.
             return self.reject_command(Reason::InvalidCandidate);
         }
         if self
@@ -525,7 +530,7 @@ impl TrackingSession {
         {
             return self.reject_command(Reason::InvalidCandidate);
         }
-        self.handles.insert(candidate.handle, candidate.continuity);
+        self.highest_candidate_handle = self.highest_candidate_handle.max(candidate.handle);
         self.latest.insert(candidate.handle, candidate);
         while self.latest.len() > self.config.max_candidates {
             if let Some(oldest) = self.latest.keys().next().copied() {
@@ -1518,6 +1523,35 @@ mod tests {
             CommandResult::Rejected(Reason::InvalidCandidate)
         );
         assert_policy_no_op(after, before);
+    }
+
+    #[test]
+    fn evicted_candidate_handles_cannot_be_recycled() {
+        let mut session = TrackingSession::new(
+            Config {
+                loss_grace_ms: 100,
+                max_evidence_age_ms: 10,
+                max_candidates: 1,
+                ..Config::default()
+            },
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
+        observe(&mut session, candidate(11, 110, 2, 3), 3);
+        assert_eq!(session.latest.len(), 1);
+        assert!(!session.latest.contains_key(&10));
+        let before = session.snapshot();
+
+        let after = observe(&mut session, candidate(10, 200, 3, 4), 4);
+
+        assert_eq!(
+            after.command_result,
+            CommandResult::Rejected(Reason::InvalidCandidate)
+        );
+        assert_policy_no_op(after, before);
+        assert_eq!(session.highest_candidate_handle, 11);
     }
 
     #[test]
