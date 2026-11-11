@@ -464,7 +464,10 @@ impl TrackingSession {
     }
 
     fn apply_candidate(&mut self, candidate: Candidate, at: Millis) -> CommandResult {
-        if candidate.identity != self.identity
+        if candidate.handle == 0
+            || candidate.continuity == 0
+            || candidate.observation_version == 0
+            || candidate.identity != self.identity
             || candidate.generations != self.generations
             || candidate.observed_at < self.last_at
             || candidate.observed_at > at
@@ -1432,6 +1435,30 @@ mod tests {
             Rect::normalized(0.9, 0.0, 0.2, 1.0),
             Err(GeometryError::OutOfBounds)
         );
+    }
+
+    #[test]
+    fn zero_candidate_identifiers_are_rejected_as_strict_no_ops() {
+        for invalid in 0..3 {
+            let mut session = session();
+            send(&mut session, 1, Command::EnableAutoFollow);
+            let before = session.snapshot();
+            let mut candidate = candidate(10, 100, 1, 2);
+            match invalid {
+                0 => candidate.handle = 0,
+                1 => candidate.continuity = 0,
+                _ => candidate.observation_version = 0,
+            }
+
+            let after = observe(&mut session, candidate, 2);
+
+            assert_eq!(
+                after.command_result,
+                CommandResult::Rejected(Reason::InvalidCandidate),
+                "invalid identifier case {invalid}"
+            );
+            assert_policy_no_op(after, before);
+        }
     }
 
     #[test]
