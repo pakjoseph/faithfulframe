@@ -67,6 +67,9 @@ struct faithfulframe_source_binding
 	obs_weak_source_t *target = nullptr;
 	std::string target_name;
 	std::shared_ptr<faithfulframe_session_executor> executor;
+	// Non-owning render view. The runtime retains this binding and its owning
+	// shared_ptr until OBS finishes callbacks for the adapter source.
+	std::atomic<faithfulframe_session_executor *> render_executor{nullptr};
 	ff_identity identity{};
 	ff_generations generations{1, 1, 1, 1, 1};
 	uint64_t observation_version = 0;
@@ -86,6 +89,7 @@ struct faithfulframe_source_binding
 
 	~faithfulframe_source_binding()
 	{
+		render_executor.store(nullptr, std::memory_order_release);
 		auto session = std::atomic_exchange_explicit(
 			&executor, std::shared_ptr<faithfulframe_session_executor>{}, std::memory_order_acq_rel);
 		if (session) {
@@ -121,6 +125,8 @@ struct faithfulframe_source_runtime
 };
 
 static std::atomic<uint64_t> faithfulframe_next_identity{1};
+static_assert(std::atomic<faithfulframe_session_executor *>::is_always_lock_free,
+	      "OBS rendering requires a lock-free executor view");
 
 static uint64_t allocate_faithfulframe_identity()
 {
@@ -871,7 +877,9 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 	const ff_generations initial{1, 1, 1, 1, 1};
 	try {
 		auto executor = std::make_shared<faithfulframe_session_executor>(config, binding->identity, initial);
+		auto *render_executor = executor.get();
 		std::atomic_store_explicit(&binding->executor, std::move(executor), std::memory_order_release);
+		binding->render_executor.store(render_executor, std::memory_order_release);
 	} catch (...) {
 		return false;
 	}
@@ -1515,7 +1523,7 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 	ff_rect viewport = full_source_viewport(source_width, source_height, output_width, output_height);
 	if (!force_black && binding && !binding->closed.load(std::memory_order_acquire) &&
 	    !binding->transition_pending.load(std::memory_order_acquire)) {
-		auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
+		auto *executor = binding->render_executor.load(std::memory_order_acquire);
 		ff_snapshot snapshot{};
 		uint64_t snapshot_time = 0;
 		const uint64_t now = source_monotonic_millis();
