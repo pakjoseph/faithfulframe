@@ -316,8 +316,12 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 		return "Camera inactive; activate its scene, then select the speaker again";
 	switch (preview.state) {
 	case FF_STATE_FROZEN:
+		if (preview.reason == 8)
+			return "Frozen at wide framing; press Resume when ready";
 		return "Frozen; press Resume when ready";
 	case FF_STATE_MANUAL:
+		if (preview.reason == 8)
+			return "Wide framing; select a face to follow again";
 		return "Manual; select a face before following";
 	case FF_STATE_SEARCHING:
 		return "Searching; holding the last framing";
@@ -819,8 +823,7 @@ void FTDock::updateState()
 		set_pause_button(pauseButton, safe_preview.state == FF_STATE_FROZEN);
 		pauseButton->setEnabled(safe_preview.available);
 		resetButton->setText("Reset to Wide");
-		resetButton->setEnabled(safe_preview.available && (safe_preview.state == FF_STATE_SEARCHING ||
-								   safe_preview.state == FF_STATE_LOST));
+		resetButton->setEnabled(safe_preview.available);
 		autoFollowButton->setEnabled(safe_preview.available && (safe_preview.state == FF_STATE_MANUAL ||
 									safe_preview.state == FF_STATE_LOST));
 		manualOverrideButton->setEnabled(safe_preview.available && safe_preview.state != FF_STATE_FROZEN &&

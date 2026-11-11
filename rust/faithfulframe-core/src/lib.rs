@@ -425,7 +425,12 @@ impl TrackingSession {
                 self.crop_action = CropAction::Hold;
                 CommandResult::Applied
             }
-            Command::ResetToWide if matches!(self.state, State::Searching | State::Lost) => {
+            Command::ResetToWide => {
+                if self.state != State::Frozen {
+                    self.state = State::Manual;
+                }
+                self.selected = None;
+                self.loss_deadline = None;
                 self.held_crop = self.config.safe_wide;
                 self.crop_action = CropAction::Wide;
                 self.reason = Reason::ResetWide;
@@ -1043,7 +1048,7 @@ mod tests {
     fn invalid_command_is_a_strict_no_op() {
         let mut session = session();
         let before = session.snapshot();
-        let after = send(&mut session, 1, Command::ResetToWide);
+        let after = send(&mut session, 1, Command::Resume);
         assert_eq!(
             after.command_result,
             CommandResult::Rejected(Reason::InvalidCommand)
@@ -1234,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn loss_holds_and_reset_wide_stays_lost() {
+    fn reset_wide_stops_following_and_requires_explicit_rearm() {
         let mut session = session();
         send(&mut session, 1, Command::EnableAutoFollow);
         let searching = session.snapshot();
@@ -1242,8 +1247,86 @@ mod tests {
         let lost = session.apply(Event::Tick { at: 101 });
         assert_eq!(lost.state, State::Lost);
         let reset = send(&mut session, 102, Command::ResetToWide);
-        assert_eq!(reset.state, State::Lost);
+        assert_eq!(reset.state, State::Manual);
+        assert_eq!(reset.selected, None);
         assert_eq!(reset.crop_action, CropAction::Wide);
+        assert_eq!(
+            send(&mut session, 103, Command::EnableAutoFollow).state,
+            State::Searching
+        );
+    }
+
+    #[test]
+    fn reset_wide_from_locked_clears_target_and_full_frames() {
+        let mut engine = TrackingEngine::new(
+            Config::default(),
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        engine.apply(Event::Candidate {
+            at: 2,
+            candidate: candidate(10, 100, 1, 2),
+        });
+        let searching = engine.snapshot();
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: searching.identity,
+                status_version: searching.status_version,
+                generations: searching.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: searching.observation_version,
+                },
+            },
+        });
+        assert_eq!(locked.state, State::Locked);
+        assert_ne!(locked.crop, Rect::full_frame());
+
+        let wide = engine.apply(Event::Command {
+            at: 4,
+            envelope: CommandEnvelope {
+                identity: locked.identity,
+                status_version: locked.status_version,
+                generations: locked.generations,
+                command: Command::ResetToWide,
+            },
+        });
+
+        assert_eq!(wide.command_result, CommandResult::Applied);
+        assert_eq!(wide.state, State::Manual);
+        assert_eq!(wide.selected, None);
+        assert_eq!(wide.crop_action, CropAction::Wide);
+        assert_eq!(wide.crop, Rect::full_frame());
+    }
+
+    #[test]
+    fn reset_wide_preserves_an_explicit_frozen_state() {
+        let mut session = session();
+        lock_test_target(&mut session);
+        send(&mut session, 4, Command::Freeze);
+        let frozen = session.snapshot();
+
+        let wide = send(&mut session, 5, Command::ResetToWide);
+
+        assert_eq!(wide.command_result, CommandResult::Applied);
+        assert_eq!(wide.state, State::Frozen);
+        assert_eq!(wide.selected, None);
+        assert_eq!(wide.crop, Rect::full_frame());
+        assert_eq!(wide.crop_action, CropAction::Wide);
+        assert_eq!(frozen.state, State::Frozen);
     }
 
     #[test]
