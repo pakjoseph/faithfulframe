@@ -1154,6 +1154,29 @@ mod tests {
     }
 
     #[test]
+    fn non_monotonic_freeze_command_is_a_strict_no_op() {
+        let mut session = session();
+        lock_test_target(&mut session);
+        let before = session.snapshot();
+
+        let after = session.apply(Event::Command {
+            at: 2,
+            envelope: CommandEnvelope {
+                identity: before.identity,
+                status_version: before.status_version,
+                generations: before.generations,
+                command: Command::Freeze,
+            },
+        });
+
+        assert_eq!(
+            after.command_result,
+            CommandResult::Rejected(Reason::NonMonotonicEvent)
+        );
+        assert_policy_no_op(after, before);
+    }
+
+    #[test]
     fn continuity_can_recover_only_inside_grace_period() {
         let mut session = session();
         send(&mut session, 1, Command::EnableAutoFollow);
