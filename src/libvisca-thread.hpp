@@ -12,7 +12,7 @@ class libvisca_thread : public ptz_backend {
 	volatile bool data_changed;
 	volatile bool preset_changed;
 	volatile long pan_rsvd, tilt_rsvd, zoom_rsvd;
-	volatile int preset_rsvd;
+	volatile long preset_rsvd;
 	volatile long zoom_got;
 
 	static void *thread_main(void *);
@@ -34,7 +34,7 @@ public:
 	void set_zoom_speed(int zoom) override { os_atomic_set_long(&zoom_rsvd, zoom); }
 	void recall_preset(int preset) override
 	{
-		preset_rsvd = preset;
+		os_atomic_set_long(&preset_rsvd, preset);
 		os_atomic_set_bool(&preset_changed, true);
 	}
 	float get_zoom() override { return raw2zoomfactor(os_atomic_load_long(&zoom_got)); }

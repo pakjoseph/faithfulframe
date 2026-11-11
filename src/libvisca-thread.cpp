@@ -23,12 +23,22 @@ libvisca_thread::libvisca_thread()
 	tilt_rsvd = 0;
 	zoom_rsvd = 0;
 	zoom_got = 0;
+	data_changed = false;
+	preset_changed = false;
+	preset_rsvd = 0;
 	pthread_mutex_init(&mutex, 0);
 
 	add_ref(); // release inside thread_main
 	pthread_t thread;
-	pthread_create(&thread, NULL, libvisca_thread::thread_main, (void *)this);
-	pthread_detach(thread);
+	const int create_result = pthread_create(&thread, NULL, libvisca_thread::thread_main, (void *)this);
+	if (create_result != 0) {
+		blog(LOG_ERROR, "failed to start VISCA worker thread: %d", create_result);
+		release();
+		return;
+	}
+	const int detach_result = pthread_detach(thread);
+	if (detach_result != 0)
+		blog(LOG_ERROR, "failed to detach VISCA worker thread: %d", detach_result);
 }
 
 libvisca_thread::~libvisca_thread()
@@ -47,30 +57,52 @@ libvisca_thread::~libvisca_thread()
 void libvisca_thread::thread_connect()
 {
 	pthread_mutex_lock(&mutex);
-
-	const char *address = obs_data_get_string(data, "address");
-	int port = (int)obs_data_get_int(data, "port");
-	auto *iface_new = (struct _VISCA_interface *)bzalloc(sizeof(struct _VISCA_interface));
-	debug("libvisca_thread::thread_connect connecting to address=%s port=%d...", address, port);
-	if (VISCA_open_tcp(iface_new, address, port) != VISCA_SUCCESS) {
-		blog(LOG_ERROR, "failed to connect %s:%d", address, port);
-		bfree(iface_new);
-		iface_new = NULL;
-	}
-	debug("libvisca_thread::thread_connect connected.");
+	auto *configuration = data;
+	if (configuration)
+		obs_data_addref(configuration);
 	pthread_mutex_unlock(&mutex);
-	if (!iface_new)
+	if (!configuration) {
+		os_atomic_set_bool(&data_changed, true);
 		return;
+	}
+
+	const char *address = obs_data_get_string(configuration, "address");
+	int port = (int)obs_data_get_int(configuration, "port");
+	auto *iface_new = (struct _VISCA_interface *)bzalloc(sizeof(struct _VISCA_interface));
+	if (!iface_new) {
+		obs_data_release(configuration);
+		blog(LOG_ERROR, "failed to allocate VISCA interface");
+		os_atomic_set_bool(&data_changed, true);
+		return;
+	}
+	debug("libvisca_thread::thread_connect connecting to address=%s port=%d...", address, port);
+	const uint32_t open_result = VISCA_open_tcp(iface_new, address, port);
+	if (open_result != VISCA_SUCCESS) {
+		blog(LOG_ERROR, "failed to connect %s:%d", address, port);
+		obs_data_release(configuration);
+		bfree(iface_new);
+		os_atomic_set_bool(&data_changed, true);
+		return;
+	}
+	obs_data_release(configuration);
+	debug("libvisca_thread::thread_connect connected.");
 
 	if (iface) {
 		VISCA_close(iface);
 		bfree(iface);
 	}
 	iface = iface_new;
-	if (!camera)
+	if (!camera) {
 		camera = (VISCACamera_t *)bzalloc(sizeof(VISCACamera_t));
-	data_changed = false;
-
+		if (!camera) {
+			VISCA_close(iface);
+			bfree(iface);
+			iface = NULL;
+			blog(LOG_ERROR, "failed to allocate VISCA camera state");
+			os_atomic_set_bool(&data_changed, true);
+			return;
+		}
+	}
 	debug("libvisca_thread::thread_connect sending VISCA_clear...");
 	camera->address = 1;
 	VISCA_clear(iface, camera);
@@ -164,7 +196,7 @@ void libvisca_thread::thread_loop()
 	int n_fail = 0;
 
 	while (get_ref() > 1) {
-		if (data_changed || n_fail > TH_FAIL) {
+		if (os_atomic_exchange_bool(&data_changed, false) || n_fail > TH_FAIL) {
 			thread_connect();
 			pan_prev = INT_MIN;
 			tilt_prev = INT_MIN;
@@ -200,15 +232,16 @@ void libvisca_thread::thread_loop()
 
 		if (os_atomic_set_bool(&preset_changed, false)) {
 			os_sleep_ms(48);
-			debug("libvisca_thread::thread_loop recall preset=%d", (int)preset_rsvd);
-			VISCA_memory_recall(iface, camera, preset_rsvd);
+			const int preset = (int)os_atomic_load_long(&preset_rsvd);
+			debug("libvisca_thread::thread_loop recall preset=%d", preset);
+			VISCA_memory_recall(iface, camera, preset);
 			os_sleep_ms(48);
 		}
 
 		if (zoom != 0) {
 			uint16_t zoom_cur = 0;
 			if (VISCA_get_zoom_value(iface, camera, &zoom_cur) == VISCA_SUCCESS) {
-				if (zoom_cur != zoom_got) {
+				if (zoom_cur != os_atomic_load_long(&zoom_got)) {
 					debug("libvisca_thread::thread_loop got zoom=%d", (int)zoom_cur);
 				}
 				os_atomic_set_long(&zoom_got, (long)zoom_cur);
@@ -222,24 +255,26 @@ void libvisca_thread::thread_loop()
 
 void libvisca_thread::set_config(struct obs_data *data_)
 {
-	pthread_mutex_lock(&mutex);
+	if (!data_)
+		return;
 
 	obs_data_addref(data_);
+	pthread_mutex_lock(&mutex);
+	bool reconnect = data == NULL;
+	obs_data_t *old_data = data;
 	if (data) {
-		obs_data_release(data);
 		const char *address_old = obs_data_get_string(data, "address");
 		int port_old = (int)obs_data_get_int(data, "port");
 		const char *address_new = obs_data_get_string(data_, "address");
 		int port_new = (int)obs_data_get_int(data_, "port");
-		if (strcmp(address_old, address_new))
-			data_changed = true;
-		if (port_old != port_new)
-			data_changed = true;
-	} else
-		data_changed = true;
+		reconnect = strcmp(address_old, address_new) != 0 || port_old != port_new;
+	}
 	data = data_;
-
 	pthread_mutex_unlock(&mutex);
+	if (reconnect)
+		os_atomic_set_bool(&data_changed, true);
+	if (old_data)
+		obs_data_release(old_data);
 }
 
 float libvisca_thread::raw2zoomfactor(int zoom)
