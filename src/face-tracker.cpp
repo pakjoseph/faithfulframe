@@ -112,6 +112,8 @@ struct faithfulframe_source_binding
 	bool set_active_child(bool active)
 	{
 		std::lock_guard<std::mutex> lock(active_child_mutex);
+		if (active && closed.load(std::memory_order_acquire))
+			return false;
 		if (!active) {
 			if (active_child_registered && parent_context && target) {
 				obs_source_t *source = obs_weak_source_get_source(target);
@@ -975,13 +977,31 @@ static bool enqueue_source_lifecycle_locked(faithfulframe_source_binding *bindin
 	return true;
 }
 
+static void fail_source_binding_closed(faithfulframe_source_binding *binding)
+{
+	if (!binding)
+		return;
+	binding->transition_pending.store(true, std::memory_order_release);
+	binding->effective_active.store(false, std::memory_order_release);
+	binding->closed.store(true, std::memory_order_release);
+	if (auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire))
+		executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+	binding->set_active_child(false);
+}
+
 static bool enqueue_source_lifecycle(faithfulframe_source_binding *binding, uint32_t kind, uint64_t at,
 				     uint32_t width = 0, uint32_t height = 0)
 {
 	if (!binding)
 		return false;
-	std::lock_guard<std::mutex> lock(binding->lifecycle_mutex);
-	return enqueue_source_lifecycle_locked(binding, kind, at, width, height);
+	bool queued = false;
+	{
+		std::lock_guard<std::mutex> lock(binding->lifecycle_mutex);
+		queued = enqueue_source_lifecycle_locked(binding, kind, at, width, height);
+	}
+	if (!queued)
+		fail_source_binding_closed(binding);
+	return queued;
 }
 
 static void update_effective_source_activation(faithfulframe_source_binding *binding, bool adapter_active,
@@ -989,16 +1009,21 @@ static void update_effective_source_activation(faithfulframe_source_binding *bin
 {
 	if (!binding)
 		return;
-	std::lock_guard<std::mutex> lock(binding->lifecycle_mutex);
-	binding->adapter_active.store(adapter_active, std::memory_order_release);
-	binding->source_active.store(source_active, std::memory_order_release);
-	const bool effective_active = adapter_active && source_active;
-	const bool was_active = binding->effective_active.exchange(effective_active, std::memory_order_acq_rel);
-	if (was_active == effective_active)
-		return;
-	const uint32_t lifecycle = effective_active ? FF_LIFECYCLE_SCENE_ACTIVE : FF_LIFECYCLE_SCENE_INACTIVE;
-	if (!enqueue_source_lifecycle_locked(binding, lifecycle, now))
-		binding->transition_pending.store(true, std::memory_order_release);
+	bool queued = true;
+	{
+		std::lock_guard<std::mutex> lock(binding->lifecycle_mutex);
+		binding->adapter_active.store(adapter_active, std::memory_order_release);
+		binding->source_active.store(source_active, std::memory_order_release);
+		const bool effective_active = adapter_active && source_active;
+		const bool was_active = binding->effective_active.exchange(effective_active, std::memory_order_acq_rel);
+		if (was_active != effective_active) {
+			const uint32_t lifecycle = effective_active ? FF_LIFECYCLE_SCENE_ACTIVE
+								    : FF_LIFECYCLE_SCENE_INACTIVE;
+			queued = enqueue_source_lifecycle_locked(binding, lifecycle, now);
+		}
+	}
+	if (!queued)
+		fail_source_binding_closed(binding);
 }
 
 static void set_safe_adapter_activation(face_tracker_filter *s, bool active)
@@ -1021,10 +1046,7 @@ static void set_safe_adapter_activation(face_tracker_filter *s, bool active)
 	if (!binding->set_active_child(active)) {
 		blog(LOG_WARNING, "FaithfulFrame could not %s bound source '%s'", active ? "activate" : "deactivate",
 		     binding->target_name.c_str());
-		binding->transition_pending.store(true, std::memory_order_release);
-		binding->closed.store(true, std::memory_order_release);
-		if (auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire))
-			executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+		fail_source_binding_closed(binding);
 		return;
 	}
 
