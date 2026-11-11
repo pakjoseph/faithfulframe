@@ -73,6 +73,7 @@ pub struct FfCommand {
 #[derive(Clone, Copy)]
 pub struct FfLifecycle {
     kind: u32,
+    identity: FfIdentity,
     generations: FfGenerations,
 }
 
@@ -89,6 +90,7 @@ pub struct FfSnapshot {
     loss_deadline_ms: u64,
     has_selected: u8,
     has_loss_deadline: u8,
+    closed: u8,
     command_result: u32,
     rejection_reason: u32,
     crop: FfRect,
@@ -142,6 +144,11 @@ fn map_reason(value: Reason) -> u32 {
         Reason::InvalidCommand => 11,
         Reason::NonMonotonicEvent => 12,
         Reason::InvalidCandidate => 13,
+        Reason::TrackerIdentityExpired => 14,
+        Reason::SessionClosing => 15,
+        Reason::SessionClosed => 16,
+        Reason::StaleLifecycle => 17,
+        Reason::InvalidLifecycle => 18,
     }
 }
 fn map_crop(value: CropAction) -> u32 {
@@ -162,6 +169,9 @@ fn write_snapshot(snapshot: Snapshot, output: &mut FfSnapshot) {
                 Reason::InvalidCommand => 2,
                 Reason::NonMonotonicEvent => 3,
                 Reason::InvalidCandidate => 4,
+                Reason::StaleLifecycle => 5,
+                Reason::InvalidLifecycle => 6,
+                Reason::SessionClosed => 7,
                 _ => 2,
             };
             (2, code)
@@ -181,6 +191,7 @@ fn write_snapshot(snapshot: Snapshot, output: &mut FfSnapshot) {
         loss_deadline_ms: snapshot.loss_deadline.unwrap_or(0),
         has_selected: snapshot.selected.is_some() as u8,
         has_loss_deadline: snapshot.loss_deadline.is_some() as u8,
+        closed: snapshot.closed as u8,
         command_result,
         rejection_reason,
         crop: FfRect {
@@ -213,27 +224,27 @@ fn command(value: FfCommand) -> Result<Command, i32> {
     })
 }
 fn lifecycle(value: FfLifecycle) -> Result<Lifecycle, i32> {
+    let generations = generations(value.generations);
     Ok(match value.kind {
-        0 => Lifecycle::SceneInactive,
-        1 => Lifecycle::SceneActive,
-        2 => Lifecycle::CameraDisconnected,
-        3 => Lifecycle::CameraRestored,
-        4 => Lifecycle::SourceRebound {
-            generations: generations(value.generations),
-        },
-        5 => Lifecycle::GeometryChanged {
-            generations: generations(value.generations),
-        },
-        6 => Lifecycle::TrackerChanged {
-            generations: generations(value.generations),
-        },
+        0 => Lifecycle::SceneInactive { generations },
+        1 => Lifecycle::SceneActive { generations },
+        2 => Lifecycle::CameraDisconnected { generations },
+        3 => Lifecycle::CameraRestored { generations },
+        4 => Lifecycle::SourceRebound { generations },
+        5 => Lifecycle::GeometryChanged { generations },
+        6 => Lifecycle::TrackerChanged { generations },
+        7 => Lifecycle::FramingConfigChanged { generations },
+        8 => Lifecycle::CandidatePolicyChanged { generations },
+        9 => Lifecycle::AdapterDestroyed { generations },
+        10 => Lifecycle::SourceDestroyed { generations },
+        11 => Lifecycle::ObsShutdown { generations },
         _ => return Err(INVALID_ARGUMENT),
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn faithfulframe_ffi_abi_version() -> u32 {
-    3
+    4
 }
 
 #[unsafe(no_mangle)]
@@ -405,13 +416,15 @@ pub unsafe extern "C" fn ff_session_lifecycle(
         if session.is_null() || input.is_null() || output.is_null() {
             return INVALID_ARGUMENT;
         }
-        let lifecycle = match lifecycle(*input) {
+        let input = *input;
+        let lifecycle = match lifecycle(input) {
             Ok(value) => value,
             Err(error) => return error,
         };
         write_snapshot(
             (*session).inner.apply(Event::Lifecycle {
                 at,
+                identity: identity(input.identity),
                 event: lifecycle,
             }),
             &mut *output,
@@ -426,6 +439,6 @@ mod tests {
     use super::*;
     #[test]
     fn abi_version_is_stable() {
-        assert_eq!(faithfulframe_ffi_abi_version(), 3);
+        assert_eq!(faithfulframe_ffi_abi_version(), 4);
     }
 }

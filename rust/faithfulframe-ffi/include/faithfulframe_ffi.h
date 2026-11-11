@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-enum { FAITHFULFRAME_FFI_ABI_VERSION = 3 };
+enum { FAITHFULFRAME_FFI_ABI_VERSION = 4 };
 
 typedef enum ff_result {
 	FF_OK = 0,
@@ -45,7 +45,12 @@ typedef enum ff_lifecycle_kind {
 	FF_LIFECYCLE_CAMERA_RESTORED = 3,
 	FF_LIFECYCLE_SOURCE_REBOUND = 4,
 	FF_LIFECYCLE_GEOMETRY_CHANGED = 5,
-	FF_LIFECYCLE_TRACKER_CHANGED = 6
+	FF_LIFECYCLE_TRACKER_CHANGED = 6,
+	FF_LIFECYCLE_FRAMING_CONFIG_CHANGED = 7,
+	FF_LIFECYCLE_CANDIDATE_POLICY_CHANGED = 8,
+	FF_LIFECYCLE_ADAPTER_DESTROYED = 9,
+	FF_LIFECYCLE_SOURCE_DESTROYED = 10,
+	FF_LIFECYCLE_OBS_SHUTDOWN = 11
 } ff_lifecycle_kind;
 
 typedef enum ff_command_result {
@@ -59,7 +64,10 @@ typedef enum ff_rejection_reason {
 	FF_REJECTION_STALE_COMMAND = 1,
 	FF_REJECTION_INVALID_COMMAND = 2,
 	FF_REJECTION_NON_MONOTONIC_EVENT = 3,
-	FF_REJECTION_INVALID_CANDIDATE = 4
+	FF_REJECTION_INVALID_CANDIDATE = 4,
+	FF_REJECTION_STALE_LIFECYCLE = 5,
+	FF_REJECTION_INVALID_LIFECYCLE = 6,
+	FF_REJECTION_SESSION_CLOSED = 7
 } ff_rejection_reason;
 
 typedef struct ff_generations {
@@ -111,6 +119,7 @@ typedef struct ff_command {
 
 typedef struct ff_lifecycle {
 	uint32_t kind;
+	ff_identity identity;
 	ff_generations generations;
 } ff_lifecycle;
 
@@ -125,6 +134,7 @@ typedef struct ff_snapshot {
 	uint64_t loss_deadline_ms;
 	uint8_t has_selected;
 	uint8_t has_loss_deadline;
+	uint8_t closed;
 	uint32_t command_result;
 	uint32_t rejection_reason;
 	ff_rect crop;
