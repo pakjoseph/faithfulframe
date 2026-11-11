@@ -173,6 +173,7 @@ inline void face_tracker_manager::copy_detector_to_tracker()
 	r.y0 -= h * upsize_t;
 	r.y1 += h * upsize_b;
 	t.tracker->set_position(r); // TODO: consider how to track two or more faces.
+	t.observed_at_ms = 0;
 	t.tracker->set_upsize_info(rectf_s{upsize_l, upsize_t, upsize_r, upsize_b});
 	if (!t.tracker->start()) {
 		retire_tracker(static_cast<int>(i_tracker));
@@ -216,6 +217,7 @@ inline void face_tracker_manager::stage_to_detector()
 		detect_tick = tick_cnt;
 
 		struct tracker_inst_s t;
+		t.observed_at_ms = 0;
 		t.rect = rect_s{0, 0, 0, 0, 0.0f};
 		t.crop_rect = rectf_s{0.0f, 0.0f, 0.0f, 0.0f};
 		t.att = 0.0f;
@@ -276,7 +278,7 @@ inline void face_tracker_manager::stage_to_trackers()
 			}
 		} else if (t.state == tracker_inst_s::tracker_state_first_track) {
 			if (!t.tracker->trylock()) {
-				bool ret = t.tracker->get_face(t.rect);
+				bool ret = t.tracker->get_face(t.rect, t.observed_at_ms);
 				t.crop_rect = t.crop_tracker;
 				debug_track("tracker_state_first_track %p %d %d %d %d %f", t.tracker, t.rect.x0,
 					    t.rect.y0, t.rect.x1, t.rect.y1, t.rect.score);
@@ -294,7 +296,7 @@ inline void face_tracker_manager::stage_to_trackers()
 			}
 		} else if (t.state == tracker_inst_s::tracker_state_available) {
 			if (!t.tracker->trylock()) {
-				bool ret = t.tracker->get_face(t.rect);
+				bool ret = t.tracker->get_face(t.rect, t.observed_at_ms);
 				t.crop_rect = t.crop_tracker;
 				debug_track("tracker_state_available %p %d %d %d %d %f landmark=%d", t.tracker,
 					    t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1, t.rect.score,
@@ -332,6 +334,7 @@ static inline void make_tracker_rects(std::vector<face_tracker_manager::tracker_
 
 		r.candidate_handle = trackers[i].candidate_handle;
 		r.continuity_token = trackers[i].continuity_token;
+		r.observed_at_ms = trackers[i].observed_at_ms;
 		r.rect = trackers[i].rect;
 		r.rect.score = score;
 		r.crop_rect = trackers[i].crop_rect;

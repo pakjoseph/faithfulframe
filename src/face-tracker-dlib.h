@@ -17,6 +17,6 @@ public:
 	void set_position(const rect_s &rect) override;
 	void set_upsize_info(const rectf_s &upsize) override;
 	void set_landmark_detection(const char *data_file_path) override;
-	bool get_face(struct rect_s &) override;
+	bool get_face(struct rect_s &, uint64_t &observed_at_ms) override;
 	bool get_landmark(std::vector<pointf_s> &) override;
 };

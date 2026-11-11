@@ -18,6 +18,7 @@ public:
 	{
 		uint64_t candidate_handle;
 		uint64_t continuity_token;
+		uint64_t observed_at_ms;
 		rect_s rect;
 		rectf_s crop_rect;
 		std::vector<pointf_s> landmark;
@@ -28,6 +29,7 @@ public:
 		uint64_t candidate_handle;
 		uint64_t continuity_token;
 		class face_tracker_base *tracker;
+		uint64_t observed_at_ms;
 		rect_s rect;
 		rectf_s crop_tracker; // crop corresponding to current processing image
 		rectf_s crop_rect;    // crop corresponding to rect

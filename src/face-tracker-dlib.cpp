@@ -8,6 +8,7 @@
 #include <dlib/image_processing/scan_fhog_pyramid.h>
 #include <dlib/image_processing/correlation_tracker.h>
 #include <dlib/image_processing.h>
+#include <utility>
 
 struct face_tracker_dlib_private_s
 {
@@ -28,6 +29,7 @@ struct face_tracker_dlib_private_s
 	char *landmark_detection_data;
 	bool landmark_detection_data_updated;
 	bool sp_available = false;
+	uint64_t last_observation_ms = 0;
 
 	face_tracker_dlib_private_s()
 	{
@@ -101,16 +103,20 @@ template<typename Tx, typename Ta> inline Tx internal_division(Tx x0, Tx x1, Ta 
 
 void face_tracker_dlib::track_main()
 {
-	if (!p->tex)
+	std::shared_ptr<texture_object> tex = std::move(p->tex);
+	if (!tex) {
+		p->n_track = 0;
 		return;
+	}
 
 	uint64_t ns = os_gettime_ns();
+	bool observed = false;
 	if (p->need_restart) {
 		if (!p->tracker)
 			p->tracker = new dlib::correlation_tracker();
 
 		dlib::matrix<dlib::rgb_pixel> img;
-		if (!p->tex->get_dlib_rgb_image(img))
+		if (!tex->get_dlib_rgb_image(img))
 			return;
 
 		dlib::rectangle r(p->rect.x0, p->rect.y0, p->rect.x1, p->rect.y1);
@@ -121,13 +127,14 @@ void face_tracker_dlib::track_main()
 		p->need_restart = false;
 		p->pslr_max = 0.0f;
 		p->pslr_min = 1e9f;
-		p->scale_orig = p->tex->scale;
+		p->scale_orig = tex->scale;
 		p->shape = dlib::full_object_detection();
-	} else if (p->tex->scale != p->scale_orig) {
+		observed = true;
+	} else if (tex->scale != p->scale_orig) {
 		p->rect.score = 0.0f;
 	} else {
 		dlib::matrix<dlib::rgb_pixel> img;
-		if (!p->tex->get_dlib_rgb_image(img))
+		if (!tex->get_dlib_rgb_image(img))
 			return;
 
 		if (img.nc() != p->tracker_nc || img.nr() != p->tracker_nr) {
@@ -145,13 +152,14 @@ void face_tracker_dlib::track_main()
 		if (s < p->pslr_min)
 			p->pslr_min = s;
 		dlib::rectangle r = p->tracker->get_position();
-		p->rect.x0 = r.left() * p->tex->scale;
-		p->rect.y0 = r.top() * p->tex->scale;
-		p->rect.x1 = r.right() * p->tex->scale;
-		p->rect.y1 = r.bottom() * p->tex->scale;
+		p->rect.x0 = r.left() * tex->scale;
+		p->rect.y0 = r.top() * tex->scale;
+		p->rect.x1 = r.right() * tex->scale;
+		p->rect.y1 = r.bottom() * tex->scale;
 		s = p->pslr_max / p->pslr_min * ((ns - p->last_ns) * 1e-9f);
 		p->rect.score = (p->rect.score /*+ 0.0f*s */) / (1.0f + s);
 		p->n_track += 1;
+		observed = true;
 
 		if (p->landmark_detection_data) {
 			if (p->landmark_detection_data_updated) {
@@ -174,18 +182,19 @@ void face_tracker_dlib::track_main()
 
 			if (p->sp_available)
 				p->shape = p->sp(img, r_face);
-			p->last_scale = p->tex->scale;
+			p->last_scale = tex->scale;
 		}
 	}
 	p->last_ns = ns;
-
-	p->tex.reset();
+	if (observed)
+		p->last_observation_ms = ns / 1000000ULL;
 }
 
-bool face_tracker_dlib::get_face(struct rect_s &rect)
+bool face_tracker_dlib::get_face(struct rect_s &rect, uint64_t &observed_at_ms)
 {
 	if (p->n_track > 0) {
 		rect = p->rect;
+		observed_at_ms = p->last_observation_ms;
 		return true;
 	} else
 		return false;

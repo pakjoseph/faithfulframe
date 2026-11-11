@@ -21,6 +21,11 @@ static bool near(double actual, double expected)
 
 int main()
 {
+	check(ff_preview_observation_is_fresh(1000, 1500, 500));
+	check(!ff_preview_observation_is_fresh(1000, 1501, 500));
+	check(!ff_preview_observation_is_fresh(1501, 1500, 500));
+	check(!ff_preview_observation_is_fresh(0, 0, 500));
+
 	double x = -1.0, y = -1.0;
 	check(ff_preview_widget_point(128.0, 72.0, 256.0, 144.0, 1920, 1080, x, y));
 	check(near(x, 0.5) && near(y, 0.5));

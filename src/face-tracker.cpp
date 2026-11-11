@@ -53,6 +53,9 @@ public:
 };
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
+static constexpr uint64_t safe_preview_max_snapshot_age_ms = 500;
+static constexpr uint64_t safe_candidate_max_age_ms = 500;
+
 struct faithfulframe_source_binding
 {
 	struct preview_payload
@@ -907,7 +910,7 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 	    zoom_smoothing > 1.0)
 		return false;
 	config.loss_grace_ms = static_cast<uint64_t>(std::llround(loss_grace_seconds * 1000.0));
-	config.max_evidence_age_ms = 500;
+	config.max_evidence_age_ms = safe_candidate_max_age_ms;
 	config.max_candidates = faithfulframe_session_executor::max_candidates;
 	config.source_width = source_width;
 	config.source_height = source_height;
@@ -1070,6 +1073,8 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 	for (const auto &tracker : s->ftm->tracker_rects) {
 		if (count == candidates.size() || !tracker.candidate_handle || !tracker.continuity_token)
 			continue;
+		if (!ff_preview_observation_is_fresh(tracker.observed_at_ms, now, safe_candidate_max_age_ms))
+			continue;
 		const float x0 = std::max(0.0f, (float)tracker.rect.x0 / source_width);
 		const float y0 = std::max(0.0f, (float)tracker.rect.y0 / source_height);
 		const float x1 = std::min(1.0f, (float)tracker.rect.x1 / source_width);
@@ -1082,10 +1087,11 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		candidate.identity = binding->identity;
 		candidate.observation_version = binding->observation_version + 1;
 		candidate.generations = binding->generations;
-		candidate.observed_at_ms = now;
-		candidate.expires_at_ms = now > std::numeric_limits<uint64_t>::max() - 500
-						  ? std::numeric_limits<uint64_t>::max()
-						  : now + 500;
+		candidate.observed_at_ms = tracker.observed_at_ms;
+		candidate.expires_at_ms =
+			tracker.observed_at_ms > std::numeric_limits<uint64_t>::max() - safe_candidate_max_age_ms
+				? std::numeric_limits<uint64_t>::max()
+				: tracker.observed_at_ms + safe_candidate_max_age_ms;
 		candidate.rect = ff_rect{x0, y0, x1 - x0, y1 - y0};
 	}
 	if (count) {
@@ -1533,8 +1539,6 @@ static inline void draw_sprite_crop_to_rect(float x0, float y0, float x1, float 
 }
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
-static constexpr uint64_t safe_preview_max_snapshot_age_ms = 500;
-
 static bool valid_normalized_rect(const ff_rect &rect)
 {
 	return std::isfinite(rect.x) && std::isfinite(rect.y) && std::isfinite(rect.width) &&
@@ -2188,7 +2192,8 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	set_generation_fields(cd, preview.generations, "candidate_");
 	for (size_t i = 0; i < count; ++i) {
 		const ff_candidate &candidate = preview.candidates[i];
-		if (candidate.expires_at_ms < now || !valid_normalized_rect(candidate.rect))
+		if (!ff_preview_observation_is_fresh(candidate.observed_at_ms, now, safe_candidate_max_age_ms) ||
+		    candidate.expires_at_ms < now || !valid_normalized_rect(candidate.rect))
 			continue;
 		const std::string suffix = std::to_string(i);
 		calldata_set_int(cd, ("candidate_handle_" + suffix).c_str(), ffi_integer(candidate.handle));

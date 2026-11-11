@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 #include "faithfulframe_ffi.h"
 
@@ -18,6 +19,11 @@ inline bool ff_preview_valid_rect(const ff_rect &rect)
 	return std::isfinite(rect.x) && std::isfinite(rect.y) && std::isfinite(rect.width) &&
 	       std::isfinite(rect.height) && rect.x >= 0.0f && rect.y >= 0.0f && rect.width > 0.0f &&
 	       rect.height > 0.0f && rect.x + rect.width <= 1.0f && rect.y + rect.height <= 1.0f;
+}
+
+inline bool ff_preview_observation_is_fresh(uint64_t observed_at_ms, uint64_t now_ms, uint64_t maximum_age_ms)
+{
+	return observed_at_ms != 0 && observed_at_ms <= now_ms && now_ms - observed_at_ms <= maximum_age_ms;
 }
 
 /// Estimate displayed digital zoom from a source-space crop. Full-source

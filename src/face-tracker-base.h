@@ -32,7 +32,7 @@ public:
 	virtual void set_position(const rect_s &rect) = 0;
 	virtual void set_upsize_info(const rectf_s &upsize) = 0;
 	virtual void set_landmark_detection(const char *data_file_path) = 0;
-	virtual bool get_face(struct rect_s &) = 0;
+	virtual bool get_face(struct rect_s &, uint64_t &observed_at_ms) = 0;
 	virtual bool get_landmark(std::vector<pointf_s> &) = 0;
 
 	bool start();
