@@ -441,6 +441,16 @@ static void *fts_create(obs_data_t *settings, obs_source_t *context)
 static void ftf_destroy(void *data)
 {
 	auto *s = (struct face_tracker_filter *)data;
+	// Stop new hotkey ingress before shutting down the runtime that callbacks
+	// may enqueue commands through.
+	if (s->hotkey_pause != OBS_INVALID_HOTKEY_PAIR_ID) {
+		obs_hotkey_pair_unregister(s->hotkey_pause);
+		s->hotkey_pause = OBS_INVALID_HOTKEY_PAIR_ID;
+	}
+	if (s->hotkey_reset != OBS_INVALID_HOTKEY_ID) {
+		obs_hotkey_unregister(s->hotkey_reset);
+		s->hotkey_reset = OBS_INVALID_HOTKEY_ID;
+	}
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	// OBS defers source destroy callbacks until source-context callbacks have
@@ -448,11 +458,6 @@ static void ftf_destroy(void *data)
 	delete s->safe_runtime;
 	s->safe_runtime = nullptr;
 #endif
-
-	if (s->hotkey_pause != OBS_INVALID_HOTKEY_PAIR_ID)
-		obs_hotkey_pair_unregister(s->hotkey_pause);
-	if (s->hotkey_reset != OBS_INVALID_HOTKEY_ID)
-		obs_hotkey_unregister(s->hotkey_reset);
 
 	obs_enter_graphics();
 	gs_texrender_destroy(s->texrender);
