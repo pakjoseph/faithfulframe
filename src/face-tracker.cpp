@@ -401,6 +401,8 @@ static void ftf_destroy(void *data)
 	auto *s = (struct face_tracker_filter *)data;
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
+	// OBS defers source destroy callbacks until source-context callbacks have
+	// drained. Keep the blocking session join here, never in render/tick or Qt.
 	delete s->safe_runtime;
 	s->safe_runtime = nullptr;
 #endif

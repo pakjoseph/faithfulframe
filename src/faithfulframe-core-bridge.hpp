@@ -74,9 +74,11 @@ public:
 	ff_executor_diagnostics diagnostics() const;
 	const ff_identity &binding_identity() const { return identity; }
 	/// Closes the queue and schedules terminal lifecycle work without waiting.
-	/// Use from OBS callbacks; call shutdown later from an allowed teardown owner.
+	/// Safe for OBS callbacks, including render/tick paths.
 	void request_shutdown(uint32_t terminal_lifecycle_kind = FF_LIFECYCLE_ADAPTER_DESTROYED,
 			      uint32_t source_width = 0, uint32_t source_height = 0);
+	/// Blocking: call only from a controlled teardown owner after adapter
+	/// callbacks are quiesced; never join from render, tick, or Qt UI callbacks.
 	void shutdown(uint32_t terminal_lifecycle_kind = FF_LIFECYCLE_ADAPTER_DESTROYED, uint32_t source_width = 0,
 		      uint32_t source_height = 0);
 
