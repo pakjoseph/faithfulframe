@@ -46,6 +46,10 @@ int main()
 	}
 	report_stage("worker started");
 	int result = 0;
+	if (detector.start()) {
+		std::fprintf(stderr, "detector worker accepted a duplicate start\n");
+		result = 1;
+	}
 
 	std::this_thread::sleep_for(std::chrono::milliseconds(30));
 	report_stage("initial idle check");
@@ -75,5 +79,20 @@ int main()
 	report_stage("stopping worker");
 	detector.stop();
 	report_stage("worker stopped");
+	detector.stop();
+	if (result == 0) {
+		report_stage("restarting worker");
+		if (!detector.start()) {
+			std::fprintf(stderr, "detector worker did not restart after join\n");
+			result = 4;
+		} else {
+			signal_work(detector);
+			if (!wait_for_runs(detector, 3)) {
+				std::fprintf(stderr, "restarted detector worker did not process work\n");
+				result = 5;
+			}
+			detector.stop();
+		}
+	}
 	return result;
 }

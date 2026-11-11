@@ -1,73 +1,61 @@
+#include "face-detector-base.h"
+#include <chrono>
+#include <exception>
+#ifndef FAITHFULFRAME_DETECTOR_WORKER_STANDALONE
 #include <obs-module.h>
 #include <util/platform.h>
 #include <util/threading.h>
-#include <util/bmem.h>
 #include "plugin-macros.generated.h"
-#include "face-detector-base.h"
+#endif
 #ifndef _WIN32
-#include <sys/time.h>
 #include <sys/resource.h>
 #else // _WIN32
 #include <windows.h>
 #endif // _WIN32
 
-face_detector_base::face_detector_base()
-{
-	mutex_initialized = false;
-	cond_initialized = false;
-	request_stop = 0;
-	running = 0;
-	work_pending = false;
-	leak_test = bmalloc(1);
-	const int mutex_result = pthread_mutex_init(&mutex, NULL);
-	if (mutex_result != 0) {
-		blog(LOG_ERROR, "face_detector_base: failed to initialize mutex (error %d)", mutex_result);
-		return;
-	}
-	mutex_initialized = true;
-	const int cond_result = pthread_cond_init(&cond, NULL);
-	if (cond_result != 0)
-		blog(LOG_ERROR, "face_detector_base: failed to initialize condition variable (error %d)", cond_result);
-	else
-		cond_initialized = true;
-}
+#ifdef FAITHFULFRAME_DETECTOR_WORKER_STANDALONE
+#define detector_log(...) ((void)0)
+#define detector_set_thread_name(name) ((void)0)
+#else
+#define detector_log(...) blog(__VA_ARGS__)
+#define detector_set_thread_name(name) os_set_thread_name(name)
+#endif
+
+face_detector_base::face_detector_base() : request_stop(false), work_pending(false) {}
 
 face_detector_base::~face_detector_base()
 {
-	bfree(leak_test);
-	if (cond_initialized)
-		pthread_cond_destroy(&cond);
-	if (mutex_initialized)
-		pthread_mutex_destroy(&mutex);
+	stop();
 }
 
-void *face_detector_base::thread_routine(void *p)
+void face_detector_base::thread_routine(face_detector_base *base)
 {
-	face_detector_base *base = (face_detector_base *)p;
 #ifndef _WIN32
 	setpriority(PRIO_PROCESS, 0, 19);
 #else  // _WIN32
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
 #endif // _WIN32
-	os_set_thread_name("face-det");
+	detector_set_thread_name("face-det");
 
-	base->lock();
+	std::unique_lock<std::mutex> lock(base->mutex);
 	while (!base->request_stop) {
 		while (!base->request_stop && !base->work_pending)
-			pthread_cond_wait(&base->cond, &base->mutex);
+			base->cond.wait(lock);
 		if (base->request_stop)
 			break;
 		base->work_pending = false;
-		const uint64_t started_ns = os_gettime_ns();
+		const auto started = std::chrono::steady_clock::now();
 		try {
 			base->detect_main();
 		} catch (std::exception &e) {
-			blog(LOG_ERROR, "detect_main: exception %s", e.what());
+			detector_log(LOG_ERROR, "detect_main: exception %s", e.what());
 		} catch (...) {
-			blog(LOG_ERROR, "detect_main: unknown exception");
+			detector_log(LOG_ERROR, "detect_main: unknown exception");
 		}
-		const uint64_t finished_ns = os_gettime_ns();
-		const uint64_t elapsed_us = finished_ns >= started_ns ? (finished_ns - started_ns) / 1000 : 0;
+		const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+					     std::chrono::steady_clock::now() - started)
+					     .count();
+		const uint64_t elapsed_us = elapsed > 0 ? static_cast<uint64_t>(elapsed) : 0;
 		base->last_work_us.store(elapsed_us, std::memory_order_relaxed);
 		uint64_t previous_max = base->max_work_us.load(std::memory_order_relaxed);
 		while (previous_max < elapsed_us &&
@@ -76,40 +64,42 @@ void *face_detector_base::thread_routine(void *p)
 		}
 		base->completed_work.fetch_add(1, std::memory_order_relaxed);
 	}
-	base->unlock();
-	return NULL;
 }
 
 bool face_detector_base::start()
 {
-	if (!mutex_initialized || !cond_initialized)
+	std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
+	std::lock_guard<std::mutex> lock(mutex);
+	if (thread.joinable())
 		return false;
-	lock();
-	blog(LOG_INFO, "face_detector_base: starting the thread.");
-	request_stop = 0;
+	detector_log(LOG_INFO, "face_detector_base: starting the thread.");
+	request_stop = false;
 	work_pending = false;
-	unlock();
-	const int result = pthread_create(&thread, NULL, thread_routine, (void *)this);
-	if (result != 0) {
-		blog(LOG_ERROR, "face_detector_base: failed to start thread (error %d)", result);
+	try {
+		thread = std::thread(&face_detector_base::thread_routine, this);
+	} catch (const std::exception &e) {
+		request_stop = true;
+		detector_log(LOG_ERROR, "face_detector_base: failed to start thread: %s", e.what());
+		return false;
+	} catch (...) {
+		request_stop = true;
+		detector_log(LOG_ERROR, "face_detector_base: failed to start thread");
 		return false;
 	}
-	running = 1;
 	return true;
 }
 
 void face_detector_base::stop()
 {
-	blog(LOG_INFO, "face_detector_base: stopping the thread...");
-	if (!mutex_initialized || !cond_initialized)
-		return;
-	lock();
-	request_stop = 1;
-	signal();
-	unlock();
-	if (running) {
-		pthread_join(thread, NULL);
-		running = 0;
+	std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
+	detector_log(LOG_INFO, "face_detector_base: stopping the thread...");
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		request_stop = true;
+		work_pending = true;
+		cond.notify_one();
 	}
-	blog(LOG_INFO, "face_detector_base: stopped the thread...");
+	if (thread.joinable())
+		thread.join();
+	detector_log(LOG_INFO, "face_detector_base: stopped the thread...");
 }
