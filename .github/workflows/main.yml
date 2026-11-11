@@ -227,6 +227,8 @@ jobs:
           GIT_TAG=$(git describe --tags --always)
           PKG_SUFFIX=-${GIT_TAG}-obs${{ matrix.obs }}-macos-${{ matrix.arch }}
           export OPENBLAS_HOME=${{ env.OPENBLAS_HOME }}
+          # Exercise the repository's pre-project macOS 13 default.
+          unset MACOSX_DEPLOYMENT_TARGET
           set -e
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -235,8 +237,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=$arch \
             -D PKG_SUFFIX=$PKG_SUFFIX \
             -D OBS_BUNDLE_CODESIGN_IDENTITY='${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}' \
-            ${{ steps.obsdeps.outputs.PLUGIN_CMAKE_OPTIONS }} \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+            ${{ steps.obsdeps.outputs.PLUGIN_CMAKE_OPTIONS }}
           cmake --build build --config RelWithDebInfo
           ctest --test-dir build --output-on-failure
 

@@ -1,5 +1,25 @@
 cmake_minimum_required(VERSION 3.12)
 
+# CMake uses these values while detecting the Apple toolchain. Set their cache
+# defaults before project() enables C/C++, or compiler checks can target the
+# host SDK minimum even when plugin and Rust archive targets use macOS 13.
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
+	(NOT CMAKE_SYSTEM_NAME AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin"))
+	set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "OBS build architectures for macOS")
+	if(DEFINED ENV{MACOSX_DEPLOYMENT_TARGET} AND NOT "$ENV{MACOSX_DEPLOYMENT_TARGET}" STREQUAL "")
+		set(_faithfulframe_default_macos_target "$ENV{MACOSX_DEPLOYMENT_TARGET}")
+	else()
+		set(_faithfulframe_default_macos_target "13.0")
+	endif()
+	set(CMAKE_OSX_DEPLOYMENT_TARGET "${_faithfulframe_default_macos_target}" CACHE STRING
+		"OBS deployment target for macOS - 13.0+ required")
+	unset(_faithfulframe_default_macos_target)
+	if(NOT CMAKE_OSX_DEPLOYMENT_TARGET MATCHES "^[0-9]+(\\.[0-9]+)*$" OR
+	   CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS "13.0")
+		message(FATAL_ERROR "FaithfulFrame requires a macOS deployment target of 13.0 or later")
+	endif()
+endif()
+
 project(face-tracker VERSION 0.9.1)
 set(PLUGIN_URL "https://obsproject.com/forum/resources/face-tracker.1294/")
 set(PLUGIN_AUTHOR "Norihiro Kamae")
