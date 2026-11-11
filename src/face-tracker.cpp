@@ -879,13 +879,15 @@ static bool enqueue_source_lifecycle(faithfulframe_source_binding *binding, uint
 {
 	if (!binding)
 		return false;
-	{
-		std::lock_guard<std::mutex> lock(binding->preview_mutex);
-		binding->preview.candidate_count = 0;
-	}
 	auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
 	if (!executor || binding->closed.load(std::memory_order_acquire))
 		return false;
+	binding->transition_pending.store(true, std::memory_order_release);
+	{
+		std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
+		if (lock.owns_lock())
+			binding->preview.candidate_count = 0;
+	}
 	ff_lifecycle event{};
 	event.kind = kind;
 	event.identity = binding->identity;
@@ -1127,21 +1129,25 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		const uint64_t version = binding->observation_version + 1;
 		if (executor->enqueue_candidates(now, candidates.data(), count)) {
 			binding->observation_version = version;
-			std::lock_guard<std::mutex> lock(binding->preview_mutex);
-			binding->preview.identity = binding->identity;
-			binding->preview.generations = binding->generations;
-			binding->preview.observation_version = version;
-			binding->preview.published_at_ms = now;
-			binding->preview.candidate_count = count;
-			std::copy_n(candidates.begin(), count, binding->preview.candidates.begin());
+			std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
+			if (lock.owns_lock()) {
+				binding->preview.identity = binding->identity;
+				binding->preview.generations = binding->generations;
+				binding->preview.observation_version = version;
+				binding->preview.published_at_ms = now;
+				binding->preview.candidate_count = count;
+				std::copy_n(candidates.begin(), count, binding->preview.candidates.begin());
+			}
 		}
 	} else {
-		std::lock_guard<std::mutex> lock(binding->preview_mutex);
-		binding->preview.identity = binding->identity;
-		binding->preview.generations = binding->generations;
-		binding->preview.observation_version = binding->observation_version;
-		binding->preview.published_at_ms = now;
-		binding->preview.candidate_count = 0;
+		std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
+		if (lock.owns_lock()) {
+			binding->preview.identity = binding->identity;
+			binding->preview.generations = binding->generations;
+			binding->preview.observation_version = binding->observation_version;
+			binding->preview.published_at_ms = now;
+			binding->preview.candidate_count = 0;
+		}
 	}
 	executor->enqueue_tick(now);
 }
@@ -2160,21 +2166,6 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	    !valid_normalized_rect(snapshot.viewport))
 		return;
 
-	faithfulframe_source_binding::preview_payload preview;
-	{
-		std::lock_guard<std::mutex> lock(binding->preview_mutex);
-		preview = binding->preview;
-	}
-	const bool candidates_current = preview.identity.source == snapshot.identity.source &&
-					preview.identity.session == snapshot.identity.session &&
-					preview.generations.source == snapshot.generations.source &&
-					preview.generations.session == snapshot.generations.session &&
-					preview.generations.stream == snapshot.generations.stream &&
-					preview.generations.geometry == snapshot.generations.geometry &&
-					preview.generations.tracker == snapshot.generations.tracker &&
-					preview.observation_version == snapshot.observation_version &&
-					preview.published_at_ms <= now && now - preview.published_at_ms <= 500;
-
 	calldata_set_bool(cd, "available", true);
 	calldata_set_int(cd, "source_id", ffi_integer(snapshot.identity.source));
 	calldata_set_int(cd, "session_id", ffi_integer(snapshot.identity.session));
@@ -2208,6 +2199,22 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	calldata_set_bool(cd, "target_active", binding->source_active.load(std::memory_order_acquire));
 	calldata_set_bool(cd, "signal_connected", binding->signal_connected.load(std::memory_order_acquire));
 
+	faithfulframe_source_binding::preview_payload preview;
+	{
+		std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
+		if (!lock.owns_lock())
+			return;
+		preview = binding->preview;
+	}
+	const bool candidates_current = preview.identity.source == snapshot.identity.source &&
+					preview.identity.session == snapshot.identity.session &&
+					preview.generations.source == snapshot.generations.source &&
+					preview.generations.session == snapshot.generations.session &&
+					preview.generations.stream == snapshot.generations.stream &&
+					preview.generations.geometry == snapshot.generations.geometry &&
+					preview.generations.tracker == snapshot.generations.tracker &&
+					preview.observation_version == snapshot.observation_version &&
+					preview.published_at_ms <= now && now - preview.published_at_ms <= 500;
 	if (!candidates_current)
 		return;
 	const size_t count = std::min(preview.candidate_count, preview.candidates.size());
