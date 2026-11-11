@@ -438,25 +438,6 @@ static void *fts_create(obs_data_t *settings, obs_source_t *context)
 	return s;
 }
 
-static void fts_enum_active_sources(void *data, obs_source_enum_proc_t enum_callback, void *param)
-{
-	auto *s = static_cast<face_tracker_filter *>(data);
-	if (!s || !enum_callback || !s->safe_runtime || !s->safe_runtime->enabled.load(std::memory_order_acquire))
-		return;
-	auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
-	if (!binding || binding->closed.load(std::memory_order_acquire) ||
-	    !binding->adapter_active.load(std::memory_order_acquire) || !binding->target)
-		return;
-	// This source has exactly one child: its explicitly bound camera. Never
-	// enumerate scene cameras or candidates from other OBS sources here.
-	obs_source_t *target = obs_weak_source_get_source(binding->target);
-	if (!target)
-		return;
-	if (!obs_source_removed(target))
-		enum_callback(s->context, target, param);
-	obs_source_release(target);
-}
-
 static void ftf_destroy(void *data)
 {
 	auto *s = (struct face_tracker_filter *)data;
@@ -2609,13 +2590,11 @@ extern "C" void register_face_tracker_filter(bool hide_filter, bool hide_source)
 
 	info.id = "face_tracker_source";
 	info.type = OBS_SOURCE_TYPE_INPUT;
-	info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_DO_NOT_DUPLICATE |
-			    OBS_SOURCE_COMPOSITE;
+	info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_DO_NOT_DUPLICATE;
 	if (hide_source)
 		info.output_flags |= OBS_SOURCE_CAP_DISABLED;
 	info.create = fts_create;
 	info.update = fts_update;
-	info.enum_active_sources = fts_enum_active_sources;
 	info.get_properties = fts_properties;
 	info.get_defaults = fts_get_defaults;
 	info.video_tick = fts_tick;
