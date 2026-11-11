@@ -1590,6 +1590,11 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 	}
 	if (!output_width || !output_height)
 		return;
+	// A source may be removed after the last tick but before this render call.
+	// Hold a strong reference through the draw so the weak binding cannot go
+	// stale mid-frame, and fail closed instead of reusing the previous texture.
+	obs_source_t *bound_source =
+		!force_black && binding && binding->target ? obs_weak_source_get_source(binding->target) : nullptr;
 
 	ff_rect crop{0.0f, 0.0f, 1.0f, 1.0f};
 	ff_rect viewport = full_source_viewport(source_width, source_height, output_width, output_height);
@@ -1635,7 +1640,8 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 		}
 	}
 
-	const bool source_available = !force_black && binding && !binding->closed.load(std::memory_order_acquire) &&
+	const bool source_available = !force_black && bound_source && binding &&
+				      !binding->closed.load(std::memory_order_acquire) &&
 				      binding->signal_connected.load(std::memory_order_acquire) &&
 				      binding->source_active.load(std::memory_order_acquire);
 	gs_texture_t *texture = source_available && s->texrender ? gs_texrender_get_texture(s->texrender) : nullptr;
@@ -1657,6 +1663,8 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 	if (draw_candidates && source_available && texture && has_displayed_snapshot)
 		draw_safe_candidate_bounds(binding, displayed_snapshot, displayed_snapshot_at, crop, viewport,
 					   output_width, output_height);
+	if (bound_source)
+		obs_source_release(bound_source);
 }
 
 static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, const ff_snapshot &snapshot,
