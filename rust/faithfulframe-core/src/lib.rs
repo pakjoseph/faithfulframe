@@ -1195,6 +1195,22 @@ mod tests {
     }
 
     #[test]
+    fn reused_candidate_handle_with_different_continuity_is_rejected() {
+        let mut session = session();
+        lock_test_target(&mut session);
+        let before = session.snapshot();
+        let recycled = candidate(10, 200, before.observation_version + 1, 4);
+
+        let after = observe(&mut session, recycled, 4);
+
+        assert_eq!(
+            after.command_result,
+            CommandResult::Rejected(Reason::InvalidCandidate)
+        );
+        assert_policy_no_op(after, before);
+    }
+
+    #[test]
     fn loss_holds_and_reset_wide_stays_lost() {
         let mut session = session();
         send(&mut session, 1, Command::EnableAutoFollow);
