@@ -281,11 +281,13 @@ pub unsafe extern "C" fn ff_session_create(
     output: *mut *mut FfSession,
 ) -> i32 {
     catch_unwind(AssertUnwindSafe(|| unsafe {
-        if config.is_null() || identity_in.is_null() || generations_in.is_null() || output.is_null()
-        {
+        if output.is_null() {
             return INVALID_ARGUMENT;
         }
         *output = std::ptr::null_mut();
+        if config.is_null() || identity_in.is_null() || generations_in.is_null() {
+            return INVALID_ARGUMENT;
+        }
         let config = &*config;
         if config.source_width == 0
             || config.source_height == 0
@@ -479,6 +481,21 @@ mod tests {
     #[test]
     fn abi_version_is_stable() {
         assert_eq!(faithfulframe_ffi_abi_version(), 5);
+    }
+
+    #[test]
+    fn create_clears_output_before_rejecting_invalid_inputs() {
+        let mut output = std::ptr::NonNull::<FfSession>::dangling().as_ptr();
+        let result = unsafe {
+            ff_session_create(
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut output,
+            )
+        };
+        assert_eq!(result, INVALID_ARGUMENT);
+        assert!(output.is_null());
     }
 
     #[test]
