@@ -2059,7 +2059,7 @@ static void cb_faithfulframe_command(void *data, calldata_t *cd)
 	    !get_unsigned_field(cd, "tracker_generation", tracker_generation) ||
 	    !get_unsigned_field(cd, "candidate_handle", candidate_handle) ||
 	    !get_unsigned_field(cd, "observation_version", observation_version) || kind > FF_COMMAND_RESET_TO_WIDE ||
-	    !source_id || !session_id || !status_version)
+	    !source_id || !session_id)
 		return;
 
 	ff_command command{};

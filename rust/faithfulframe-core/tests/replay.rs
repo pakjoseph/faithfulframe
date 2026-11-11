@@ -592,6 +592,15 @@ fn deterministic_fixtures_replay_to_canonical_traces() {
                 }
             })
             .collect::<Vec<_>>();
+        for (actual_row, expected_row) in actual.iter().zip(&expected) {
+            assert_eq!(
+                serde_json::to_string_pretty(actual_row).unwrap(),
+                serde_json::to_string_pretty(expected_row).unwrap(),
+                "canonical replay row mismatch for {} at queue order {}",
+                fixture.name,
+                actual_row.queue_order
+            );
+        }
         assert_eq!(
             serde_json::to_string_pretty(&actual).unwrap(),
             serde_json::to_string_pretty(&expected).unwrap(),

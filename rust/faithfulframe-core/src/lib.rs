@@ -137,6 +137,9 @@ pub enum Command {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CommandEnvelope {
     pub identity: Identity,
+    /// Target selection is fenced by this preview/status version. Other
+    /// controls are validated against the current state and generations so
+    /// harmless status refreshes cannot discard an operator safety action.
     pub status_version: u64,
     pub generations: Generations,
     pub command: Command,
@@ -359,13 +362,10 @@ impl TrackingSession {
         }
         let result = match event {
             Event::Command { envelope, .. } => {
-                if envelope.identity != self.identity
-                    || envelope.status_version != self.status_version
-                    || envelope.generations != self.generations
-                {
+                if envelope.identity != self.identity || envelope.generations != self.generations {
                     self.reject_command(Reason::StaleCommand)
                 } else {
-                    self.apply_command(envelope.command, at)
+                    self.apply_command(envelope.command, envelope.status_version, at)
                 }
             }
             Event::Candidate { at, candidate } => self.apply_candidate(candidate, at),
@@ -389,7 +389,12 @@ impl TrackingSession {
         snapshot
     }
 
-    fn apply_command(&mut self, command: Command, at: Millis) -> CommandResult {
+    fn apply_command(
+        &mut self,
+        command: Command,
+        status_version: u64,
+        at: Millis,
+    ) -> CommandResult {
         match command {
             Command::Freeze if self.state != State::Frozen => {
                 self.state = State::Frozen;
@@ -430,6 +435,7 @@ impl TrackingSession {
                 handle,
                 observation_version,
             } if matches!(self.state, State::Manual | State::Searching | State::Lost)
+                && status_version == self.status_version
                 && observation_version == self.observation_version =>
             {
                 if let Some(candidate) = self.latest.get(&handle).copied()
@@ -1071,6 +1077,80 @@ mod tests {
     }
 
     #[test]
+    fn stale_preview_status_cannot_authorize_a_candidate_selection() {
+        let mut session = session();
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
+        let preview = session.snapshot();
+        session.apply(Event::Tick { at: 3 });
+        let before = session.snapshot();
+
+        let after = session.apply(Event::Command {
+            at: 4,
+            envelope: CommandEnvelope {
+                identity: preview.identity,
+                status_version: preview.status_version,
+                generations: preview.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: preview.observation_version,
+                },
+            },
+        });
+
+        assert_eq!(
+            after.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        assert_policy_no_op(after, before);
+    }
+
+    #[test]
+    fn unrelated_status_refresh_does_not_drop_valid_freeze_action() {
+        let mut session = session();
+        let captured = session.snapshot();
+        session.apply(Event::Tick { at: 1 });
+
+        let after = session.apply(Event::Command {
+            at: 2,
+            envelope: CommandEnvelope {
+                identity: captured.identity,
+                status_version: captured.status_version,
+                generations: captured.generations,
+                command: Command::Freeze,
+            },
+        });
+
+        assert_eq!(after.command_result, CommandResult::Applied);
+        assert_eq!(after.state, State::Frozen);
+        assert_eq!(after.reason, Reason::OperatorFreeze);
+    }
+
+    #[test]
+    fn delayed_control_action_still_obeys_current_state_validation() {
+        let mut session = session();
+        let captured = session.snapshot();
+        send(&mut session, 1, Command::Freeze);
+        let before = session.snapshot();
+
+        let after = session.apply(Event::Command {
+            at: 2,
+            envelope: CommandEnvelope {
+                identity: captured.identity,
+                status_version: captured.status_version,
+                generations: captured.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+
+        assert_eq!(
+            after.command_result,
+            CommandResult::Rejected(Reason::InvalidCommand)
+        );
+        assert_policy_no_op(after, before);
+    }
+
+    #[test]
     fn continuity_can_recover_only_inside_grace_period() {
         let mut session = session();
         send(&mut session, 1, Command::EnableAutoFollow);
@@ -1538,12 +1618,14 @@ mod tests {
                 },
             },
         });
+        let mut stale_generations = locked.generations;
+        stale_generations.session += 1;
         let rejected = engine.apply(Event::Command {
             at: 4,
             envelope: CommandEnvelope {
                 identity: locked.identity,
                 status_version: locked.status_version - 1,
-                generations: locked.generations,
+                generations: stale_generations,
                 command: Command::ManualOverride,
             },
         });

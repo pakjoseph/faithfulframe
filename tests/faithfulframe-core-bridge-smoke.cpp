@@ -23,6 +23,16 @@ int main()
 	const ff_session_config config{5000, 500, 8, 3840, 2160, 1920, 1080, 0.45f, 1.0f, 4.0f, 0.25f, 0.08f, 0.08f};
 	const ff_identity identity{101, 201};
 	ff_generations generations{1, 1, 1, 1, 1};
+	ff_result zero_status_result = FF_OK;
+	faithfulframe_core_bridge zero_status_bridge(config, identity, generations, zero_status_result);
+	if (zero_status_result != FF_OK)
+		return 18;
+	ff_snapshot zero_status_snapshot{};
+	const ff_command initial_freeze{FF_COMMAND_FREEZE, identity, 0, generations, 0, 0};
+	if (zero_status_bridge.apply_command(0, initial_freeze, zero_status_snapshot) != FF_OK ||
+	    zero_status_snapshot.state != FF_STATE_FROZEN || zero_status_snapshot.status_version != 1)
+		return 19;
+
 	ff_result result = FF_OK;
 	faithfulframe_core_bridge bridge(config, identity, generations, result);
 	if (result != FF_OK)
