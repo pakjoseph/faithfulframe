@@ -284,6 +284,7 @@ pub struct TrackingSession {
     handles: BTreeMap<CandidateHandle, ContinuityToken>,
     held_crop: Rect,
     crop_action: CropAction,
+    loss_started_at: Option<Millis>,
     loss_deadline: Option<Millis>,
     status_version: u64,
     observation_version: u64,
@@ -325,6 +326,7 @@ impl TrackingSession {
             handles: BTreeMap::new(),
             held_crop: safe_wide,
             crop_action: CropAction::None,
+            loss_started_at: None,
             loss_deadline: None,
             status_version: 0,
             observation_version: 0,
@@ -410,6 +412,7 @@ impl TrackingSession {
                 self.state = State::Frozen;
                 self.reason = Reason::OperatorFreeze;
                 self.crop_action = CropAction::Hold;
+                self.loss_started_at = None;
                 self.loss_deadline = None;
                 CommandResult::Applied
             }
@@ -423,6 +426,7 @@ impl TrackingSession {
                 self.state = State::Manual;
                 self.reason = Reason::ManualOverride;
                 self.selected = None;
+                self.loss_started_at = None;
                 self.loss_deadline = None;
                 self.crop_action = CropAction::None;
                 CommandResult::Applied
@@ -431,6 +435,7 @@ impl TrackingSession {
                 self.state = State::Searching;
                 self.reason = Reason::AwaitingSelection;
                 self.selected = None;
+                self.loss_started_at = Some(at);
                 self.loss_deadline = Some(at.saturating_add(self.config.loss_grace_ms));
                 self.crop_action = CropAction::Hold;
                 CommandResult::Applied
@@ -440,6 +445,7 @@ impl TrackingSession {
                     self.state = State::Manual;
                 }
                 self.selected = None;
+                self.loss_started_at = None;
                 self.loss_deadline = None;
                 self.held_crop = self.config.safe_wide;
                 self.crop_action = CropAction::Wide;
@@ -467,6 +473,7 @@ impl TrackingSession {
                     self.state = State::Locked;
                     self.reason = Reason::SelectedByOperator;
                     self.crop_action = CropAction::Track;
+                    self.loss_started_at = None;
                     self.loss_deadline = None;
                     CommandResult::Applied
                 } else {
@@ -533,10 +540,11 @@ impl TrackingSession {
             } else if selected.continuity == candidate.continuity
                 && self.state == State::Searching
                 && self
+                    .loss_started_at
+                    .is_some_and(|started_at| candidate.observed_at >= started_at)
+                && self
                     .loss_deadline
-                    .is_some_and(|deadline| candidate.observed_at <= deadline)
-                && candidate.observed_at.saturating_sub(selected.last_seen)
-                    <= self.config.loss_grace_ms
+                    .is_some_and(|deadline| candidate.observed_at < deadline)
             {
                 self.selected = Some(SelectedTarget {
                     handle: candidate.handle,
@@ -547,6 +555,7 @@ impl TrackingSession {
                 self.state = State::Locked;
                 self.reason = Reason::ContinuityRecovered;
                 self.crop_action = CropAction::Track;
+                self.loss_started_at = None;
                 self.loss_deadline = None;
             }
         }
@@ -567,6 +576,7 @@ impl TrackingSession {
             self.state = State::Searching;
             self.reason = Reason::TargetEvidenceStale;
             self.crop_action = CropAction::Hold;
+            self.loss_started_at = Some(stale_at);
             self.loss_deadline = Some(stale_at.saturating_add(self.config.loss_grace_ms));
             self.last_at = stale_at;
             self.status_version = self.status_version.saturating_add(1);
@@ -579,6 +589,7 @@ impl TrackingSession {
             self.state = State::Lost;
             self.reason = Reason::TargetLossDeadlineExpired;
             self.crop_action = CropAction::Hold;
+            self.loss_started_at = None;
             self.loss_deadline = None;
             self.selected = None;
             self.last_at = deadline;
@@ -641,6 +652,7 @@ impl TrackingSession {
         self.generations = generations;
         self.selected = None;
         self.latest.clear();
+        self.loss_started_at = None;
         self.loss_deadline = None;
         self.state = state;
         self.reason = reason;
@@ -667,6 +679,7 @@ impl TrackingSession {
         self.reason = Reason::FramingFailure;
         self.selected = None;
         self.latest.clear();
+        self.loss_started_at = None;
         self.loss_deadline = None;
         self.held_crop = Rect::full_frame();
         self.crop_action = CropAction::Wide;
@@ -1226,6 +1239,27 @@ mod tests {
             observe(&mut session, candidate(11, 100, 2, 30), 30).state,
             State::Locked
         );
+    }
+
+    #[test]
+    fn continuity_grace_starts_when_evidence_becomes_stale() {
+        let mut session = session();
+        lock_test_target(&mut session);
+
+        // Evidence at 2 ms becomes stale at 13 ms. The full 100 ms recovery
+        // interval runs through 112 ms, expiring at 113 ms. Evidence age and
+        // loss grace are separate windows; subtracting last_seen from the
+        // candidate time would incorrectly shorten this grace period.
+        assert_eq!(
+            session.apply(Event::Tick { at: 20 }).state,
+            State::Searching
+        );
+        let recovered = observe(&mut session, candidate(11, 100, 2, 112), 112);
+
+        assert_eq!(recovered.state, State::Locked);
+        assert_eq!(recovered.reason, Reason::ContinuityRecovered);
+        assert_eq!(recovered.selected, Some(11));
+        assert_eq!(recovered.loss_deadline, None);
     }
 
     #[test]
