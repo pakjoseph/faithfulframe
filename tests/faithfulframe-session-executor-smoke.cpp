@@ -94,6 +94,11 @@ int run_smoke()
 	if (!executor.try_snapshot(snapshot) || !snapshot.closed || snapshot.state != FF_STATE_MANUAL ||
 	    snapshot.has_selected)
 		return 8;
+	const ff_executor_diagnostics completed_diagnostics = executor.diagnostics();
+	if (completed_diagnostics.queue_depth != 0 || completed_diagnostics.queue_high_water != 1 ||
+	    completed_diagnostics.accepted_work != 5 || completed_diagnostics.rejected_work != 0 ||
+	    completed_diagnostics.coalesced_work != 0)
+		return 15;
 
 	// Teardown drops queued detector and operator work, then publishes only the
 	// worker-owned destruction transition.
@@ -121,6 +126,11 @@ int run_smoke()
 	    queued_snapshot.generations.tracker != 2 || queued.enqueue_tick(22) ||
 	    queued.enqueue_candidates(22, &queued_candidate, 1))
 		return 13;
+	const ff_executor_diagnostics teardown_diagnostics = queued.diagnostics();
+	if (teardown_diagnostics.queue_depth != 0 || teardown_diagnostics.accepted_work != 3 ||
+	    teardown_diagnostics.rejected_work != 4 || teardown_diagnostics.coalesced_work != 0 ||
+	    teardown_diagnostics.queue_high_water > 3)
+		return 16;
 	return 0;
 }
 

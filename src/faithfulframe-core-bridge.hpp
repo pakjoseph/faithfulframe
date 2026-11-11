@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <condition_variable>
 #include <cstdint>
@@ -35,6 +36,19 @@ private:
 	std::unique_ptr<ff_session, deleter> session;
 };
 
+struct ff_executor_diagnostics
+{
+	uint64_t queue_depth = 0;
+	uint64_t queue_high_water = 0;
+	uint64_t accepted_work = 0;
+	uint64_t rejected_work = 0;
+	uint64_t coalesced_work = 0;
+	uint64_t last_queue_wait_us = 0;
+	uint64_t max_queue_wait_us = 0;
+	uint64_t last_processing_us = 0;
+	uint64_t max_processing_us = 0;
+};
+
 /// Owns one Rust session on a bounded background executor. OBS callbacks only
 /// enqueue copied values; rendering reads a version-consistent snapshot without
 /// waiting for session policy or detection work.
@@ -52,6 +66,7 @@ public:
 	bool enqueue_command(uint64_t monotonic_ms, const ff_command &command);
 	bool enqueue_lifecycle(uint64_t monotonic_ms, const ff_lifecycle &lifecycle);
 	bool try_snapshot(ff_snapshot &output, uint64_t *published_at_ms = nullptr) const;
+	ff_executor_diagnostics diagnostics() const;
 	const ff_identity &binding_identity() const { return identity; }
 	/// Closes the queue and schedules terminal lifecycle work without waiting.
 	/// Use from OBS callbacks; call shutdown later from an allowed teardown owner.
@@ -66,6 +81,7 @@ private:
 	{
 		work_kind kind = work_kind::tick;
 		uint64_t monotonic_ms = 0;
+		std::chrono::steady_clock::time_point enqueued_at{};
 		size_t candidate_count = 0;
 		std::array<ff_candidate, max_candidates> candidates{};
 		ff_command command{};
@@ -83,7 +99,7 @@ private:
 		bool try_read(ff_snapshot &snapshot, uint64_t *published_at_ms) const;
 	};
 
-	bool enqueue(const work_item &item, bool coalesce);
+	bool enqueue(work_item item, bool coalesce);
 	void run();
 
 	const ff_session_config config;
@@ -103,4 +119,13 @@ private:
 	std::thread worker;
 	std::atomic<bool> worker_started{false};
 	snapshot_publisher published;
+	std::atomic<uint64_t> queue_depth{0};
+	std::atomic<uint64_t> queue_high_water{0};
+	std::atomic<uint64_t> accepted_work{0};
+	std::atomic<uint64_t> rejected_work{0};
+	std::atomic<uint64_t> coalesced_work{0};
+	std::atomic<uint64_t> last_queue_wait_us{0};
+	std::atomic<uint64_t> max_queue_wait_us{0};
+	std::atomic<uint64_t> last_processing_us{0};
+	std::atomic<uint64_t> max_processing_us{0};
 };

@@ -1860,6 +1860,7 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	calldata_set_bool(cd, "safe_enabled", enabled);
 	calldata_set_bool(cd, "available", false);
 	calldata_set_int(cd, "candidate_count", 0);
+	calldata_set_int(cd, "status_snapshot_age_ms", -1);
 	if (!enabled)
 		return;
 	if (s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire))
@@ -1870,12 +1871,25 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	if (!binding || !executor || binding->closed.load(std::memory_order_acquire) ||
 	    binding->transition_pending.load(std::memory_order_acquire))
 		return;
+	const ff_executor_diagnostics diagnostics = executor->diagnostics();
+	calldata_set_int(cd, "executor_queue_depth", ffi_integer(diagnostics.queue_depth));
+	calldata_set_int(cd, "executor_queue_high_water", ffi_integer(diagnostics.queue_high_water));
+	calldata_set_int(cd, "executor_accepted_work", ffi_integer(diagnostics.accepted_work));
+	calldata_set_int(cd, "executor_rejected_work", ffi_integer(diagnostics.rejected_work));
+	calldata_set_int(cd, "executor_coalesced_work", ffi_integer(diagnostics.coalesced_work));
+	calldata_set_int(cd, "executor_last_queue_wait_us", ffi_integer(diagnostics.last_queue_wait_us));
+	calldata_set_int(cd, "executor_max_queue_wait_us", ffi_integer(diagnostics.max_queue_wait_us));
+	calldata_set_int(cd, "executor_last_processing_us", ffi_integer(diagnostics.last_processing_us));
+	calldata_set_int(cd, "executor_max_processing_us", ffi_integer(diagnostics.max_processing_us));
 
 	ff_snapshot snapshot{};
 	uint64_t snapshot_at = 0;
 	const uint64_t now = source_monotonic_millis();
-	if (!executor->try_snapshot(snapshot, &snapshot_at) || snapshot.closed || snapshot_at > now ||
-	    now - snapshot_at > 1000 || snapshot.identity.source != binding->identity.source ||
+	const bool has_snapshot = executor->try_snapshot(snapshot, &snapshot_at);
+	if (has_snapshot && snapshot_at <= now)
+		calldata_set_int(cd, "status_snapshot_age_ms", ffi_integer(now - snapshot_at));
+	if (!has_snapshot || snapshot.closed || snapshot_at > now || now - snapshot_at > 1000 ||
+	    snapshot.identity.source != binding->identity.source ||
 	    snapshot.identity.session != binding->identity.session || !valid_normalized_rect(snapshot.crop) ||
 	    !valid_normalized_rect(snapshot.viewport))
 		return;

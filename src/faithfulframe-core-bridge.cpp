@@ -1,8 +1,24 @@
 #include "faithfulframe-core-bridge.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <limits>
+
+static void update_max(std::atomic<uint64_t> &maximum, uint64_t value)
+{
+	uint64_t current = maximum.load(std::memory_order_relaxed);
+	while (current < value &&
+	       !maximum.compare_exchange_weak(current, value, std::memory_order_relaxed, std::memory_order_relaxed)) {
+	}
+}
+
+static uint64_t elapsed_microseconds(std::chrono::steady_clock::time_point start)
+{
+	const auto elapsed =
+		std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+	return elapsed > 0 ? static_cast<uint64_t>(elapsed) : 0;
+}
 
 void faithfulframe_core_bridge::deleter::operator()(ff_session *session) const
 {
@@ -131,8 +147,10 @@ bool faithfulframe_session_executor::enqueue_tick(uint64_t monotonic_ms)
 bool faithfulframe_session_executor::enqueue_candidates(uint64_t monotonic_ms, const ff_candidate *candidates,
 							size_t count)
 {
-	if ((count && !candidates) || count > max_candidates)
+	if ((count && !candidates) || count > max_candidates) {
+		rejected_work.fetch_add(1, std::memory_order_relaxed);
 		return false;
+	}
 	work_item item;
 	item.kind = work_kind::candidates;
 	item.monotonic_ms = monotonic_ms;
@@ -160,21 +178,28 @@ bool faithfulframe_session_executor::enqueue_lifecycle(uint64_t monotonic_ms, co
 	return enqueue(item, false);
 }
 
-bool faithfulframe_session_executor::enqueue(const work_item &item, bool coalesce)
+bool faithfulframe_session_executor::enqueue(work_item item, bool coalesce)
 {
-	if (!worker_started.load(std::memory_order_acquire))
+	if (!worker_started.load(std::memory_order_acquire)) {
+		rejected_work.fetch_add(1, std::memory_order_relaxed);
 		return false;
+	}
+	item.enqueued_at = std::chrono::steady_clock::now();
 	// Queue bookkeeping is kept brief and never runs detection or session policy.
 	// A try-lock here would silently drop valid operator commands under ordinary
 	// worker contention, even when the bounded queue still has capacity.
 	std::unique_lock<std::mutex> lock(queue_mutex);
-	if (closing || closing_requested.load(std::memory_order_acquire))
+	if (closing || closing_requested.load(std::memory_order_acquire)) {
+		rejected_work.fetch_add(1, std::memory_order_relaxed);
 		return false;
+	}
 
 	if (coalesce && queue_size) {
 		const size_t tail = (queue_head + queue_size - 1) % queue.size();
 		if (queue[tail].kind == item.kind) {
 			queue[tail] = item;
+			accepted_work.fetch_add(1, std::memory_order_relaxed);
+			coalesced_work.fetch_add(1, std::memory_order_relaxed);
 			last_submitted_ms = std::max(last_submitted_ms, item.monotonic_ms);
 			lock.unlock();
 			queue_condition.notify_one();
@@ -182,11 +207,16 @@ bool faithfulframe_session_executor::enqueue(const work_item &item, bool coalesc
 		}
 	}
 	// Keep one slot reserved so shutdown can always enqueue its final lifecycle event.
-	if (queue_size == max_queued_work)
+	if (queue_size == max_queued_work) {
+		rejected_work.fetch_add(1, std::memory_order_relaxed);
 		return false;
+	}
 	const size_t tail = (queue_head + queue_size) % queue.size();
 	queue[tail] = item;
 	++queue_size;
+	queue_depth.store(queue_size, std::memory_order_relaxed);
+	update_max(queue_high_water, queue_size);
+	accepted_work.fetch_add(1, std::memory_order_relaxed);
 	last_submitted_ms = std::max(last_submitted_ms, item.monotonic_ms);
 	lock.unlock();
 	queue_condition.notify_one();
@@ -200,6 +230,16 @@ bool faithfulframe_session_executor::try_snapshot(ff_snapshot &output, uint64_t 
 	if (output.closed)
 		return true;
 	return worker_started.load(std::memory_order_acquire) && !closing_requested.load(std::memory_order_acquire);
+}
+
+ff_executor_diagnostics faithfulframe_session_executor::diagnostics() const
+{
+	return ff_executor_diagnostics{
+		queue_depth.load(std::memory_order_relaxed),       queue_high_water.load(std::memory_order_relaxed),
+		accepted_work.load(std::memory_order_relaxed),     rejected_work.load(std::memory_order_relaxed),
+		coalesced_work.load(std::memory_order_relaxed),    last_queue_wait_us.load(std::memory_order_relaxed),
+		max_queue_wait_us.load(std::memory_order_relaxed), last_processing_us.load(std::memory_order_relaxed),
+		max_processing_us.load(std::memory_order_relaxed)};
 }
 
 void faithfulframe_session_executor::request_shutdown(uint32_t terminal_lifecycle_kind, uint32_t source_width,
@@ -216,6 +256,7 @@ void faithfulframe_session_executor::request_shutdown(uint32_t terminal_lifecycl
 		// worker will derive the destroy generation from Rust's latest state.
 		queue_head = 0;
 		queue_size = 0;
+		queue_depth.store(0, std::memory_order_relaxed);
 		if (worker_started.load(std::memory_order_acquire)) {
 			work_item stop;
 			stop.kind = work_kind::stop;
@@ -227,6 +268,8 @@ void faithfulframe_session_executor::request_shutdown(uint32_t terminal_lifecycl
 						    : last_submitted_ms + 1;
 			queue[0] = stop;
 			queue_size = 1;
+			queue_depth.store(1, std::memory_order_relaxed);
+			update_max(queue_high_water, 1);
 		}
 	}
 	queue_condition.notify_one();
@@ -304,7 +347,11 @@ void faithfulframe_session_executor::run()
 				item = queue[queue_head];
 				queue_head = (queue_head + 1) % queue.size();
 				--queue_size;
+				queue_depth.store(queue_size, std::memory_order_relaxed);
 			}
+			last_queue_wait_us.store(elapsed_microseconds(item.enqueued_at), std::memory_order_relaxed);
+			update_max(max_queue_wait_us, last_queue_wait_us.load(std::memory_order_relaxed));
+			const auto processing_started = std::chrono::steady_clock::now();
 
 			if (item.kind == work_kind::stop) {
 				ff_lifecycle destroyed{};
@@ -319,6 +366,9 @@ void faithfulframe_session_executor::run()
 					snapshot.rejection_reason = FF_REJECTION_NONE;
 					published.publish(snapshot, item.monotonic_ms);
 				}
+				last_processing_us.store(elapsed_microseconds(processing_started),
+							 std::memory_order_relaxed);
+				update_max(max_processing_us, last_processing_us.load(std::memory_order_relaxed));
 				break;
 			}
 
@@ -372,6 +422,8 @@ void faithfulframe_session_executor::run()
 				}
 				published.publish(snapshot, item.monotonic_ms);
 			}
+			last_processing_us.store(elapsed_microseconds(processing_started), std::memory_order_relaxed);
+			update_max(max_processing_us, last_processing_us.load(std::memory_order_relaxed));
 		}
 	} catch (...) {
 		// Never allow a C++ exception to escape the worker entry point.
