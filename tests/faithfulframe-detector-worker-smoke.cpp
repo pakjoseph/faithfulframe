@@ -33,7 +33,10 @@ static void signal_work(probe_detector &detector)
 int main()
 {
 	probe_detector detector;
-	detector.start();
+	if (!detector.start()) {
+		std::fprintf(stderr, "detector worker did not start\n");
+		return 1;
+	}
 	std::this_thread::sleep_for(std::chrono::milliseconds(30));
 	if (detector.completed_work_count() != 0) {
 		std::fprintf(stderr, "detector worker ran before receiving work\n");

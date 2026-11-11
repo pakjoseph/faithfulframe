@@ -385,8 +385,11 @@ static void update_detector(face_tracker_manager *ftm, enum face_tracker_manager
 
 	ftm->detector_engine = detector_engine;
 
-	if (ftm->detect)
-		ftm->detect->start();
+	if (ftm->detect && !ftm->detect->start()) {
+		delete ftm->detect;
+		ftm->detect = NULL;
+		blog(LOG_ERROR, "face_tracker_manager: detector worker unavailable after startup failure");
+	}
 }
 
 void face_tracker_manager::update(obs_data_t *settings)

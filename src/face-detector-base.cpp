@@ -13,19 +13,32 @@
 
 face_detector_base::face_detector_base()
 {
-	pthread_mutex_init(&mutex, NULL);
-	pthread_cond_init(&cond, NULL);
+	mutex_initialized = false;
+	cond_initialized = false;
 	request_stop = 0;
 	running = 0;
 	work_pending = false;
 	leak_test = bmalloc(1);
+	const int mutex_result = pthread_mutex_init(&mutex, NULL);
+	if (mutex_result != 0) {
+		blog(LOG_ERROR, "face_detector_base: failed to initialize mutex (error %d)", mutex_result);
+		return;
+	}
+	mutex_initialized = true;
+	const int cond_result = pthread_cond_init(&cond, NULL);
+	if (cond_result != 0)
+		blog(LOG_ERROR, "face_detector_base: failed to initialize condition variable (error %d)", cond_result);
+	else
+		cond_initialized = true;
 }
 
 face_detector_base::~face_detector_base()
 {
 	bfree(leak_test);
-	pthread_cond_destroy(&cond);
-	pthread_mutex_destroy(&mutex);
+	if (cond_initialized)
+		pthread_cond_destroy(&cond);
+	if (mutex_initialized)
+		pthread_mutex_destroy(&mutex);
 }
 
 void *face_detector_base::thread_routine(void *p)
@@ -67,8 +80,10 @@ void *face_detector_base::thread_routine(void *p)
 	return NULL;
 }
 
-void face_detector_base::start()
+bool face_detector_base::start()
 {
+	if (!mutex_initialized || !cond_initialized)
+		return false;
 	lock();
 	blog(LOG_INFO, "face_detector_base: starting the thread.");
 	request_stop = 0;
@@ -77,14 +92,17 @@ void face_detector_base::start()
 	const int result = pthread_create(&thread, NULL, thread_routine, (void *)this);
 	if (result != 0) {
 		blog(LOG_ERROR, "face_detector_base: failed to start thread (error %d)", result);
-		return;
+		return false;
 	}
 	running = 1;
+	return true;
 }
 
 void face_detector_base::stop()
 {
 	blog(LOG_INFO, "face_detector_base: stopping the thread...");
+	if (!mutex_initialized || !cond_initialized)
+		return;
 	lock();
 	request_stop = 1;
 	signal();

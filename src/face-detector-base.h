@@ -12,6 +12,8 @@ class face_detector_base {
 	pthread_t thread;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
+	bool mutex_initialized;
+	bool cond_initialized;
 	bool running;
 	bool request_stop;
 	bool work_pending;
@@ -41,7 +43,7 @@ public:
 				 int crop_b) = 0;
 	virtual void get_faces(std::vector<struct rect_s> &) = 0;
 
-	void start();
+	bool start();
 	void stop();
 	uint64_t last_work_duration_us() const { return last_work_us.load(std::memory_order_relaxed); }
 	uint64_t max_work_duration_us() const { return max_work_us.load(std::memory_order_relaxed); }
