@@ -1597,7 +1597,7 @@ static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, co
 
 static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_binding *binding,
 				   faithfulframe_source_runtime *runtime = nullptr, bool force_black = false,
-				   bool force_wide = false)
+				   bool force_wide = false, bool draw_candidates = false)
 {
 	const uint32_t source_width = force_black ? 0
 				      : binding   ? binding->source_width.load(std::memory_order_acquire)
@@ -1681,7 +1681,7 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 			draw_sprite_crop_to_rect(dx0, dy0, dx1, dy1, u0, v0, u1, v1);
 	}
 	gs_blend_state_pop();
-	if (source_available && texture && has_displayed_snapshot)
+	if (draw_candidates && source_available && texture && has_displayed_snapshot)
 		draw_safe_candidate_bounds(binding, displayed_snapshot, displayed_snapshot_at, crop, viewport,
 					   output_width, output_height);
 }
@@ -2003,7 +2003,7 @@ static void cb_render_frame(void *data, calldata_t *cd)
 	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
 		const bool reconfiguring = s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire);
 		auto *binding = reconfiguring ? nullptr : s->safe_runtime->active.load(std::memory_order_acquire);
-		draw_safe_source_frame(s, binding, s->safe_runtime, reconfiguring || !binding, debug_notrack);
+		draw_safe_source_frame(s, binding, s->safe_runtime, reconfiguring || !binding, debug_notrack, true);
 		return;
 	}
 #endif
