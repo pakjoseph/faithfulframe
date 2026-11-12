@@ -1,5 +1,6 @@
 #include "face-detector-base.h"
 #include "faithfulframe-worker-log.hpp"
+#include "faithfulframe-worker-log-gate.hpp"
 #include <chrono>
 #include <cstdarg>
 #include <condition_variable>
@@ -22,44 +23,29 @@ extern "C" void faithfulframe_worker_log_shutdown(void) {}
 extern "C" void faithfulframe_worker_log(int, const char *, ...) {}
 #else
 namespace {
-std::mutex faithfulframe_worker_log_mutex;
-std::condition_variable faithfulframe_worker_log_drained;
-bool faithfulframe_worker_log_enabled = false;
-size_t faithfulframe_worker_log_in_flight = 0;
+faithfulframe_worker_log_gate worker_log_gate;
 } // namespace
 
 extern "C" void faithfulframe_worker_log_start(void)
 {
-	std::lock_guard<std::mutex> lock(faithfulframe_worker_log_mutex);
-	faithfulframe_worker_log_enabled = true;
+	worker_log_gate.start();
 }
 
 extern "C" void faithfulframe_worker_log_shutdown(void)
 {
-	std::unique_lock<std::mutex> lock(faithfulframe_worker_log_mutex);
-	faithfulframe_worker_log_enabled = false;
-	faithfulframe_worker_log_drained.wait(lock, [] { return faithfulframe_worker_log_in_flight == 0; });
+	worker_log_gate.shutdown();
 }
 
 extern "C" void faithfulframe_worker_log(int level, const char *format, ...)
 {
-	{
-		std::lock_guard<std::mutex> lock(faithfulframe_worker_log_mutex);
-		if (!faithfulframe_worker_log_enabled)
-			return;
-		++faithfulframe_worker_log_in_flight;
-	}
+	if (!worker_log_gate.try_begin())
+		return;
 
 	va_list args;
 	va_start(args, format);
 	blogva(level, format, args);
 	va_end(args);
-
-	{
-		std::lock_guard<std::mutex> lock(faithfulframe_worker_log_mutex);
-		if (--faithfulframe_worker_log_in_flight == 0)
-			faithfulframe_worker_log_drained.notify_all();
-	}
+	worker_log_gate.end();
 }
 
 #define detector_log(...) faithfulframe_worker_log(__VA_ARGS__)
