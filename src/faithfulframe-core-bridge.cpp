@@ -395,6 +395,14 @@ extern "C" void faithfulframe_executor_reaper_start()
 {
 	std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
 	faithfulframe_reaper_closed = false;
+	if (!faithfulframe_reaper) {
+		try {
+			faithfulframe_reaper = std::make_unique<faithfulframe_executor_reaper>();
+		} catch (...) {
+			// Keep plugin load alive; enqueue will fail and callers retain their
+			// synchronous teardown fallback if the process cannot create a worker.
+		}
+	}
 }
 
 extern "C" void faithfulframe_executor_reaper_shutdown()

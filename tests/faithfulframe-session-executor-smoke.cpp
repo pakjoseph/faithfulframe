@@ -34,6 +34,7 @@ bool await_worker_unavailable(const faithfulframe_session_executor &executor)
 
 int run_smoke()
 {
+	faithfulframe_executor_reaper_start();
 	const ff_session_config config{5000, 500,  8,     3840,  2160,  1920,  1080, 0.45f,
 				       1.0f, 4.0f, 0.25f, 0.08f, 0.08f, 0.05f, 0.25f};
 	const ff_identity identity{101, 201};
