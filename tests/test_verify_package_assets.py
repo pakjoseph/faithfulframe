@@ -55,6 +55,13 @@ class PackageAssetVerificationTests(unittest.TestCase):
             verify_package_assets.package_errors(self.root),
         )
 
+    def test_rejects_wrong_gpl_version_under_expected_name(self):
+        (self.root / "LICENSE").write_bytes(b"GNU GENERAL PUBLIC LICENSE Version 3")
+        self.assertIn(
+            "license notice has unexpected contents: LICENSE",
+            verify_package_assets.package_errors(self.root),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

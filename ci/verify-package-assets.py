@@ -17,8 +17,8 @@ REQUIRED_FILES = {
 }
 
 REQUIRED_LICENSE_MARKERS = {
-    "LICENSE": b"GNU GENERAL PUBLIC LICENSE",
-    "LICENSE-libvisca.txt": b"GNU LESSER GENERAL PUBLIC LICENSE",
+    "LICENSE": b"Version 2, June 1991",
+    "LICENSE-libvisca.txt": b"Version 2.1, February 1999",
     "LICENSE-dlib.txt": b"Boost Software License - Version 1.0",
     "LICENSE-dlib-models": b"CC0 1.0 Universal",
 }
