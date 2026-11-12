@@ -4,6 +4,7 @@ Test plugin is loaded
 
 import os
 import shutil
+import subprocess
 import unittest
 from onsdriver import obstest
 
@@ -14,23 +15,62 @@ class PluginLoadTest(obstest.OBSTest):
     'Test the plugin is loaded by OBS Studio'
 
     def setUp(self):
-        super().setUp()
+        # Keep the OBSExec instance even if startup checking times out, so the
+        # failed launch's log and stderr can be saved and its process cleaned up.
+        super().setUp(run=False)
+        self._startup_succeeded = False
         self.addCleanup(self._preserve_final_log)
+        self.obs.run()
+        self._startup_succeeded = True
 
     def _preserve_final_log(self):
         # OBSTest checks the leak summary in tearDown before moving the log.
         # Preserve the final OBS log even when that assertion fails so CI
         # artifacts contain the shutdown diagnostics.
-        logfile = self.obs.get_logfile()
-        if not logfile or not os.path.isfile(logfile):
-            return
-
         logsdir = os.environ.get('ONSDRIVER_LOGS', 'logs')
         os.makedirs(logsdir, exist_ok=True)
-        filename = f'diagnostic-{self.name.replace(os.sep, "_")}.log'
-        destination = os.path.join(logsdir, filename)
-        if os.path.abspath(logfile) != os.path.abspath(destination):
-            shutil.copy2(logfile, destination)
+        logfile = None
+        try:
+            logfile = self.obs.get_logfile()
+        except OSError:
+            pass
+
+        if logfile and os.path.isfile(logfile):
+            filename = f'diagnostic-{self.name.replace(os.sep, "_")}.log'
+            destination = os.path.join(logsdir, filename)
+            if os.path.abspath(logfile) != os.path.abspath(destination):
+                shutil.copy2(logfile, destination)
+        elif not self._startup_succeeded:
+            filename = f'diagnostic-{self.name.replace(os.sep, "_")}-startup.txt'
+            with open(os.path.join(logsdir, filename), 'w', encoding='utf-8') as fw:
+                fw.write(f'OBS log path: {logfile!r}\n')
+
+        stderr = getattr(self.obs, '_tmp_stderr', None)
+        if stderr:
+            try:
+                stderr.seek(0)
+                contents = stderr.read()
+            except (OSError, ValueError):
+                contents = b''
+            if contents:
+                filename = f'diagnostic-{self.name.replace(os.sep, "_")}-stderr.txt'
+                with open(os.path.join(logsdir, filename), 'wb') as fw:
+                    fw.write(contents)
+
+        process = getattr(self.obs, 'proc_obs', None)
+        if process and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                process.wait()
 
     def tearDown(self):
         # onsdriver's shutdown() enables an unsafe force-exit after five
