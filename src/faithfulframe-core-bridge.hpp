@@ -151,6 +151,10 @@ private:
 /// The caller retains ownership if the reaper cannot accept it.
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
 
-/// Drain and join all deferred executor workers before the plugin module unloads.
+/// Defers destruction that may join tracker/detector workers to the shared reaper.
+/// The caller retains context ownership if the reaper cannot accept the callback.
+bool faithfulframe_retire_cleanup(void (*cleanup)(void *), void *context);
+
+/// Drain all deferred worker joins and cleanup callbacks before module unload.
 extern "C" void faithfulframe_executor_reaper_start();
 extern "C" void faithfulframe_executor_reaper_shutdown();

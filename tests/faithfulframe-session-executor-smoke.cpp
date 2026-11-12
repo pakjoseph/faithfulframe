@@ -2,6 +2,7 @@
 #include "faithfulframe-config-guard.hpp"
 
 #include <barrier>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -687,14 +688,33 @@ int run_smoke()
 	    !same_generations(terminal_snapshot.generations, destroyed_generations) ||
 	    terminal_executor->enqueue_command(2, post_destroy_command))
 		return 68;
+	terminal_executor.reset();
+	struct cleanup_probe
+	{
+		std::atomic<bool> completed{false};
+		std::weak_ptr<faithfulframe_session_executor> prior_executor;
+		bool prior_executor_released = false;
+		std::thread::id thread_id{};
+	} cleanup{false, terminal_weak};
+	const std::thread::id destroy_thread = std::this_thread::get_id();
+	if (!faithfulframe_retire_cleanup(
+		    [](void *context) {
+			    auto *probe = static_cast<cleanup_probe *>(context);
+			    probe->prior_executor_released = probe->prior_executor.expired();
+			    probe->thread_id = std::this_thread::get_id();
+			    probe->completed.store(true, std::memory_order_release);
+		    },
+		    &cleanup))
+		return 70;
 	// Module unload is the barrier: it must drain any executor workers still
-	// retained by the reaper before plugin code can be unloaded.
+	// retained by the reaper and queued cleanup callbacks before plugin code can
+	// be unloaded.
 	faithfulframe_executor_reaper_shutdown();
+	if (!cleanup.completed.load(std::memory_order_acquire) || !cleanup.prior_executor_released ||
+	    cleanup.thread_id == destroy_thread)
+		return 71;
 	if (!unload_weak.expired())
 		return 63;
-	terminal_executor.reset();
-	if (!terminal_weak.expired())
-		return 69;
 	return 0;
 }
 

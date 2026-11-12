@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <limits>
 
 static void update_max(std::atomic<uint64_t> &maximum, uint64_t value)
@@ -312,15 +313,15 @@ public:
 
 	~faithfulframe_executor_reaper() { shutdown(); }
 
-	bool enqueue(const std::shared_ptr<faithfulframe_session_executor> &executor)
+	bool enqueue(std::function<void()> task)
 	{
-		if (!executor || !worker.joinable())
+		if (!task || !worker.joinable())
 			return false;
 		try {
 			std::lock_guard<std::mutex> lock(mutex);
 			if (stopping)
 				return false;
-			pending.push_back(executor);
+			pending.push_back(std::move(task));
 		} catch (...) {
 			return false;
 		}
@@ -343,7 +344,7 @@ private:
 	void run()
 	{
 		for (;;) {
-			std::shared_ptr<faithfulframe_session_executor> executor;
+			std::function<void()> task;
 			{
 				std::unique_lock<std::mutex> lock(mutex);
 				condition.wait(lock, [this] { return stopping || !pending.empty(); });
@@ -352,17 +353,20 @@ private:
 						return;
 					continue;
 				}
-				executor = std::move(pending.front());
+				task = std::move(pending.front());
 				pending.pop_front();
 			}
-			executor->join();
-			executor.reset();
+			try {
+				task();
+			} catch (...) {
+				// One teardown callback must not terminate the shared reaper.
+			}
 		}
 	}
 
 	std::mutex mutex;
 	std::condition_variable condition;
-	std::deque<std::shared_ptr<faithfulframe_session_executor>> pending;
+	std::deque<std::function<void()>> pending;
 	bool stopping = false;
 	std::thread worker;
 };
@@ -385,10 +389,36 @@ bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session
 	} catch (...) {
 		return false;
 	}
-	if (!faithfulframe_reaper->enqueue(executor))
+	try {
+		auto retired_executor = executor;
+		if (!faithfulframe_reaper->enqueue(
+			    [retired_executor = std::move(retired_executor)]() mutable { retired_executor->join(); }))
+			return false;
+	} catch (...) {
 		return false;
+	}
 	executor.reset();
 	return true;
+}
+
+bool faithfulframe_retire_cleanup(void (*cleanup)(void *), void *context)
+{
+	if (!cleanup || !context)
+		return false;
+	std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
+	if (faithfulframe_reaper_closed)
+		return false;
+	try {
+		if (!faithfulframe_reaper)
+			faithfulframe_reaper = std::make_unique<faithfulframe_executor_reaper>();
+	} catch (...) {
+		return false;
+	}
+	try {
+		return faithfulframe_reaper->enqueue([cleanup, context] { cleanup(context); });
+	} catch (...) {
+		return false;
+	}
 }
 
 extern "C" void faithfulframe_executor_reaper_start()
