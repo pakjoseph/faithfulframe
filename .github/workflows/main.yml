@@ -17,6 +17,10 @@ on:
 env:
   artifactName: ${{ contains(github.ref_name, '/') && 'artifact' || github.ref_name }}
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux_build:
     runs-on: ${{ matrix.ubuntu }}
