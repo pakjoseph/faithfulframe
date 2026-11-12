@@ -23,6 +23,11 @@ int main()
 	check(faithfulframe_candidate_restore_index(22, identity, generations, identity, generations, handles.data(),
 						    handles.size(), index));
 	check(index == 1);
+	const std::array<uint64_t, 3> refreshed_handles{33, 11, 22};
+	index = 99;
+	check(faithfulframe_candidate_restore_index(22, identity, generations, identity, generations,
+						    refreshed_handles.data(), refreshed_handles.size(), index));
+	check(index == 2); // Keyboard selection follows the opaque handle across preview refreshes.
 
 	index = 99;
 	check(!faithfulframe_candidate_restore_index(44, identity, generations, identity, generations, handles.data(),
