@@ -2,7 +2,7 @@ Name: @PLUGIN_NAME_FEDORA@
 Version: @VERSION@
 Release: @RELEASE@%{?dist}
 Summary: OBS Studio plugin as video filters to track face for mainly a speaking person
-License: GPL-2.0-or-later AND LGPL-2.1-or-later AND BSL-1.0
+License: GPL-2.0-only AND LGPL-2.1-or-later AND BSL-1.0
 
 Source0: %{name}-%{version}.tar.bz2
 Source1: %{name}-%{version}-libvisca.tar.bz2
@@ -53,6 +53,7 @@ mkdir -p %{buildroot}/%{_datadir}/licenses/%{name}/
 mkdir -p %{buildroot}/%{_datadir}/licenses/%{name}-data/
 cp LICENSE %{buildroot}/%{_datadir}/licenses/%{name}/
 cp libvisca/COPYING %{buildroot}/%{_datadir}/licenses/%{name}/LICENSE-libvisca.txt
+cp %{buildroot}/%{_datadir}/obs/obs-plugins/@PLUGIN_NAME@/LICENSE-dlib %{buildroot}/%{_datadir}/licenses/%{name}-data/
 mv %{buildroot}/%{_datadir}/obs/obs-plugins/@PLUGIN_NAME@/LICENSE-dlib %{buildroot}/%{_datadir}/licenses/%{name}/
 mv %{buildroot}/%{_datadir}/obs/obs-plugins/@PLUGIN_NAME@/LICENSE-dlib-models %{buildroot}/%{_datadir}/licenses/%{name}-data/
 
