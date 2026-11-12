@@ -559,6 +559,14 @@ mod tests {
     }
 
     #[test]
+    fn dock_status_reason_codes_are_stable() {
+        assert_eq!(map_reason(Reason::ResetWide), 8);
+        assert_eq!(map_reason(Reason::LifecycleInvalidated), 9);
+        assert_eq!(map_reason(Reason::TrackerIdentityExpired), 14);
+        assert_eq!(map_reason(Reason::FramingFailure), 19);
+    }
+
+    #[test]
     fn create_clears_output_before_rejecting_invalid_inputs() {
         let mut output = std::ptr::NonNull::<FfSession>::dangling().as_ptr();
         let result = unsafe {
