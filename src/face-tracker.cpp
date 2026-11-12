@@ -2393,6 +2393,7 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 		return;
 
 	auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+	calldata_set_bool(cd, "session_closed", binding && binding->closed.load(std::memory_order_acquire));
 	auto executor = binding ? std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)
 				: std::shared_ptr<faithfulframe_session_executor>{};
 	if (!binding || !executor || binding->closed.load(std::memory_order_acquire) ||

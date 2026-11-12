@@ -49,6 +49,7 @@ struct faithfulframe_safe_preview
 {
 	bool enabled = false;
 	bool available = false;
+	bool session_closed = false;
 	bool target_active = false;
 	bool signal_connected = false;
 	uint32_t state = 0;
@@ -155,6 +156,7 @@ static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &
 	}
 	calldata_get_bool(&cd, "safe_enabled", &preview.enabled);
 	calldata_get_bool(&cd, "available", &preview.available);
+	calldata_get_bool(&cd, "session_closed", &preview.session_closed);
 	calldata_get_bool(&cd, "target_active", &preview.target_active);
 	calldata_get_bool(&cd, "signal_connected", &preview.signal_connected);
 	long long snapshot_age_ms = -1;
@@ -343,6 +345,8 @@ static bool send_safe_command(obs_source_t *source, uint32_t kind, const QVarian
 
 static QString safe_state_text(const faithfulframe_safe_preview &preview)
 {
+	if (preview.session_closed)
+		return "Tracking session stopped; reselect the camera in Source Settings to resume";
 	if (!preview.available)
 		return "FaithfulFrame safe tracking: waiting for a valid source session";
 	if (preview.command_result == 2) {
