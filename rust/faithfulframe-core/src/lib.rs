@@ -864,7 +864,17 @@ impl TrackingEngine {
 
     pub fn apply(&mut self, event: Event) -> Snapshot {
         let at = event_time(event);
+        let policy_before = self.session.snapshot();
         let selected_before = self.session.selected;
+        let recovered_after_evidence_gap = match event {
+            Event::Candidate { candidate, .. } => selected_before.is_some_and(|selected| {
+                selected.continuity == candidate.continuity
+                    && candidate.observation_version > selected.observation_version
+                    && candidate.observed_at.saturating_sub(selected.last_seen)
+                        > self.session.config.max_evidence_age_ms
+            }),
+            _ => false,
+        };
         let geometry_update = match event {
             Event::Lifecycle {
                 identity,
@@ -895,6 +905,18 @@ impl TrackingEngine {
 
         let policy = self.session.apply(event);
         if matches!(policy.command_result, CommandResult::Rejected(_)) {
+            // A deadline can advance independently of a rejected command. In
+            // that case retain the same crop but stop stale motion momentum.
+            if policy.state != policy_before.state || policy.reason != policy_before.reason {
+                match policy.crop_action {
+                    CropAction::Hold | CropAction::None => self.framing.hold(),
+                    CropAction::Wide => {
+                        self.framing.reset();
+                        self.frame_plan = self.framing.safe_wide();
+                    }
+                    CropAction::Track => {}
+                }
+            }
             return self.with_frame(policy);
         }
 
@@ -918,6 +940,9 @@ impl TrackingEngine {
             self.framing = framing;
             self.frame_plan = self.framing.safe_wide();
         } else {
+            if policy.reason == Reason::ContinuityRecovered && recovered_after_evidence_gap {
+                self.framing.hold();
+            }
             match policy.crop_action {
                 CropAction::Track if authorized_target_update => {
                     if let Some(target) = policy.selected_rect {
@@ -2500,6 +2525,168 @@ mod tests {
     }
 
     #[test]
+    fn continuity_recovery_resets_stale_framing_velocity_before_reframing() {
+        let mut engine = TrackingEngine::new(
+            Config {
+                loss_grace_ms: 100,
+                max_evidence_age_ms: 10,
+                ..Config::default()
+            },
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        let first = candidate(10, 100, 1, 2);
+        engine.apply(Event::Candidate {
+            at: 2,
+            candidate: first,
+        });
+        let searching = engine.snapshot();
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: searching.identity,
+                status_version: searching.status_version,
+                generations: searching.generations,
+                command: Command::SelectCandidate {
+                    handle: first.handle,
+                    observation_version: first.observation_version,
+                },
+            },
+        });
+        engine.apply(Event::Candidate {
+            at: 4,
+            candidate: candidate(10, 100, 2, 4),
+        });
+        let before_recovery = engine.snapshot();
+        assert!(!engine.framing.motion_is_idle());
+        let crop_center_x = |snapshot: Snapshot| snapshot.crop.x + snapshot.crop.width * 0.5;
+        assert!(crop_center_x(before_recovery) < crop_center_x(locked));
+
+        let mut returning_speaker = candidate(10, 100, 3, 20);
+        returning_speaker.rect = Rect::normalized(0.9, 0.3, 0.08, 0.2).unwrap();
+        let recovered = engine.apply(Event::Candidate {
+            at: 20,
+            candidate: returning_speaker,
+        });
+
+        assert_eq!(recovered.state, State::Locked);
+        assert_eq!(recovered.reason, Reason::ContinuityRecovered);
+        assert_eq!(recovered.selected_rect, Some(returning_speaker.rect));
+        assert!(
+            !engine.framing.motion_is_idle(),
+            "recovery did not advance the framing controller"
+        );
+        assert!(
+            crop_center_x(recovered) > crop_center_x(before_recovery),
+            "crop center before {} after {} with plan {:?}",
+            crop_center_x(before_recovery),
+            crop_center_x(recovered),
+            recovered.crop
+        );
+
+        let mut continued_speaker = candidate(10, 100, 4, 29);
+        continued_speaker.rect = returning_speaker.rect;
+        let continued = engine.apply(Event::Candidate {
+            at: 29,
+            candidate: continued_speaker,
+        });
+        assert_eq!(continued.state, State::Locked);
+        assert_eq!(continued.reason, Reason::ContinuityRecovered);
+        assert!(
+            crop_center_x(continued) - crop_center_x(recovered) > 0.001,
+            "framing did not preserve the new recovery motion ramp"
+        );
+
+        let mut returning_left = candidate(10, 100, 5, 51);
+        returning_left.rect = Rect::normalized(0.05, 0.3, 0.08, 0.2).unwrap();
+        let recovered_again = engine.apply(Event::Candidate {
+            at: 51,
+            candidate: returning_left,
+        });
+        assert_eq!(recovered_again.state, State::Locked);
+        assert_eq!(recovered_again.reason, Reason::ContinuityRecovered);
+        assert!(crop_center_x(recovered_again) < crop_center_x(continued));
+    }
+
+    #[test]
+    fn independent_deadline_during_rejected_command_holds_framing_motion() {
+        let mut engine = TrackingEngine::new(
+            Config {
+                loss_grace_ms: 20,
+                max_evidence_age_ms: 10,
+                ..Config::default()
+            },
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        engine.apply(Event::Candidate {
+            at: 2,
+            candidate: candidate(10, 100, 1, 2),
+        });
+        let searching = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: searching.identity,
+                status_version: searching.status_version,
+                generations: searching.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: searching.observation_version,
+                },
+            },
+        });
+        let locked = engine.apply(Event::Candidate {
+            at: 4,
+            candidate: candidate(10, 100, 2, 4),
+        });
+        assert!(!engine.framing.motion_is_idle());
+
+        let rejected = engine.apply(Event::Command {
+            at: 40,
+            envelope: CommandEnvelope {
+                identity: locked.identity,
+                status_version: locked.status_version,
+                generations: locked.generations,
+                command: Command::Resume,
+            },
+        });
+
+        assert_eq!(
+            rejected.command_result,
+            CommandResult::Rejected(Reason::InvalidCommand)
+        );
+        assert_eq!(rejected.state, State::Lost);
+        assert_eq!(rejected.crop, locked.crop);
+        assert_eq!(rejected.viewport, locked.viewport);
+        assert!(engine.framing.motion_is_idle());
+    }
+
+    #[test]
     fn rejected_command_preserves_framing_plan() {
         let mut engine = TrackingEngine::new(
             Config::default(),
@@ -2535,6 +2722,7 @@ mod tests {
                 },
             },
         });
+        assert!(!engine.framing.motion_is_idle());
         let mut stale_generations = locked.generations;
         stale_generations.session += 1;
         let rejected = engine.apply(Event::Command {
@@ -2557,6 +2745,7 @@ mod tests {
         assert_eq!(rejected.viewport, locked.viewport);
         assert_eq!(rejected.loss_deadline, locked.loss_deadline);
         assert_eq!(rejected.status_version, locked.status_version);
+        assert!(!engine.framing.motion_is_idle());
     }
 
     #[test]

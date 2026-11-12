@@ -134,6 +134,11 @@ impl FramingController {
         self.zoom_velocity = (0.0, 0.0);
     }
 
+    #[cfg(test)]
+    pub(crate) fn motion_is_idle(&self) -> bool {
+        self.pan_velocity == (0.0, 0.0) && self.zoom_velocity == (0.0, 0.0)
+    }
+
     pub fn safe_wide(&self) -> FramePlan {
         FramePlan {
             source_crop: Rect::full_frame(),
