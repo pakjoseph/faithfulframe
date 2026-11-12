@@ -2,7 +2,9 @@
 
 #ifdef __cplusplus
 #include <QFrame>
+#include <QElapsedTimer>
 #include <QPointF>
+#include <QString>
 #include <string>
 #include <obs.h>
 #include <obs.hpp>
@@ -32,6 +34,8 @@ public:
 	class QPushButton *manualOverrideButton;
 	class QPushButton *selectCandidateButton;
 	class QTimer *statusTimer;
+	QString operatorNotice;
+	QElapsedTimer operatorNoticeTimer;
 
 	bool updating_widget = false;
 	bool in_updateState = false;
@@ -50,6 +54,7 @@ public:
 
 private:
 	void applyDesignTokens();
+	void showOperatorNotice(const QString &message);
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
 

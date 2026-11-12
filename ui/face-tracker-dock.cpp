@@ -638,10 +638,12 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 
 	pauseButton = new QPushButton(obs_module_text("Pause"), this);
 	pauseButton->setCheckable(true);
+	pauseButton->setAccessibleName("Freeze automatic tracking");
 	mainLayout->addWidget(pauseButton);
 	connect(pauseButton, &QPushButton::clicked, this, &FTDock::pauseButtonClicked);
 
 	resetButton = new QPushButton(obs_module_text("Reset"), this);
+	resetButton->setAccessibleName("Reset tracking framing");
 	mainLayout->addWidget(resetButton);
 	connect(resetButton, &QPushButton::clicked, this, &FTDock::resetButtonClicked);
 
@@ -813,6 +815,8 @@ void FTDock::targetSelectorChanged()
 	if (updating_widget)
 		return;
 
+	operatorNotice.clear();
+	operatorNoticeTimer.invalidate();
 	updateState();
 }
 
@@ -871,10 +875,13 @@ static void set_pause_button(QPushButton *pauseButton, bool is_paused)
 {
 	pauseButton->setEnabled(true);
 	pauseButton->setChecked(is_paused);
-	if (is_paused)
+	if (is_paused) {
 		pauseButton->setText(obs_module_text("Resume"));
-	else
+		pauseButton->setAccessibleName("Resume automatic tracking");
+	} else {
 		pauseButton->setText(obs_module_text("Pause"));
+		pauseButton->setAccessibleName("Freeze automatic tracking");
+	}
 }
 
 void FTDock::onStateChanged(void *data, calldata_t *)
@@ -888,6 +895,8 @@ void FTDock::updateState()
 	OBSSource target = get_source();
 	proc_handler_t *ph = obs_source_get_proc_handler(target);
 	if (!ph) {
+		operatorNotice.clear();
+		operatorNoticeTimer.invalidate();
 		autoFollowButton->hide();
 		manualOverrideButton->hide();
 		candidateSelector->hide();
@@ -932,12 +941,21 @@ void FTDock::updateState()
 							     .arg(safe_preview.output_width)
 							     .arg(safe_preview.output_height)
 						   : QString("Resolution unavailable");
-		safeStatusLabel->setText(QString("Tracking source: %1\n%2\n%3\nCurrent zoom: %4×\n%5")
-						 .arg(tracking_source)
-						 .arg(safe_preview.framing_preset)
-						 .arg(safe_state_text(safe_preview))
-						 .arg(safe_preview_zoom(safe_preview), 0, 'f', 1)
-						 .arg(resolution));
+		QString status_text = QString("Tracking source: %1\n%2\n%3\nCurrent zoom: %4×\n%5")
+					      .arg(tracking_source)
+					      .arg(safe_preview.framing_preset)
+					      .arg(safe_state_text(safe_preview))
+					      .arg(safe_preview_zoom(safe_preview), 0, 'f', 1)
+					      .arg(resolution);
+		if (!operatorNotice.isEmpty()) {
+			if (operatorNoticeTimer.isValid() && operatorNoticeTimer.elapsed() < 5000)
+				status_text += "\n\n" + operatorNotice;
+			else {
+				operatorNotice.clear();
+				operatorNoticeTimer.invalidate();
+			}
+		}
+		safeStatusLabel->setText(status_text);
 		if (performanceToggle->isChecked()) {
 			const QString snapshot_age =
 				safe_preview.status_snapshot_age_ms < 0
@@ -966,6 +984,7 @@ void FTDock::updateState()
 		set_pause_button(pauseButton, safe_preview.state == FF_STATE_FROZEN);
 		pauseButton->setEnabled(safe_preview.available);
 		resetButton->setText("Reset to Wide");
+		resetButton->setAccessibleName("Reset framing to the full camera view");
 		resetButton->setEnabled(safe_preview.available);
 		autoFollowButton->setEnabled(safe_preview.available && (safe_preview.state == FF_STATE_MANUAL ||
 									safe_preview.state == FF_STATE_LOST));
@@ -1031,7 +1050,10 @@ void FTDock::updateState()
 	UNUSED_PARAMETER(safe_mode);
 #endif
 	if (!safe_mode) {
+		operatorNotice.clear();
+		operatorNoticeTimer.invalidate();
 		resetButton->setText(obs_module_text("Reset"));
+		resetButton->setAccessibleName("Reset tracking framing");
 		resetButton->setEnabled(true);
 		notrackButton->setText(obs_module_text("Show all region"));
 		notrackButton->setAccessibleName("Show all regions in the preview");
@@ -1100,6 +1122,13 @@ void FTDock::updateWidget()
 	updateState();
 }
 
+void FTDock::showOperatorNotice(const QString &message)
+{
+	operatorNotice = message;
+	operatorNoticeTimer.start();
+	updateState();
+}
+
 void FTDock::pauseButtonClicked(bool checked)
 {
 	if (in_updateState)
@@ -1110,7 +1139,7 @@ void FTDock::pauseButtonClicked(bool checked)
 	faithfulframe_safe_preview safe_preview;
 	if (read_safe_preview(target, safe_preview) && safe_preview.enabled) {
 		if (!send_safe_command(target, checked ? FF_COMMAND_FREEZE : FF_COMMAND_RESUME))
-			safeStatusLabel->setText(
+			showOperatorNotice(
 				"Command was stale or unavailable; wait for status to refresh and try again");
 		return;
 	}
@@ -1142,7 +1171,7 @@ void FTDock::resetButtonClicked(bool checked)
 	faithfulframe_safe_preview safe_preview;
 	if (read_safe_preview(target, safe_preview) && safe_preview.enabled) {
 		if (!send_safe_command(target, FF_COMMAND_RESET_TO_WIDE))
-			safeStatusLabel->setText("Reset command was stale or unavailable; try again");
+			showOperatorNotice("Reset command was stale or unavailable; try again");
 		return;
 	}
 #endif
@@ -1162,8 +1191,7 @@ void FTDock::autoFollowButtonClicked()
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	OBSSource target = get_source();
 	if (!send_safe_command(target, FF_COMMAND_ENABLE_AUTO_FOLLOW))
-		safeStatusLabel->setText(
-			"Auto Follow was stale or unavailable; wait for status to refresh and try again");
+		showOperatorNotice("Auto Follow was stale or unavailable; wait for status to refresh and try again");
 #endif
 }
 
@@ -1172,7 +1200,7 @@ void FTDock::manualOverrideButtonClicked()
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	OBSSource target = get_source();
 	if (!send_safe_command(target, FF_COMMAND_MANUAL_OVERRIDE))
-		safeStatusLabel->setText(
+		showOperatorNotice(
 			"Manual Override was stale or unavailable; wait for status to refresh and try again");
 #endif
 }
@@ -1182,13 +1210,12 @@ void FTDock::selectCandidateButtonClicked()
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	const QVariantMap candidate = candidateSelector->currentData().toMap();
 	if (candidate.isEmpty()) {
-		safeStatusLabel->setText("No fresh candidate is available. Wait for a face to appear in the preview.");
+		showOperatorNotice("No fresh candidate is available. Wait for a face to appear in the preview.");
 		return;
 	}
 	OBSSource target = get_source();
 	if (!send_safe_command(target, FF_COMMAND_SELECT_CANDIDATE, &candidate))
-		safeStatusLabel->setText(
-			"Selection expired or changed. Choose the face again from the current preview.");
+		showOperatorNotice("Selection expired or changed. Choose the face again from the current preview.");
 #endif
 }
 
@@ -1201,11 +1228,11 @@ void FTDock::handlePreviewClick(const QPointF &position)
 	    !preview.output_height || preview.candidates.isEmpty())
 		return;
 	if (preview.state == FF_STATE_LOCKED) {
-		safeStatusLabel->setText("Use Manual Override before selecting a different speaker.");
+		showOperatorNotice("Use Manual Override before selecting a different speaker.");
 		return;
 	}
 	if (preview.state == FF_STATE_FROZEN) {
-		safeStatusLabel->setText("Resume before selecting a speaker.");
+		showOperatorNotice("Resume before selecting a speaker.");
 		return;
 	}
 	if (preview.state != FF_STATE_MANUAL && preview.state != FF_STATE_SEARCHING && preview.state != FF_STATE_LOST)
@@ -1231,13 +1258,12 @@ void FTDock::handlePreviewClick(const QPointF &position)
 		++hits;
 	}
 	if (hits != 1) {
-		safeStatusLabel->setText(hits > 1
-						 ? "Overlapping faces are ambiguous; choose one from the candidate list"
-						 : "Click inside one visible face to select its speaker");
+		showOperatorNotice(hits > 1 ? "Overlapping faces are ambiguous; choose one from the candidate list"
+					    : "Click inside one visible face to select its speaker");
 		return;
 	}
 	if (!send_safe_command(target, FF_COMMAND_SELECT_CANDIDATE, &hit))
-		safeStatusLabel->setText("Selection expired or changed. Click the face again in the current preview.");
+		showOperatorNotice("Selection expired or changed. Click the face again in the current preview.");
 #else
 	UNUSED_PARAMETER(position);
 #endif
