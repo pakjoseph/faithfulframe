@@ -133,11 +133,40 @@ bool retirement_queue_handles_concurrent_handoffs(const ff_session_config &confi
 		for (const auto &weak_executor : weak_executors)
 			drained = drained && weak_executor.expired();
 		if (drained)
-			return true;
+			break;
 		if (std::chrono::steady_clock::now() >= deadline)
 			return false;
 		std::this_thread::yield();
 	}
+
+	auto duplicate_retirement =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{140, 240}, generations);
+	if (!duplicate_retirement->worker_available())
+		return false;
+	std::weak_ptr<faithfulframe_session_executor> duplicate_weak = duplicate_retirement;
+	auto duplicate_retirement_copy = duplicate_retirement;
+	duplicate_retirement->request_shutdown();
+	std::barrier duplicate_start(3);
+	std::atomic<bool> duplicate_failed{false};
+	std::thread first_retirement([&] {
+		duplicate_start.arrive_and_wait();
+		if (!faithfulframe_retire_session_executor(duplicate_retirement) || duplicate_retirement)
+			duplicate_failed.store(true, std::memory_order_release);
+	});
+	std::thread second_retirement([&] {
+		duplicate_start.arrive_and_wait();
+		if (!faithfulframe_retire_session_executor(duplicate_retirement_copy) || duplicate_retirement_copy)
+			duplicate_failed.store(true, std::memory_order_release);
+	});
+	duplicate_start.arrive_and_wait();
+	first_retirement.join();
+	second_retirement.join();
+	if (duplicate_failed.load(std::memory_order_acquire))
+		return false;
+	const auto duplicate_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (!duplicate_weak.expired() && std::chrono::steady_clock::now() < duplicate_deadline)
+		std::this_thread::yield();
+	return duplicate_weak.expired();
 }
 } // namespace
 
