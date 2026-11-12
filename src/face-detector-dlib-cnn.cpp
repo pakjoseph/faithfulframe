@@ -109,11 +109,11 @@ void face_detector_dlib_cnn::detect_main()
 	if (!p->net_loaded) {
 		p->net_loaded = true;
 		try {
-			faithfulframe_worker_log(LOG_INFO, "loading file '%s'", p->model_filename.c_str());
+			faithfulframe_worker_log(LOG_INFO, "loading the configured dlib CNN detector model");
 			deserialize(p->model_filename.c_str()) >> p->net;
 			p->has_error = false;
 		} catch (...) {
-			faithfulframe_worker_log(LOG_ERROR, "failed to load file '%s'", p->model_filename.c_str());
+			faithfulframe_worker_log(LOG_ERROR, "could not load the configured dlib CNN detector model");
 			p->has_error = true;
 		}
 	}

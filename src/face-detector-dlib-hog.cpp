@@ -97,11 +97,11 @@ void face_detector_dlib_hog::detect_main()
 	if (!p->detector_loaded) {
 		p->detector_loaded = true;
 		try {
-			faithfulframe_worker_log(LOG_INFO, "loading file '%s'", p->model_filename.c_str());
+			faithfulframe_worker_log(LOG_INFO, "loading the configured dlib HOG detector model");
 			dlib::deserialize(p->model_filename.c_str()) >> p->detector;
 			p->has_error = false;
 		} catch (...) {
-			faithfulframe_worker_log(LOG_ERROR, "failed to load file '%s'", p->model_filename.c_str());
+			faithfulframe_worker_log(LOG_ERROR, "could not load the configured dlib HOG detector model");
 			p->has_error = true;
 		}
 	}
