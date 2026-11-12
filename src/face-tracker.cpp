@@ -1404,6 +1404,15 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 	const bool active = obs_source_active(target);
 	const uint64_t now = source_monotonic_millis();
 	auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
+	if (executor && !binding->closed.load(std::memory_order_acquire) && !executor->worker_available()) {
+		blog(LOG_ERROR, "FaithfulFrame tracking worker stopped for bound source '%s'; closing the session",
+		     binding->target_name.c_str());
+		fail_source_binding_closed(binding);
+		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
+				  binding->output_height.load(std::memory_order_acquire) > 0;
+		obs_source_release(target);
+		return;
+	}
 
 	if (connected && !executor) {
 		if (!initialize_source_session(s, binding, width, height)) {

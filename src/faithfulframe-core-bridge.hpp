@@ -70,6 +70,12 @@ public:
 	bool enqueue_candidates(uint64_t monotonic_ms, const ff_candidate *candidates, size_t count);
 	bool enqueue_command(uint64_t monotonic_ms, const ff_command &command);
 	bool enqueue_lifecycle(uint64_t monotonic_ms, const ff_lifecycle &lifecycle);
+	/// True while the worker can accept work; false after startup failure or shutdown.
+	bool worker_available() const
+	{
+		return worker_started.load(std::memory_order_acquire) &&
+		       !closing_requested.load(std::memory_order_acquire);
+	}
 	bool try_snapshot(ff_snapshot &output, uint64_t *published_at_ms = nullptr) const;
 	ff_executor_diagnostics diagnostics() const;
 	const ff_identity &binding_identity() const { return identity; }

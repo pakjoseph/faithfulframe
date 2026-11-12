@@ -19,6 +19,17 @@ bool await_snapshot(const faithfulframe_session_executor &executor, Predicate pr
 	} while (std::chrono::steady_clock::now() < deadline);
 	return false;
 }
+
+bool await_worker_unavailable(const faithfulframe_session_executor &executor)
+{
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	do {
+		if (!executor.worker_available())
+			return true;
+		std::this_thread::yield();
+	} while (std::chrono::steady_clock::now() < deadline);
+	return false;
+}
 } // namespace
 
 int run_smoke()
@@ -103,6 +114,13 @@ int run_smoke()
 	    completed_diagnostics.accepted_work != 5 || completed_diagnostics.rejected_work != 0 ||
 	    completed_diagnostics.coalesced_work != 0 || completed_diagnostics.last_queue_wait_us > 10'000'000)
 		return 15;
+
+	ff_session_config invalid_config = config;
+	invalid_config.output_width = 0;
+	faithfulframe_session_executor failed_worker(invalid_config, ff_identity{102, 202}, generations);
+	if (!await_worker_unavailable(failed_worker) || failed_worker.worker_available())
+		return 16;
+	failed_worker.shutdown();
 
 	// Cross-thread ingress can acquire the queue mutex in a different order
 	// from timestamp sampling. Event time and snapshot publication must remain
