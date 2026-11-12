@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <utility>
 #include <QAction>
 #include <QMainWindow>
 #include <QDockWidget>
@@ -18,6 +19,12 @@
 #include <QSignalBlocker>
 #include <QPointer>
 #include <QVariantMap>
+#include <QDateTime>
+#include <QFileDialog>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QSaveFile>
+#include <QSysInfo>
 #include "sanctuary-style.hpp"
 #include "plugin-macros.generated.h"
 #include "face-tracker-dock.hpp"
@@ -33,8 +40,37 @@
 #define SAVE_DATA_NAME "face-tracker-dock"
 #define OBJ_NAME_SUFFIX "_ft_dock"
 
+static bool dock_frontend_shutdown_started = false;
+static bool dock_frontend_closing_docks = false;
+
 void FTDock::closeEvent(QCloseEvent *event)
 {
+	if (!dock_frontend_shutdown_started && !dock_frontend_closing_docks &&
+	    (performanceRecording || !performanceSamples.empty())) {
+		QMessageBox prompt(this);
+		prompt.setWindowTitle("FaithfulFrame performance data");
+		prompt.setText("This dock has performance data that has not been exported.");
+		prompt.setInformativeText(
+			"The CSV contains aggregate system and tracking metrics plus your hardware/workload notes; it does not contain preview images or face data.");
+		QPushButton *save = prompt.addButton("Export CSV", QMessageBox::AcceptRole);
+		QPushButton *discard = prompt.addButton("Discard data", QMessageBox::DestructiveRole);
+		prompt.addButton(QMessageBox::Cancel);
+		prompt.setDefaultButton(save);
+		prompt.exec();
+		if (prompt.clickedButton() == save) {
+			performanceRecording = false;
+			if (!exportPerformanceRecording()) {
+				event->ignore();
+				return;
+			}
+		} else if (prompt.clickedButton() == discard) {
+			performanceRecording = false;
+			performanceSamples.clear();
+		} else {
+			event->ignore();
+			return;
+		}
+	}
 	QFrame::closeEvent(event);
 }
 
@@ -51,7 +87,6 @@ static QPointer<QAction> new_dock_action;
 static QPointer<QObject> dock_action_context;
 static bool dock_save_callback_registered = false;
 static bool dock_event_callback_registered = false;
-static bool dock_frontend_shutdown_started = false;
 
 static void save_load_ft_docks(obs_data_t *save_data, bool saving, void *private_data);
 static void ft_docks_frontend_event_cb(enum obs_frontend_event event, void *private_data);
@@ -178,6 +213,65 @@ static QString obs_performance_metrics()
 		.arg(render_text)
 		.arg(encode_text)
 		.arg(stream_text);
+}
+
+struct obs_performance_sample
+{
+	double active_fps = -1.0;
+	int64_t render_frames = -1;
+	int64_t render_lagged_frames = -1;
+	int64_t encode_frames = -1;
+	int64_t encode_skipped_frames = -1;
+	int64_t stream_frames = -1;
+	int64_t stream_dropped_frames = -1;
+};
+
+static obs_performance_sample read_obs_performance_sample()
+{
+	obs_performance_sample result;
+	if (!obs_video_active())
+		return result;
+
+	const double active_fps = obs_get_active_fps();
+	if (std::isfinite(active_fps) && active_fps >= 0.0)
+		result.active_fps = active_fps;
+	result.render_frames = static_cast<int64_t>(obs_get_total_frames());
+	result.render_lagged_frames = static_cast<int64_t>(obs_get_lagged_frames());
+	const video_t *video = obs_get_video();
+	if (video) {
+		result.encode_frames = static_cast<int64_t>(video_output_get_total_frames(video));
+		result.encode_skipped_frames = static_cast<int64_t>(video_output_get_skipped_frames(video));
+	}
+	if (obs_frontend_streaming_active()) {
+		obs_output_t *stream = obs_frontend_get_streaming_output();
+		if (stream) {
+			result.stream_frames = obs_output_get_total_frames(stream);
+			result.stream_dropped_frames = obs_output_get_frames_dropped(stream);
+			obs_output_release(stream);
+		}
+	}
+	return result;
+}
+
+static bool write_performance_csv(const QString &path, const std::vector<faithfulframe::performance::sample> &samples)
+{
+	QSaveFile file(path);
+	if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+		return false;
+	auto write = [&file](const std::string &text) {
+		return file.write(text.data(), static_cast<qint64>(text.size())) == static_cast<qint64>(text.size());
+	};
+	if (!write(faithfulframe::performance::csv_header())) {
+		file.cancelWriting();
+		return false;
+	}
+	for (const auto &sample : samples) {
+		if (!write(faithfulframe::performance::csv_row(sample))) {
+			file.cancelWriting();
+			return false;
+		}
+	}
+	return file.commit();
 }
 
 static QString safe_framing_preset(obs_source_t *source)
@@ -729,13 +823,31 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	performanceLabel->setAccessibleName("FaithfulFrame performance diagnostics");
 	performanceLabel->hide();
 	mainLayout->addWidget(performanceLabel);
+	performanceRunNotes = new QLineEdit(this);
+	performanceRunNotes->setPlaceholderText(
+		"Hardware + workload (e.g., church PC model; 4K input → 1080p output; multi-person stage)");
+	performanceRunNotes->setAccessibleName("Hardware and workload notes for reproducible performance measurements");
+	performanceRunNotes->setToolTip(
+		"Describe the machine and test workload. OS version, CPU architecture, OBS and FaithfulFrame versions, and video dimensions are recorded automatically.");
+	performanceRunNotes->setMaxLength(512);
+	performanceRunNotes->hide();
+	mainLayout->addWidget(performanceRunNotes);
+	performanceRecordButton = new QPushButton("Record performance data", this);
+	performanceRecordButton->setAccessibleName("Record aggregate performance data for a rehearsal");
+	performanceRecordButton->setToolTip(
+		"Records one aggregate sample per second. The CSV does not contain preview images or face data.");
+	performanceRecordButton->hide();
+	mainLayout->addWidget(performanceRecordButton);
+	connect(performanceRecordButton, &QPushButton::clicked, this, &FTDock::performanceRecordButtonClicked);
 	connect(performanceToggle, &QToolButton::toggled, this, [this](bool expanded) {
 		performanceToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
 		performanceLabel->setVisible(expanded && performanceToggle->isVisible());
 		if (expanded) {
-			processCpuUsageInfo = os_cpu_usage_info_start();
-			processMetricsTimer.start();
-		} else {
+			if (!processCpuUsageInfo)
+				processCpuUsageInfo = os_cpu_usage_info_start();
+			if (!processMetricsTimer.isValid())
+				processMetricsTimer.start();
+		} else if (!performanceRecording) {
 			stopPerformanceMetrics();
 		}
 	});
@@ -747,6 +859,8 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	safeStatusLabel->hide();
 	performanceToggle->hide();
 	performanceLabel->hide();
+	performanceRunNotes->hide();
+	performanceRecordButton->hide();
 #endif
 
 	enableButton = new QPushButton("", this);
@@ -799,12 +913,12 @@ void FTDock::applyDesignTokens()
 	const QString button_style =
 		sanctuary::style::control_stylesheet(sanctuary::style::colors_from_palette(palette()));
 	for (QPushButton *button : {pauseButton, resetButton, enableButton, propertyButton, autoFollowButton,
-				    manualOverrideButton, selectCandidateButton}) {
+				    manualOverrideButton, selectCandidateButton, performanceRecordButton}) {
 		if (button)
 			button->setStyleSheet(button_style);
 	}
-	for (QPushButton *button :
-	     {pauseButton, resetButton, autoFollowButton, manualOverrideButton, selectCandidateButton}) {
+	for (QPushButton *button : {pauseButton, resetButton, autoFollowButton, manualOverrideButton,
+				    selectCandidateButton, performanceRecordButton}) {
 		if (button)
 			button->setMinimumHeight(sanctuary::style::control_primary_height);
 	}
@@ -859,11 +973,13 @@ static void ft_docks_frontend_event_cb(enum obs_frontend_event event, void *)
 	}
 
 	if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP || event == OBS_FRONTEND_EVENT_EXIT) {
+		dock_frontend_closing_docks = true;
 		if (docks)
 			while (docks->size()) {
 				(*docks)[docks->size() - 1]->close();
 				delete (*docks)[docks->size() - 1];
 			}
+		dock_frontend_closing_docks = false;
 	}
 }
 
@@ -952,10 +1068,18 @@ void FTDock::updateState()
 	OBSSource target = get_source();
 	proc_handler_t *ph = obs_source_get_proc_handler(target);
 	if (!ph) {
-		if (performanceToggle->isChecked())
-			performanceToggle->setChecked(false);
 		operatorNotice.clear();
 		operatorNoticeTimer.invalidate();
+		if (performanceRecording) {
+			performanceRecording = false;
+			operatorNotice =
+				"Performance recording stopped because its tracking source is unavailable. Export the saved samples before starting another recording.";
+			operatorNoticeTimer.start();
+			if (!performanceToggle->isChecked())
+				stopPerformanceMetrics();
+		}
+		if (performanceToggle->isChecked())
+			performanceToggle->setChecked(false);
 		autoFollowButton->hide();
 		manualOverrideButton->hide();
 		candidateSelector->hide();
@@ -963,6 +1087,12 @@ void FTDock::updateState()
 		safeStatusLabel->hide();
 		performanceToggle->hide();
 		performanceLabel->hide();
+		performanceRunNotes->hide();
+		performanceRecordButton->setVisible(!performanceSamples.empty());
+		if (!performanceSamples.empty()) {
+			performanceRecordButton->setText("Export CSV");
+			performanceRecordButton->setAccessibleName("Export the saved aggregate performance data");
+		}
 		if (source_sh) {
 			signal_handler_disconnect(source_sh, "state_changed", onStateChanged, this);
 			source_sh = NULL;
@@ -983,6 +1113,11 @@ void FTDock::updateState()
 	safeStatusLabel->setVisible(safe_mode);
 	performanceToggle->setVisible(safe_mode);
 	performanceLabel->setVisible(safe_mode && performanceToggle->isChecked());
+	performanceRunNotes->setVisible(
+		safe_mode && (performanceToggle->isChecked() || performanceRecording || !performanceSamples.empty()));
+	performanceRunNotes->setEnabled(!performanceRecording);
+	performanceRecordButton->setVisible(
+		safe_mode && (performanceToggle->isChecked() || performanceRecording || !performanceSamples.empty()));
 	enableButton->setVisible(!safe_mode);
 	notrackButton->setVisible(true);
 	if (safe_mode) {
@@ -1015,8 +1150,27 @@ void FTDock::updateState()
 			}
 		}
 		safeStatusLabel->setText(status_text);
-		if (performanceToggle->isChecked()) {
-			if (processMetricsTimer.isValid() && processMetricsTimer.elapsed() >= 1000) {
+		if (performanceRecording && (safe_preview.source_id != performanceRecordingSourceId ||
+					     safe_preview.session_id != performanceRecordingSessionId)) {
+			performanceRecording = false;
+			operatorNotice =
+				"Performance recording stopped because the tracking source or session changed. Export the saved samples before starting another recording.";
+			operatorNoticeTimer.start();
+			if (!performanceToggle->isChecked())
+				stopPerformanceMetrics();
+		}
+		performanceRecordButton->setText(
+			performanceRecording ? "Stop & Export CSV"
+					     : (performanceSamples.empty() ? "Record performance data" : "Export CSV"));
+		performanceRecordButton->setAccessibleName(
+			performanceRecording
+				? "Stop recording and export aggregate performance data"
+				: (performanceSamples.empty() ? "Record aggregate performance data for a rehearsal"
+							      : "Export the saved aggregate performance data"));
+		const bool diagnostics_active = performanceToggle->isChecked() || performanceRecording;
+		if (diagnostics_active) {
+			const bool sample_due = processMetricsTimer.isValid() && processMetricsTimer.elapsed() >= 1000;
+			if (sample_due) {
 				if (processCpuUsageInfo) {
 					const double cpu_percent = os_cpu_usage_info_query(processCpuUsageInfo);
 					processCpuPercent =
@@ -1024,7 +1178,88 @@ void FTDock::updateState()
 				}
 				processMemoryAvailable = os_get_proc_memory_usage(&processMemoryUsage);
 				processMetricsTimer.restart();
+				if (performanceRecording &&
+				    performanceSamples.size() < faithfulframe::performance::max_samples) {
+					faithfulframe::performance::sample sample;
+					sample.utc_timestamp = QDateTime::currentDateTimeUtc()
+								       .toString(Qt::ISODateWithMs)
+								       .toStdString();
+					// Keep run metadata on the first row only to bound long-run memory use.
+					if (performanceSamples.empty()) {
+						sample.run_metadata_present = true;
+						const QString product_version = QSysInfo::productVersion();
+						const QString operating_system =
+							product_version.isEmpty()
+								? QSysInfo::prettyProductName()
+								: QString("%1 (%2)").arg(QSysInfo::prettyProductName(),
+											 product_version);
+						sample.operating_system = operating_system.toStdString();
+						sample.cpu_architecture =
+							QSysInfo::currentCpuArchitecture().toStdString();
+						const char *obs_version = obs_get_version_string();
+						sample.obs_version = obs_version ? obs_version : "unavailable";
+						sample.plugin_version = PLUGIN_VERSION;
+						sample.hardware_and_workload_notes =
+							performanceHardwareAndWorkloadNotes.toStdString();
+					}
+					sample.elapsed_milliseconds = performanceRecordingTimer.elapsed();
+					sample.source_id = safe_preview.source_id;
+					sample.session_id = safe_preview.session_id;
+					sample.source_generation = safe_preview.source_generation;
+					sample.session_generation = safe_preview.session_generation;
+					sample.stream_generation = safe_preview.stream_generation;
+					sample.geometry_generation = safe_preview.geometry_generation;
+					sample.tracker_generation = safe_preview.tracker_generation;
+					sample.status_version = safe_preview.status_version;
+					sample.state = safe_preview.state;
+					sample.reason = safe_preview.reason;
+					sample.source_width = safe_preview.source_width;
+					sample.source_height = safe_preview.source_height;
+					sample.output_width = safe_preview.output_width;
+					sample.output_height = safe_preview.output_height;
+					sample.status_snapshot_age_milliseconds = safe_preview.status_snapshot_age_ms;
+					sample.process_cpu_percent = processCpuPercent;
+					if (processMemoryAvailable) {
+						sample.resident_bytes =
+							static_cast<int64_t>(processMemoryUsage.resident_size);
+						sample.virtual_bytes =
+							static_cast<int64_t>(processMemoryUsage.virtual_size);
+					}
+					const obs_performance_sample obs_metrics = read_obs_performance_sample();
+					sample.active_fps = obs_metrics.active_fps;
+					sample.render_frames = obs_metrics.render_frames;
+					sample.render_lagged_frames = obs_metrics.render_lagged_frames;
+					sample.encode_frames = obs_metrics.encode_frames;
+					sample.encode_skipped_frames = obs_metrics.encode_skipped_frames;
+					sample.stream_frames = obs_metrics.stream_frames;
+					sample.stream_dropped_frames = obs_metrics.stream_dropped_frames;
+					sample.queue_depth = safe_preview.executor_queue_depth;
+					sample.queue_high_water = safe_preview.executor_queue_high_water;
+					sample.queue_oldest_age_microseconds =
+						safe_preview.executor_oldest_queue_age_us;
+					sample.accepted_work = safe_preview.executor_accepted_work;
+					sample.rejected_work = safe_preview.executor_rejected_work;
+					sample.coalesced_work = safe_preview.executor_coalesced_work;
+					sample.last_queue_wait_microseconds = safe_preview.executor_last_queue_wait_us;
+					sample.max_queue_wait_microseconds = safe_preview.executor_max_queue_wait_us;
+					sample.last_policy_microseconds = safe_preview.executor_last_processing_us;
+					sample.max_policy_microseconds = safe_preview.executor_max_processing_us;
+					sample.detector_work_count = safe_preview.detector_work_count;
+					sample.last_detector_microseconds = safe_preview.detector_last_work_us;
+					sample.max_detector_microseconds = safe_preview.detector_max_work_us;
+					performanceSamples.push_back(std::move(sample));
+					if (performanceSamples.size() == faithfulframe::performance::max_samples) {
+						performanceRecording = false;
+						operatorNotice =
+							"Performance recording reached its 12-hour limit. Export the saved samples to continue.";
+						operatorNoticeTimer.start();
+						if (!performanceToggle->isChecked())
+							stopPerformanceMetrics();
+					}
+				}
 			}
+		}
+		if (performanceToggle->isChecked()) {
 			const QString process_cpu = processCpuPercent < 0.0
 							    ? QString("sampling")
 							    : QString("%1%").arg(processCpuPercent, 0, 'f', 1);
@@ -1037,7 +1272,7 @@ void FTDock::updateState()
 				safe_preview.status_snapshot_age_ms < 0
 					? QString("unavailable")
 					: QString("%1 ms").arg(safe_preview.status_snapshot_age_ms);
-			performanceLabel->setText(
+			QString diagnostics_text =
 				QString("OBS process: CPU %1, memory %2\nSnapshot: %3 | queue: %4 / %5, oldest pending %6 µs | "
 					"wait: %7 / %8 µs | "
 					"policy: %9 / %10 µs | dlib: %11 runs, %12 / %13 µs | accepted %14 · "
@@ -1058,7 +1293,14 @@ void FTDock::updateState()
 					.arg(static_cast<qulonglong>(safe_preview.executor_accepted_work))
 					.arg(static_cast<qulonglong>(safe_preview.executor_rejected_work))
 					.arg(static_cast<qulonglong>(safe_preview.executor_coalesced_work))
-					.arg(obs_performance_metrics()));
+					.arg(obs_performance_metrics());
+			if (performanceRecording)
+				diagnostics_text += QString("\nRecording aggregate metrics · %1 samples")
+							    .arg(static_cast<qulonglong>(performanceSamples.size()));
+			else if (!performanceSamples.empty())
+				diagnostics_text += QString("\n%1 aggregate samples ready to export")
+							    .arg(static_cast<qulonglong>(performanceSamples.size()));
+			performanceLabel->setText(diagnostics_text);
 		}
 		set_pause_button(pauseButton, safe_preview.state == FF_STATE_FROZEN);
 		pauseButton->setEnabled(safe_preview.available);
@@ -1129,10 +1371,24 @@ void FTDock::updateState()
 	UNUSED_PARAMETER(safe_mode);
 #endif
 	if (!safe_mode) {
-		if (performanceToggle->isChecked())
-			performanceToggle->setChecked(false);
 		operatorNotice.clear();
 		operatorNoticeTimer.invalidate();
+		if (performanceRecording) {
+			performanceRecording = false;
+			operatorNotice =
+				"Performance recording stopped because safety tracking is no longer enabled. Export the saved samples before starting another recording.";
+			operatorNoticeTimer.start();
+			if (!performanceToggle->isChecked())
+				stopPerformanceMetrics();
+		}
+		if (performanceToggle->isChecked())
+			performanceToggle->setChecked(false);
+		performanceRecordButton->setVisible(!performanceSamples.empty());
+		if (!performanceSamples.empty()) {
+			performanceRecordButton->setText("Export CSV");
+			performanceRecordButton->setAccessibleName("Export the saved aggregate performance data");
+		}
+		performanceRunNotes->hide();
 		resetButton->setText(obs_module_text("Reset"));
 		resetButton->setAccessibleName("Reset tracking framing");
 		resetButton->setEnabled(true);
@@ -1219,6 +1475,87 @@ void FTDock::stopPerformanceMetrics()
 	processCpuPercent = -1.0;
 	processMemoryUsage = {};
 	processMemoryAvailable = false;
+}
+
+bool FTDock::exportPerformanceRecording()
+{
+	if (performanceSamples.empty())
+		return true;
+	const QString suggested_name = QString("faithfulframe-performance-%1.csv")
+					       .arg(QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss"));
+	const QString path = QFileDialog::getSaveFileName(this, "Export FaithfulFrame performance data", suggested_name,
+							  "CSV files (*.csv)");
+	if (path.isEmpty())
+		return false;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (!write_performance_csv(path, performanceSamples)) {
+		showOperatorNotice("The CSV could not be saved. The samples are still available to export again.");
+		return false;
+	}
+#else
+	UNUSED_PARAMETER(path);
+	return false;
+#endif
+	const size_t exported_samples = performanceSamples.size();
+	performanceSamples.clear();
+	performanceRecordingSourceId = 0;
+	performanceRecordingSessionId = 0;
+	if (!performanceToggle->isChecked())
+		stopPerformanceMetrics();
+	showOperatorNotice(
+		QString("Exported %1 aggregate samples with system/workload metadata. No preview images or face data were saved.")
+			.arg(static_cast<qulonglong>(exported_samples)));
+	return true;
+}
+
+void FTDock::performanceRecordButtonClicked()
+{
+	if (performanceRecording) {
+		performanceRecording = false;
+		performanceRecordButton->setText("Export CSV");
+		if (!performanceToggle->isChecked())
+			stopPerformanceMetrics();
+		if (performanceSamples.empty()) {
+			showOperatorNotice(
+				"No one-second sample has been captured yet. Start another recording and leave it running for at least one second.");
+			return;
+		}
+		exportPerformanceRecording();
+		return;
+	}
+	if (!performanceSamples.empty()) {
+		exportPerformanceRecording();
+		return;
+	}
+
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	OBSSource target = get_source();
+	faithfulframe_safe_preview preview;
+	if (!read_safe_preview(target, preview) || !preview.enabled || !preview.available || !preview.source_id ||
+	    !preview.session_id) {
+		showOperatorNotice("Performance recording needs an active safety-tracking source and session.");
+		return;
+	}
+	performanceHardwareAndWorkloadNotes = performanceRunNotes->text().trimmed();
+	if (performanceHardwareAndWorkloadNotes.isEmpty()) {
+		showOperatorNotice(
+			"Enter the computer model and test workload in the performance notes field before recording.");
+		return;
+	}
+	performanceRecordingSourceId = preview.source_id;
+	performanceRecordingSessionId = preview.session_id;
+	performanceSamples.clear();
+	performanceRecordingTimer.start();
+	performanceRecording = true;
+	if (!processCpuUsageInfo)
+		processCpuUsageInfo = os_cpu_usage_info_start();
+	processMetricsTimer.start();
+	performanceRecordButton->setText("Stop & Export CSV");
+	showOperatorNotice(
+		"Recording aggregate performance metrics once per second. Your hardware/workload notes are included; preview images and face data are not collected.");
+#else
+	showOperatorNotice("Performance recording requires the FaithfulFrame safety tracking bridge.");
+#endif
 }
 
 void FTDock::pauseButtonClicked(bool checked)

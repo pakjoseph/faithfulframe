@@ -6,6 +6,8 @@
 #include <QPointF>
 #include <QString>
 #include <string>
+#include <vector>
+#include "faithfulframe-performance-log.hpp"
 #include <obs.h>
 #include <obs.hpp>
 #include <obs-frontend-api.h>
@@ -30,6 +32,8 @@ public:
 	class QLabel *safeStatusLabel;
 	class QToolButton *performanceToggle;
 	class QLabel *performanceLabel;
+	class QLineEdit *performanceRunNotes;
+	class QPushButton *performanceRecordButton;
 	class QComboBox *candidateSelector;
 	class QPushButton *autoFollowButton;
 	class QPushButton *manualOverrideButton;
@@ -40,7 +44,13 @@ public:
 	double processCpuPercent = -1.0;
 	os_proc_memory_usage_t processMemoryUsage{};
 	bool processMemoryAvailable = false;
+	bool performanceRecording = false;
+	uint64_t performanceRecordingSourceId = 0;
+	uint64_t performanceRecordingSessionId = 0;
+	QElapsedTimer performanceRecordingTimer;
+	std::vector<faithfulframe::performance::sample> performanceSamples;
 	QString operatorNotice;
+	QString performanceHardwareAndWorkloadNotes;
 	QElapsedTimer operatorNoticeTimer;
 
 	bool updating_widget = false;
@@ -61,6 +71,7 @@ private:
 	void applyDesignTokens();
 	void showOperatorNotice(const QString &message);
 	void stopPerformanceMetrics();
+	bool exportPerformanceRecording();
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
 
@@ -96,6 +107,7 @@ private slots:
 	void manualOverrideButtonClicked();
 	void selectCandidateButtonClicked();
 	void handlePreviewClick(const QPointF &position);
+	void performanceRecordButtonClicked();
 };
 
 extern "C" {
