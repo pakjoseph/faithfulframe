@@ -102,6 +102,7 @@ impl From<&FixtureFramingConfig> for FramingConfig {
 enum FixtureEventKind {
     Command,
     Candidate,
+    CandidatesCleared,
     Tick,
     Lifecycle,
 }
@@ -156,6 +157,20 @@ impl FixtureEvent {
                     && self.command.is_none()
                     && self.event.is_none(),
                 "candidate fixture row has missing or unrelated fields"
+            ),
+            FixtureEventKind::CandidatesCleared => assert!(
+                self.identity.is_some()
+                    && self.generations.is_some()
+                    && self.observation_version.is_some()
+                    && self.status_version.is_none()
+                    && self.command.is_none()
+                    && self.handle.is_none()
+                    && self.continuity.is_none()
+                    && self.observed_at_ms.is_none()
+                    && self.expires_at_ms.is_none()
+                    && self.rect.is_none()
+                    && self.event.is_none(),
+                "candidate clear fixture row has missing or unrelated fields"
             ),
             FixtureEventKind::Tick => assert!(
                 self.identity.is_none()
@@ -305,6 +320,7 @@ fn event_metadata(event: &FixtureEvent) -> (u64, u64, &'static str) {
     let kind = match event.kind {
         FixtureEventKind::Command => "command",
         FixtureEventKind::Candidate => "candidate",
+        FixtureEventKind::CandidatesCleared => "candidates_cleared",
         FixtureEventKind::Tick => "tick",
         FixtureEventKind::Lifecycle => "lifecycle",
     };
@@ -357,6 +373,22 @@ fn to_event(event: &FixtureEvent) -> Event {
                 expires_at: event.expires_at_ms.expect("candidate expires_at_ms"),
                 rect: event.rect.as_ref().expect("candidate rect").into(),
             },
+        },
+        FixtureEventKind::CandidatesCleared => Event::CandidatesCleared {
+            at: event.at_ms,
+            identity: event
+                .identity
+                .as_ref()
+                .expect("candidate clear identity")
+                .into(),
+            generations: event
+                .generations
+                .as_ref()
+                .expect("candidate clear generations")
+                .into(),
+            observation_version: event
+                .observation_version
+                .expect("candidate clear observation version"),
         },
         FixtureEventKind::Tick => Event::Tick { at: event.at_ms },
         FixtureEventKind::Lifecycle => {
