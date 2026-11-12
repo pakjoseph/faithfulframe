@@ -288,6 +288,11 @@ void faithfulframe_session_executor::shutdown(uint32_t terminal_lifecycle_kind, 
 					      uint32_t source_height)
 {
 	request_shutdown(terminal_lifecycle_kind, source_width, source_height);
+	join();
+}
+
+void faithfulframe_session_executor::join()
+{
 	std::lock_guard<std::mutex> shutdown_lock(shutdown_mutex);
 	if (worker.joinable())
 		worker.join();
@@ -350,7 +355,7 @@ private:
 				executor = std::move(pending.front());
 				pending.pop_front();
 			}
-			executor->shutdown();
+			executor->join();
 			executor.reset();
 		}
 	}
@@ -543,6 +548,23 @@ void faithfulframe_session_executor::run()
 			}
 			last_processing_us.store(elapsed_microseconds(processing_started), std::memory_order_relaxed);
 			update_max(max_processing_us, last_processing_us.load(std::memory_order_relaxed));
+			const bool terminal_lifecycle = item.kind == work_kind::lifecycle &&
+							(item.lifecycle.kind == FF_LIFECYCLE_SOURCE_DESTROYED ||
+							 item.lifecycle.kind == FF_LIFECYCLE_SOURCE_REBOUND ||
+							 item.lifecycle.kind == FF_LIFECYCLE_ADAPTER_DESTROYED ||
+							 item.lifecycle.kind == FF_LIFECYCLE_OBS_SHUTDOWN);
+			if (terminal_lifecycle) {
+				{
+					std::lock_guard<std::mutex> lock(queue_mutex);
+					closing_requested.store(true, std::memory_order_release);
+					closing = true;
+					queue_head = 0;
+					queue_size = 0;
+					queue_depth.store(0, std::memory_order_relaxed);
+				}
+				queue_condition.notify_all();
+				break;
+			}
 		}
 	} catch (...) {
 		// Never allow a C++ exception to escape the worker entry point.

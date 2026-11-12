@@ -941,6 +941,16 @@ static void find_legacy_tracker_filter(obs_source_t *, obs_source_t *filter, voi
 		*found = true;
 }
 
+static void defer_session_join(const std::shared_ptr<faithfulframe_session_executor> &executor)
+{
+	if (!executor)
+		return;
+	// Keep the binding's shared_ptr alive for lock-free rendering/status reads;
+	// only transfer an extra owner to the reaper for its nonblocking join.
+	auto join_request = executor;
+	(void)faithfulframe_retire_session_executor(join_request);
+}
+
 // Caller owns binding->lifecycle_mutex.
 static bool enqueue_source_lifecycle_locked(faithfulframe_source_binding *binding, uint32_t kind, uint64_t at,
 					    uint32_t width = 0, uint32_t height = 0)
@@ -965,18 +975,22 @@ static bool enqueue_source_lifecycle_locked(faithfulframe_source_binding *bindin
 		binding->transition_pending.store(true, std::memory_order_release);
 		executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
 		binding->closed.store(true, std::memory_order_release);
+		defer_session_join(executor);
 		return false;
 	}
 	binding->transition_pending.store(true, std::memory_order_release);
 	if (!executor->enqueue_lifecycle(at, event)) {
 		executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
 		binding->closed.store(true, std::memory_order_release);
+		defer_session_join(executor);
 		return false;
 	}
 	binding->generations = event.generations;
 	if (kind == FF_LIFECYCLE_SOURCE_DESTROYED || kind == FF_LIFECYCLE_SOURCE_REBOUND ||
-	    kind == FF_LIFECYCLE_ADAPTER_DESTROYED || kind == FF_LIFECYCLE_OBS_SHUTDOWN)
+	    kind == FF_LIFECYCLE_ADAPTER_DESTROYED || kind == FF_LIFECYCLE_OBS_SHUTDOWN) {
 		binding->closed.store(true, std::memory_order_release);
+		defer_session_join(executor);
+	}
 	return true;
 }
 
@@ -987,8 +1001,10 @@ static void fail_source_binding_closed(faithfulframe_source_binding *binding)
 	binding->transition_pending.store(true, std::memory_order_release);
 	binding->effective_active.store(false, std::memory_order_release);
 	binding->closed.store(true, std::memory_order_release);
-	if (auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire))
+	if (auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)) {
 		executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
+		defer_session_join(executor);
+	}
 	binding->set_active_child(false);
 }
 
@@ -1163,6 +1179,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 			executor->request_shutdown(enabled ? FF_LIFECYCLE_SOURCE_REBOUND
 							   : FF_LIFECYCLE_ADAPTER_DESTROYED);
 			previous->closed.store(true, std::memory_order_release);
+			defer_session_join(executor);
 		}
 	}
 	s->ftm->reset_requested = true;
@@ -1382,6 +1399,7 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 			binding->transition_pending.store(true, std::memory_order_release);
 			executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
 			binding->closed.store(true, std::memory_order_release);
+			defer_session_join(executor);
 		}
 		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
 				  binding->output_height.load(std::memory_order_acquire) > 0;
@@ -1394,6 +1412,7 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 			binding->transition_pending.store(true, std::memory_order_release);
 			executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
 			binding->closed.store(true, std::memory_order_release);
+			defer_session_join(executor);
 		}
 		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
 				  binding->output_height.load(std::memory_order_acquire) > 0;

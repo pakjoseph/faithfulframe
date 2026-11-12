@@ -87,6 +87,9 @@ public:
 	/// callbacks are quiesced; never join from render, tick, or Qt UI callbacks.
 	void shutdown(uint32_t terminal_lifecycle_kind = FF_LIFECYCLE_ADAPTER_DESTROYED, uint32_t source_width = 0,
 		      uint32_t source_height = 0);
+	/// Joins a worker after shutdown has already been requested or a terminal
+	/// lifecycle event has been queued. Never call on OBS render/tick or Qt UI.
+	void join();
 
 private:
 	enum class work_kind : uint8_t { tick, candidates, command, lifecycle, stop };
@@ -143,8 +146,9 @@ private:
 	std::atomic<uint64_t> max_processing_us{0};
 };
 
-/// Transfers a closing executor to the shared reaper. The caller retains
-/// ownership if the reaper cannot accept it and may use the blocking fallback.
+/// Transfers an executor with a pending shutdown or terminal lifecycle to the
+/// shared reaper, which joins its worker.
+/// The caller retains ownership if the reaper cannot accept it.
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
 
 /// Drain and join all deferred executor workers before the plugin module unloads.

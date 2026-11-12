@@ -576,11 +576,52 @@ int run_smoke()
 	unload_executor->request_shutdown();
 	if (!faithfulframe_retire_session_executor(unload_executor) || unload_executor)
 		return 62;
+
+	auto terminal_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{107, 207}, generations);
+	ff_snapshot terminal_initial{};
+	if (!await_snapshot(
+		    *terminal_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    terminal_initial))
+		return 64;
+	ff_generations destroyed_generations{};
+	if (!faithfulframe_next_lifecycle_generations(FF_LIFECYCLE_SOURCE_DESTROYED, terminal_initial.generations,
+						      destroyed_generations))
+		return 65;
+	const ff_lifecycle destroyed_event{FF_LIFECYCLE_SOURCE_DESTROYED, terminal_initial.identity,
+					   destroyed_generations};
+	if (!terminal_executor->enqueue_lifecycle(1, destroyed_event))
+		return 66;
+	const ff_command post_destroy_command{FF_COMMAND_ENABLE_AUTO_FOLLOW,
+					      terminal_initial.identity,
+					      terminal_initial.status_version,
+					      terminal_initial.generations,
+					      0,
+					      0};
+	std::weak_ptr<faithfulframe_session_executor> terminal_weak = terminal_executor;
+	auto terminal_join = terminal_executor;
+	if (!faithfulframe_retire_session_executor(terminal_join) || terminal_join)
+		return 67;
+	ff_snapshot terminal_snapshot{};
+	const auto terminal_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (std::chrono::steady_clock::now() < terminal_deadline) {
+		if (terminal_executor->try_snapshot(terminal_snapshot) && terminal_snapshot.closed &&
+		    !terminal_executor->worker_available())
+			break;
+		std::this_thread::yield();
+	}
+	if (!terminal_snapshot.closed || terminal_executor->worker_available() ||
+	    !same_generations(terminal_snapshot.generations, destroyed_generations) ||
+	    terminal_executor->enqueue_command(2, post_destroy_command))
+		return 68;
 	// Module unload is the barrier: it must drain any executor workers still
 	// retained by the reaper before plugin code can be unloaded.
 	faithfulframe_executor_reaper_shutdown();
 	if (!unload_weak.expired())
 		return 63;
+	terminal_executor.reset();
+	if (!terminal_weak.expired())
+		return 69;
 	return 0;
 }
 
