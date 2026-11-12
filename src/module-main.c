@@ -14,6 +14,10 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 void register_face_tracker_filter(bool hide_filter, bool hide_source);
 void register_face_tracker_ptz(bool hide_ptz);
 void register_face_tracker_monitor(bool hide_monitor);
+#ifdef ENABLE_RUST_CORE_BRIDGE
+void faithfulframe_executor_reaper_start(void);
+void faithfulframe_executor_reaper_shutdown(void);
+#endif
 
 const char *obs_module_name(void)
 {
@@ -22,6 +26,9 @@ const char *obs_module_name(void)
 
 bool obs_module_load(void)
 {
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	faithfulframe_executor_reaper_start();
+#endif
 	blog(LOG_INFO, "registering face_tracker_filter_info (version %s)", PLUGIN_VERSION);
 
 #if LIBOBS_API_VER < MAKE_SEMANTIC_VERSION(31, 0, 0)
@@ -65,4 +72,7 @@ void obs_module_unload()
 #ifdef WITH_DOCK
 	ft_docks_release();
 #endif // WITH_DOCK
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	faithfulframe_executor_reaper_shutdown();
+#endif
 }

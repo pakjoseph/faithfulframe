@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <limits>
 
 static void update_max(std::atomic<uint64_t> &maximum, uint64_t value)
@@ -291,6 +292,116 @@ void faithfulframe_session_executor::shutdown(uint32_t terminal_lifecycle_kind, 
 	if (worker.joinable())
 		worker.join();
 	worker_started.store(false, std::memory_order_release);
+}
+
+namespace {
+class faithfulframe_executor_reaper {
+public:
+	faithfulframe_executor_reaper()
+	{
+		try {
+			worker = std::thread(&faithfulframe_executor_reaper::run, this);
+		} catch (...) {
+		}
+	}
+
+	~faithfulframe_executor_reaper() { shutdown(); }
+
+	bool enqueue(const std::shared_ptr<faithfulframe_session_executor> &executor)
+	{
+		if (!executor || !worker.joinable())
+			return false;
+		try {
+			std::lock_guard<std::mutex> lock(mutex);
+			if (stopping)
+				return false;
+			pending.push_back(executor);
+		} catch (...) {
+			return false;
+		}
+		condition.notify_one();
+		return true;
+	}
+
+	void shutdown()
+	{
+		{
+			std::lock_guard<std::mutex> lock(mutex);
+			stopping = true;
+		}
+		condition.notify_one();
+		if (worker.joinable() && worker.get_id() != std::this_thread::get_id())
+			worker.join();
+	}
+
+private:
+	void run()
+	{
+		for (;;) {
+			std::shared_ptr<faithfulframe_session_executor> executor;
+			{
+				std::unique_lock<std::mutex> lock(mutex);
+				condition.wait(lock, [this] { return stopping || !pending.empty(); });
+				if (pending.empty()) {
+					if (stopping)
+						return;
+					continue;
+				}
+				executor = std::move(pending.front());
+				pending.pop_front();
+			}
+			executor->shutdown();
+			executor.reset();
+		}
+	}
+
+	std::mutex mutex;
+	std::condition_variable condition;
+	std::deque<std::shared_ptr<faithfulframe_session_executor>> pending;
+	bool stopping = false;
+	std::thread worker;
+};
+
+std::mutex faithfulframe_reaper_owner_mutex;
+std::unique_ptr<faithfulframe_executor_reaper> faithfulframe_reaper;
+bool faithfulframe_reaper_closed = false;
+} // namespace
+
+bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor)
+{
+	if (!executor)
+		return true;
+	std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
+	if (faithfulframe_reaper_closed)
+		return false;
+	try {
+		if (!faithfulframe_reaper)
+			faithfulframe_reaper = std::make_unique<faithfulframe_executor_reaper>();
+	} catch (...) {
+		return false;
+	}
+	if (!faithfulframe_reaper->enqueue(executor))
+		return false;
+	executor.reset();
+	return true;
+}
+
+extern "C" void faithfulframe_executor_reaper_start()
+{
+	std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
+	faithfulframe_reaper_closed = false;
+}
+
+extern "C" void faithfulframe_executor_reaper_shutdown()
+{
+	std::unique_ptr<faithfulframe_executor_reaper> reaper;
+	{
+		std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
+		faithfulframe_reaper_closed = true;
+		reaper = std::move(faithfulframe_reaper);
+	}
+	if (reaper)
+		reaper->shutdown();
 }
 
 void faithfulframe_session_executor::snapshot_publisher::publish(const ff_snapshot &snapshot, uint64_t published_at)

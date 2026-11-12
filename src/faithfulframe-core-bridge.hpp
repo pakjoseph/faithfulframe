@@ -142,3 +142,11 @@ private:
 	std::atomic<uint64_t> last_processing_us{0};
 	std::atomic<uint64_t> max_processing_us{0};
 };
+
+/// Transfers a closing executor to the shared reaper. The caller retains
+/// ownership if the reaper cannot accept it and may use the blocking fallback.
+bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
+
+/// Drain and join all deferred executor workers before the plugin module unloads.
+extern "C" void faithfulframe_executor_reaper_start();
+extern "C" void faithfulframe_executor_reaper_shutdown();

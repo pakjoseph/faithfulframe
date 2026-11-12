@@ -151,7 +151,9 @@ struct faithfulframe_source_binding
 		auto session = std::atomic_exchange_explicit(
 			&executor, std::shared_ptr<faithfulframe_session_executor>{}, std::memory_order_acq_rel);
 		if (session) {
-			session->shutdown();
+			session->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+			if (!faithfulframe_retire_session_executor(session))
+				session->shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
 		}
 		if (target)
 			obs_weak_source_release(target);
@@ -197,7 +199,7 @@ struct faithfulframe_source_runtime
 	{
 		// Stop new callback access before releasing any binding. Request shutdown
 		// for every session first so queued commands/results are neutralized before
-		// the first binding destructor joins its executor.
+		// binding destructors transfer workers to the shared reaper.
 		enabled.store(false, std::memory_order_release);
 		reconfiguration_pending.store(true, std::memory_order_release);
 		active.exchange(nullptr, std::memory_order_acq_rel);
@@ -456,7 +458,8 @@ static void ftf_destroy(void *data)
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	// OBS defers source destroy callbacks until source-context callbacks have
-	// drained. Keep the blocking session join here, never in render/tick or Qt.
+	// drained. Binding destructors request stop and transfer joins to the reaper;
+	// this callback does not block the shared OBS source-destruction worker.
 	delete s->safe_runtime;
 	s->safe_runtime = nullptr;
 #endif

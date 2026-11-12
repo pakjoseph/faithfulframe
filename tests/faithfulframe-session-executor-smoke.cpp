@@ -545,6 +545,42 @@ int run_smoke()
 		    scene_snapshot))
 		return 57;
 	scene_executor.shutdown();
+
+	auto retired_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{105, 205}, generations);
+	ff_snapshot retired_snapshot{};
+	if (!await_snapshot(
+		    *retired_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    retired_snapshot))
+		return 58;
+	std::weak_ptr<faithfulframe_session_executor> retired_weak = retired_executor;
+	retired_executor->request_shutdown();
+	const auto retirement_started = std::chrono::steady_clock::now();
+	if (!faithfulframe_retire_session_executor(retired_executor) || retired_executor ||
+	    std::chrono::steady_clock::now() - retirement_started > std::chrono::seconds(1))
+		return 59;
+	const auto retirement_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (!retired_weak.expired() && std::chrono::steady_clock::now() < retirement_deadline)
+		std::this_thread::yield();
+	if (!retired_weak.expired())
+		return 60;
+
+	auto unload_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{106, 206}, generations);
+	ff_snapshot unload_snapshot{};
+	if (!await_snapshot(
+		    *unload_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    unload_snapshot))
+		return 61;
+	std::weak_ptr<faithfulframe_session_executor> unload_weak = unload_executor;
+	unload_executor->request_shutdown();
+	if (!faithfulframe_retire_session_executor(unload_executor) || unload_executor)
+		return 62;
+	// Module unload is the barrier: it must drain any executor workers still
+	// retained by the reaper before plugin code can be unloaded.
+	faithfulframe_executor_reaper_shutdown();
+	if (!unload_weak.expired())
+		return 63;
 	return 0;
 }
 
