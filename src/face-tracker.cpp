@@ -388,7 +388,9 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd);
 static void cb_faithfulframe_command(void *data, calldata_t *cd);
 static bool enqueue_safe_operator_command(struct face_tracker_filter *s, uint32_t kind);
 extern "C" int faithfulframe_teardown_register_instance();
+extern "C" void faithfulframe_teardown_instance_created();
 extern "C" void faithfulframe_teardown_instance_destroyed();
+extern "C" void faithfulframe_teardown_instance_creation_failed();
 #endif
 static const char *ftptz_signals[] = {"void state_changed()", NULL};
 static void emit_state_changed(struct face_tracker_filter *);
@@ -446,8 +448,10 @@ static void *ftf_create(obs_data_t *settings, obs_source_t *context)
 #endif
 	void *instance = ftf_create_internal(settings, context, false);
 #ifdef ENABLE_RUST_CORE_BRIDGE
-	if (!instance)
-		faithfulframe_teardown_instance_destroyed();
+	if (instance)
+		faithfulframe_teardown_instance_created();
+	else
+		faithfulframe_teardown_instance_creation_failed();
 #endif
 	return instance;
 }
@@ -463,10 +467,13 @@ static void *fts_create(obs_data_t *settings, obs_source_t *context)
 	auto *s = (struct face_tracker_filter *)ftf_create_internal(settings, context, true);
 	if (!s) {
 #ifdef ENABLE_RUST_CORE_BRIDGE
-		faithfulframe_teardown_instance_destroyed();
+		faithfulframe_teardown_instance_creation_failed();
 #endif
 		return nullptr;
 	}
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	faithfulframe_teardown_instance_created();
+#endif
 
 	register_hotkeys(s, context);
 

@@ -177,8 +177,11 @@ extern "C" int faithfulframe_executor_reaper_start();
 /// Drains and closes the worker after all registered source-instance cleanup
 /// has been handed off.
 extern "C" void faithfulframe_executor_reaper_shutdown();
-/// Instance accounting keeps the reaper alive across obs_module_unload until
-/// libobs has invoked every remaining source destroy callback.
+/// Reserve before a source/filter create; commit successful creation or cancel
+/// the reservation on failure. Live instances keep the reaper available across
+/// obs_module_unload until their destroy callbacks finish.
 extern "C" int faithfulframe_teardown_register_instance();
+extern "C" void faithfulframe_teardown_instance_created();
 extern "C" void faithfulframe_teardown_instance_destroyed();
+extern "C" void faithfulframe_teardown_instance_creation_failed();
 extern "C" void faithfulframe_teardown_begin_module_unload();

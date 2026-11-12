@@ -426,6 +426,12 @@ public:
 			worker.join();
 	}
 
+	void drain()
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		idle_condition.wait(lock, [this] { return !head && active_joins == 0; });
+	}
+
 private:
 	void run()
 	{
@@ -445,16 +451,27 @@ private:
 					tail = nullptr;
 				node->retirement_next = nullptr;
 				executor = std::move(node->retirement_keepalive);
+				++active_joins;
 			}
-			if (executor)
+			if (executor) {
 				executor->join();
+				executor.reset();
+			}
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				--active_joins;
+				if (!head && active_joins == 0)
+					idle_condition.notify_all();
+			}
 		}
 	}
 
 	std::mutex mutex;
 	std::condition_variable condition;
+	std::condition_variable idle_condition;
 	faithfulframe_session_executor *head = nullptr;
 	faithfulframe_session_executor *tail = nullptr;
+	size_t active_joins = 0;
 	bool stopping = false;
 	std::thread worker;
 };
@@ -464,9 +481,11 @@ std::mutex faithfulframe_reaper_owner_mutex;
 std::unique_ptr<faithfulframe_executor_reaper> faithfulframe_reaper;
 bool faithfulframe_reaper_closed = false;
 std::mutex faithfulframe_module_lifecycle_mutex;
+size_t faithfulframe_pending_creates = 0;
 size_t faithfulframe_live_instances = 0;
 bool faithfulframe_module_unloading = false;
 bool faithfulframe_reaper_shutdown_started = false;
+bool faithfulframe_final_drain_in_progress = false;
 } // namespace
 
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor)
@@ -506,9 +525,11 @@ extern "C" int faithfulframe_executor_reaper_start()
 	}
 	{
 		std::lock_guard<std::mutex> lifecycle_lock(faithfulframe_module_lifecycle_mutex);
+		faithfulframe_pending_creates = 0;
 		faithfulframe_live_instances = 0;
 		faithfulframe_module_unloading = false;
 		faithfulframe_reaper_shutdown_started = false;
+		faithfulframe_final_drain_in_progress = false;
 	}
 	return 1;
 }
@@ -535,21 +556,78 @@ extern "C" int faithfulframe_teardown_register_instance()
 		return 0;
 	std::lock_guard<std::mutex> lock(faithfulframe_module_lifecycle_mutex);
 	if (faithfulframe_module_unloading || faithfulframe_reaper_shutdown_started ||
-	    faithfulframe_live_instances == std::numeric_limits<size_t>::max())
+	    faithfulframe_live_instances >= std::numeric_limits<size_t>::max() - faithfulframe_pending_creates)
 		return 0;
-	++faithfulframe_live_instances;
+	++faithfulframe_pending_creates;
 	return 1;
+}
+
+extern "C" void faithfulframe_teardown_instance_created()
+{
+	std::lock_guard<std::mutex> lock(faithfulframe_module_lifecycle_mutex);
+	// Every successful source/filter create has a matching reservation. Keeping
+	// in-flight creates separate prevents a failed create on the UI path from
+	// postponing the last real source's safe-thread executor-drain barrier.
+	if (faithfulframe_pending_creates == 0 || faithfulframe_live_instances == std::numeric_limits<size_t>::max())
+		return;
+	--faithfulframe_pending_creates;
+	++faithfulframe_live_instances;
 }
 
 extern "C" void faithfulframe_teardown_instance_destroyed()
 {
 	bool shutdown_reaper = false;
+	bool drain_reaper = false;
 	{
 		std::lock_guard<std::mutex> lock(faithfulframe_module_lifecycle_mutex);
 		if (faithfulframe_live_instances == 0)
 			return;
 		--faithfulframe_live_instances;
 		if (faithfulframe_module_unloading && faithfulframe_live_instances == 0 &&
+		    faithfulframe_pending_creates == 0 && !faithfulframe_final_drain_in_progress &&
+		    !faithfulframe_reaper_shutdown_started) {
+			faithfulframe_reaper_shutdown_started = true;
+			shutdown_reaper = true;
+		} else if (faithfulframe_live_instances == 0 && !faithfulframe_final_drain_in_progress) {
+			// Source destruction runs on OBS's destruction task. Drain here so a
+			// later module-unload callback only joins an idle reaper thread. This
+			// also covers pre-unload destruction while module unload is in flight.
+			faithfulframe_final_drain_in_progress = true;
+			drain_reaper = true;
+		}
+	}
+	if (shutdown_reaper)
+		faithfulframe_executor_reaper_shutdown();
+	else if (drain_reaper) {
+		std::unique_lock<std::mutex> owner_lock(faithfulframe_reaper_owner_mutex);
+		if (!faithfulframe_reaper_closed && faithfulframe_reaper)
+			faithfulframe_reaper->drain();
+
+		{
+			std::lock_guard<std::mutex> lifecycle_lock(faithfulframe_module_lifecycle_mutex);
+			faithfulframe_final_drain_in_progress = false;
+			if (faithfulframe_module_unloading && faithfulframe_live_instances == 0 &&
+			    faithfulframe_pending_creates == 0 && !faithfulframe_reaper_shutdown_started) {
+				faithfulframe_reaper_shutdown_started = true;
+				shutdown_reaper = true;
+			}
+		}
+		owner_lock.unlock();
+		if (shutdown_reaper)
+			faithfulframe_executor_reaper_shutdown();
+	}
+}
+
+extern "C" void faithfulframe_teardown_instance_creation_failed()
+{
+	bool shutdown_reaper = false;
+	{
+		std::lock_guard<std::mutex> lock(faithfulframe_module_lifecycle_mutex);
+		if (faithfulframe_pending_creates == 0)
+			return;
+		--faithfulframe_pending_creates;
+		if (faithfulframe_module_unloading && faithfulframe_live_instances == 0 &&
+		    faithfulframe_pending_creates == 0 && !faithfulframe_final_drain_in_progress &&
 		    !faithfulframe_reaper_shutdown_started) {
 			faithfulframe_reaper_shutdown_started = true;
 			shutdown_reaper = true;
@@ -565,7 +643,8 @@ extern "C" void faithfulframe_teardown_begin_module_unload()
 	{
 		std::lock_guard<std::mutex> lock(faithfulframe_module_lifecycle_mutex);
 		faithfulframe_module_unloading = true;
-		if (faithfulframe_live_instances == 0 && !faithfulframe_reaper_shutdown_started) {
+		if (faithfulframe_live_instances == 0 && faithfulframe_pending_creates == 0 &&
+		    !faithfulframe_final_drain_in_progress && !faithfulframe_reaper_shutdown_started) {
 			faithfulframe_reaper_shutdown_started = true;
 			shutdown_reaper = true;
 		}

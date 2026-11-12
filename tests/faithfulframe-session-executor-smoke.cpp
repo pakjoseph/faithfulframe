@@ -264,12 +264,34 @@ int run_smoke()
 		return 92;
 	if (faithfulframe_executor_reaper_start() != 1)
 		return 1;
-	if (faithfulframe_teardown_register_instance() != 1 || faithfulframe_teardown_register_instance() != 1)
-		return 87;
-	if (!configuration_revision_guard_is_race_safe())
-		return 23;
 	const ff_session_config config{5000, 500,  8,     3840,  2160,  1920,  1080, 0.45f,
 				       1.0f, 4.0f, 0.25f, 0.08f, 0.08f, 0.05f, 0.25f};
+	if (faithfulframe_teardown_register_instance() != 1)
+		return 94;
+	faithfulframe_teardown_instance_created();
+	auto last_source_executor = std::make_shared<faithfulframe_session_executor>(config, ff_identity{109, 209},
+										     ff_generations{1, 1, 1, 1, 1});
+	ff_snapshot last_source_snapshot{};
+	if (!await_snapshot(
+		    *last_source_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    last_source_snapshot))
+		return 95;
+	std::weak_ptr<faithfulframe_session_executor> last_source_weak = last_source_executor;
+	last_source_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+	if (!faithfulframe_retire_session_executor(last_source_executor) || last_source_executor)
+		return 96;
+	faithfulframe_teardown_instance_destroyed();
+	if (!last_source_weak.expired() || faithfulframe_teardown_register_instance() != 1)
+		return 97;
+	// Failed creates only release their reservation. They do not turn into
+	// active source instances and cannot defer the destruction-thread drain.
+	faithfulframe_teardown_instance_creation_failed();
+	if (faithfulframe_teardown_register_instance() != 1 || faithfulframe_teardown_register_instance() != 1)
+		return 87;
+	faithfulframe_teardown_instance_created();
+	faithfulframe_teardown_instance_created();
+	if (!configuration_revision_guard_is_race_safe())
+		return 23;
 	if (!snapshot_publication_is_consistent(config, ff_generations{1, 1, 1, 1, 1}))
 		return 93;
 	if (!retirement_queue_handles_concurrent_handoffs(config, ff_generations{1, 1, 1, 1, 1}))
@@ -978,6 +1000,35 @@ int run_smoke()
 	// A caller that loses the reaper race retains ownership and performs the
 	// blocking final join itself rather than leaking a worker.
 	late_executor->shutdown();
+	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
+		return 98;
+	faithfulframe_teardown_begin_module_unload();
+	if (faithfulframe_teardown_register_instance() != 0)
+		return 99;
+	faithfulframe_teardown_instance_creation_failed();
+	if (faithfulframe_teardown_register_instance() != 0)
+		return 100;
+
+	// A create already in flight at module unload may still succeed. Keep the
+	// reaper alive for it, then close it from that instance's destruction path.
+	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
+		return 101;
+	faithfulframe_teardown_begin_module_unload();
+	faithfulframe_teardown_instance_created();
+	auto in_flight_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{113, 213}, generations);
+	ff_snapshot in_flight_snapshot{};
+	if (!await_snapshot(
+		    *in_flight_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    in_flight_snapshot))
+		return 102;
+	std::weak_ptr<faithfulframe_session_executor> in_flight_weak = in_flight_executor;
+	in_flight_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+	if (!faithfulframe_retire_session_executor(in_flight_executor) || in_flight_executor)
+		return 103;
+	faithfulframe_teardown_instance_destroyed();
+	if (!in_flight_weak.expired() || faithfulframe_teardown_register_instance() != 0)
+		return 104;
 	return 0;
 }
 
