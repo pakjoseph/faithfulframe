@@ -96,6 +96,49 @@ bool configuration_revision_guard_is_race_safe()
 								std::numeric_limits<uint64_t>::max()) &&
 	       pending.load(std::memory_order_acquire);
 }
+
+bool retirement_queue_handles_concurrent_handoffs(const ff_session_config &config, const ff_generations &generations)
+{
+	constexpr size_t executor_count = 12;
+	constexpr size_t handoff_threads = 3;
+	std::array<std::shared_ptr<faithfulframe_session_executor>, executor_count> executors{};
+	std::array<std::weak_ptr<faithfulframe_session_executor>, executor_count> weak_executors{};
+	std::atomic<bool> failed{false};
+	for (size_t i = 0; i < executor_count; ++i) {
+		executors[i] = std::make_shared<faithfulframe_session_executor>(config, ff_identity{120 + i, 220 + i},
+										generations);
+		weak_executors[i] = executors[i];
+		if (!executors[i]->worker_available())
+			return false;
+		executors[i]->request_shutdown();
+	}
+
+	std::array<std::thread, handoff_threads> producers;
+	for (size_t thread_index = 0; thread_index < handoff_threads; ++thread_index) {
+		producers[thread_index] = std::thread([&, thread_index] {
+			for (size_t i = thread_index; i < executor_count; i += handoff_threads) {
+				if (!faithfulframe_retire_session_executor(executors[i]) || executors[i])
+					failed.store(true, std::memory_order_release);
+			}
+		});
+	}
+	for (auto &producer : producers)
+		producer.join();
+	if (failed.load(std::memory_order_acquire))
+		return false;
+
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	for (;;) {
+		bool drained = true;
+		for (const auto &weak_executor : weak_executors)
+			drained = drained && weak_executor.expired();
+		if (drained)
+			return true;
+		if (std::chrono::steady_clock::now() >= deadline)
+			return false;
+		std::this_thread::yield();
+	}
+}
 } // namespace
 
 int run_smoke()
@@ -108,6 +151,8 @@ int run_smoke()
 		return 23;
 	const ff_session_config config{5000, 500,  8,     3840,  2160,  1920,  1080, 0.45f,
 				       1.0f, 4.0f, 0.25f, 0.08f, 0.08f, 0.05f, 0.25f};
+	if (!retirement_queue_handles_concurrent_handoffs(config, ff_generations{1, 1, 1, 1, 1}))
+		return 89;
 	const ff_identity identity{101, 201};
 	const ff_generations generations{1, 1, 1, 1, 1};
 	faithfulframe_session_executor executor(config, identity, generations);

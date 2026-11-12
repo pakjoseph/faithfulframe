@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
-#include <deque>
-#include <functional>
 #include <limits>
 
 static void update_max(std::atomic<uint64_t> &maximum, uint64_t value)
@@ -354,7 +352,6 @@ void faithfulframe_session_executor::join()
 	worker_started.store(false, std::memory_order_release);
 }
 
-namespace {
 class faithfulframe_executor_reaper {
 public:
 	faithfulframe_executor_reaper()
@@ -369,18 +366,26 @@ public:
 
 	bool available() const { return worker.joinable(); }
 
-	bool enqueue(std::function<void()> task)
+	bool enqueue(const std::shared_ptr<faithfulframe_session_executor> &executor)
 	{
-		if (!task || !worker.joinable())
+		if (!executor || !worker.joinable())
 			return false;
-		try {
-			std::lock_guard<std::mutex> lock(mutex);
-			if (stopping)
-				return false;
-			pending.push_back(std::move(task));
-		} catch (...) {
+		std::lock_guard<std::mutex> lock(mutex);
+		if (stopping)
 			return false;
-		}
+		if (executor->retirement_queued)
+			return true;
+
+		// The executor owns itself until the worker moves this reference into a
+		// local variable. No std::function/deque allocation can fail here.
+		executor->retirement_keepalive = executor;
+		executor->retirement_queued = true;
+		executor->retirement_next = nullptr;
+		if (tail)
+			tail->retirement_next = executor.get();
+		else
+			head = executor.get();
+		tail = executor.get();
 		condition.notify_one();
 		return true;
 	}
@@ -400,33 +405,36 @@ private:
 	void run()
 	{
 		for (;;) {
-			std::function<void()> task;
+			std::shared_ptr<faithfulframe_session_executor> executor;
 			{
 				std::unique_lock<std::mutex> lock(mutex);
-				condition.wait(lock, [this] { return stopping || !pending.empty(); });
-				if (pending.empty()) {
+				condition.wait(lock, [this] { return stopping || head; });
+				if (!head) {
 					if (stopping)
 						return;
 					continue;
 				}
-				task = std::move(pending.front());
-				pending.pop_front();
+				auto *node = head;
+				head = node->retirement_next;
+				if (!head)
+					tail = nullptr;
+				node->retirement_next = nullptr;
+				executor = std::move(node->retirement_keepalive);
 			}
-			try {
-				task();
-			} catch (...) {
-				// One teardown callback must not terminate the shared reaper.
-			}
+			if (executor)
+				executor->join();
 		}
 	}
 
 	std::mutex mutex;
 	std::condition_variable condition;
-	std::deque<std::function<void()>> pending;
+	faithfulframe_session_executor *head = nullptr;
+	faithfulframe_session_executor *tail = nullptr;
 	bool stopping = false;
 	std::thread worker;
 };
 
+namespace {
 std::mutex faithfulframe_reaper_owner_mutex;
 std::unique_ptr<faithfulframe_executor_reaper> faithfulframe_reaper;
 bool faithfulframe_reaper_closed = false;
@@ -441,22 +449,14 @@ bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session
 	if (!executor)
 		return true;
 	std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
-	if (faithfulframe_reaper_closed)
+	// The reaper is created during module load. Creating threads or allocating
+	// queue nodes from an OBS destruction callback would reintroduce a blocking
+	// teardown path, so a missing/closed reaper is treated as a lifecycle
+	// contract violation and left to the caller's explicit failure path.
+	if (faithfulframe_reaper_closed || !faithfulframe_reaper)
 		return false;
-	try {
-		if (!faithfulframe_reaper)
-			faithfulframe_reaper = std::make_unique<faithfulframe_executor_reaper>();
-	} catch (...) {
+	if (!faithfulframe_reaper->enqueue(executor))
 		return false;
-	}
-	try {
-		auto retired_executor = executor;
-		if (!faithfulframe_reaper->enqueue(
-			    [retired_executor = std::move(retired_executor)]() mutable { retired_executor->join(); }))
-			return false;
-	} catch (...) {
-		return false;
-	}
 	executor.reset();
 	return true;
 }
@@ -465,15 +465,20 @@ extern "C" int faithfulframe_executor_reaper_start()
 {
 	std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
 	faithfulframe_reaper_closed = false;
-	if (!faithfulframe_reaper) {
+	if (!faithfulframe_reaper || !faithfulframe_reaper->available()) {
+		faithfulframe_reaper.reset();
 		try {
 			faithfulframe_reaper = std::make_unique<faithfulframe_executor_reaper>();
 		} catch (...) {
+			faithfulframe_reaper_closed = true;
 			return 0;
 		}
 	}
-	if (!faithfulframe_reaper || !faithfulframe_reaper->available())
+	if (!faithfulframe_reaper || !faithfulframe_reaper->available()) {
+		faithfulframe_reaper.reset();
+		faithfulframe_reaper_closed = true;
 		return 0;
+	}
 	{
 		std::lock_guard<std::mutex> lifecycle_lock(faithfulframe_module_lifecycle_mutex);
 		faithfulframe_live_instances = 0;

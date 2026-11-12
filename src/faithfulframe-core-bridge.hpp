@@ -97,6 +97,8 @@ public:
 	void join();
 
 private:
+	friend class faithfulframe_executor_reaper;
+
 	enum class work_kind : uint8_t { tick, candidates, command, lifecycle, stop };
 	struct work_item
 	{
@@ -152,6 +154,13 @@ private:
 	std::atomic<uint64_t> max_queue_wait_us{0};
 	std::atomic<uint64_t> last_processing_us{0};
 	std::atomic<uint64_t> max_processing_us{0};
+
+	// The module-wide reaper links pending joins through these fields. Keeping
+	// an owning reference in the node makes handoff allocation-free and keeps
+	// the executor alive until the reaper has taken responsibility for it.
+	faithfulframe_session_executor *retirement_next = nullptr;
+	std::shared_ptr<faithfulframe_session_executor> retirement_keepalive;
+	bool retirement_queued = false;
 };
 
 /// Transfers an executor with a pending shutdown or terminal lifecycle to the
