@@ -59,6 +59,19 @@ bool await_snapshot(const faithfulframe_session_executor &executor, Predicate pr
 	return false;
 }
 
+bool retire_executor_when_available(std::shared_ptr<faithfulframe_session_executor> &executor)
+{
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	do {
+		if (faithfulframe_retire_session_executor(executor))
+			return true;
+		if (!executor)
+			return false;
+		std::this_thread::yield();
+	} while (std::chrono::steady_clock::now() < deadline);
+	return false;
+}
+
 bool await_worker_unavailable(const faithfulframe_session_executor &executor)
 {
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -375,7 +388,7 @@ bool retirement_queue_contention_is_nonblocking(const ff_session_config &config,
 	    !paused_accepted.load(std::memory_order_acquire) || paused_executor ||
 	    contended_accepted.load(std::memory_order_acquire) || !contended_executor)
 		return false;
-	if (!faithfulframe_retire_session_executor(contended_executor) || contended_executor)
+	if (!retire_executor_when_available(contended_executor) || contended_executor)
 		return false;
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
 	while ((!paused_weak.expired() || !contended_weak.expired()) && std::chrono::steady_clock::now() < deadline)
@@ -1038,7 +1051,7 @@ int run_smoke()
 		return 82;
 	std::weak_ptr<faithfulframe_session_executor> post_unload_weak = post_unload_executor;
 	post_unload_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
-	if (!faithfulframe_retire_session_executor(post_unload_executor) || post_unload_executor)
+	if (!retire_executor_when_available(post_unload_executor) || post_unload_executor)
 		return 83;
 	const auto post_unload_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
 	while (!post_unload_weak.expired() && std::chrono::steady_clock::now() < post_unload_deadline)
