@@ -266,6 +266,17 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_test(NAME faithfulframe-tracker-worker-budget-smoke COMMAND faithfulframe-tracker-worker-budget-smoke)
 	add_test(NAME faithfulframe-offline-frame-sequence-smoke
 		COMMAND faithfulframe-offline-frame-sequence-smoke)
+	add_test(NAME faithfulframe-offline-replay-help COMMAND faithfulframe-offline-replay --help)
+	set(FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL
+		"${CMAKE_CURRENT_SOURCE_DIR}/data/dlib_hog_model/frontal_face_detector.dat"
+		CACHE FILEPATH "Optional dlib HOG model used for the offline detector smoke test")
+	if (EXISTS "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}")
+		add_test(NAME faithfulframe-offline-replay-detector-smoke
+			COMMAND faithfulframe-offline-replay
+				--model "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}"
+				--manifest "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/offline-smoke.tsv")
+		set_tests_properties(faithfulframe-offline-replay-detector-smoke PROPERTIES TIMEOUT 30)
+	endif()
 	set_tests_properties(faithfulframe-detector-worker-smoke faithfulframe-tracker-worker-smoke
 		faithfulframe-worker-log-gate-smoke
 		faithfulframe-texture-object-smoke PROPERTIES TIMEOUT 10)
