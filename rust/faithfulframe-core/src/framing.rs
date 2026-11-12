@@ -865,6 +865,76 @@ mod tests {
     }
 
     #[test]
+    fn varied_event_sequence_keeps_geometry_bounded_and_targets_contained() {
+        let mut controller = FramingController::new(FramingConfig::default()).unwrap();
+        let mut seed = 0x5eed_u32;
+        let mut next_fraction = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / 16_777_216.0
+        };
+        let mut previous: Option<Rect> = None;
+        let mut at_ms = 0_u64;
+
+        for frame in 0_u64..1_000 {
+            if frame > 0 {
+                at_ms += 1 + (next_fraction() * 200.0) as u64;
+            }
+            let width = 0.02 + next_fraction() * 0.18;
+            let height = 0.02 + next_fraction() * 0.18;
+            let x = next_fraction() * (1.0 - width);
+            let y = next_fraction() * (1.0 - height);
+            let target = Rect::normalized(x, y, width, height).unwrap();
+            let plan = controller.plan_at(target, at_ms).unwrap();
+
+            assert!(
+                Rect::normalized(
+                    plan.source_crop.x,
+                    plan.source_crop.y,
+                    plan.source_crop.width,
+                    plan.source_crop.height,
+                )
+                .is_ok()
+            );
+            assert!(
+                Rect::normalized(
+                    plan.output_viewport.x,
+                    plan.output_viewport.y,
+                    plan.output_viewport.width,
+                    plan.output_viewport.height,
+                )
+                .is_ok()
+            );
+            assert!(plan.source_crop.x <= target.x + 0.000_001);
+            assert!(plan.source_crop.y <= target.y + 0.000_001);
+            assert!(
+                plan.source_crop.x + plan.source_crop.width + 0.000_001 >= target.x + target.width
+            );
+            assert!(
+                plan.source_crop.y + plan.source_crop.height + 0.000_001
+                    >= target.y + target.height
+            );
+
+            if let Some(previous) = previous.filter(|previous| {
+                *previous != Rect::full_frame() && plan.source_crop != Rect::full_frame()
+            }) {
+                let previous_center = (
+                    previous.x + previous.width * 0.5,
+                    previous.y + previous.height * 0.5,
+                );
+                let current_center = (
+                    plan.source_crop.x + plan.source_crop.width * 0.5,
+                    plan.source_crop.y + plan.source_crop.height * 0.5,
+                );
+                assert!((current_center.0 - previous_center.0).abs() <= 0.08 + 0.000_01);
+                assert!((current_center.1 - previous_center.1).abs() <= 0.08 + 0.000_01);
+                assert!((plan.source_crop.width - previous.width).abs() <= 0.08 + 0.000_01);
+                assert!((plan.source_crop.height - previous.height).abs() <= 0.08 + 0.000_01);
+            }
+            previous = Some(plan.source_crop);
+        }
+    }
+
+    #[test]
     fn invalid_configuration_is_rejected() {
         assert!(matches!(
             FramingController::new(FramingConfig {
