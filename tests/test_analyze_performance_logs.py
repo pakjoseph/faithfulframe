@@ -176,6 +176,31 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         with self.assertRaisesRegex(analyzer.PerformanceLogError, "repeated"):
             analyzer.load_log(path)
 
+    def test_rejects_source_or_session_identity_changes(self):
+        first = fixture_row(0, 10.0, 1_000_000, 1000, 5, "1.0")
+        second = fixture_row(1000, 12.0, 1_100_000, 2000, 15, "1.0")
+        second["run_metadata_present"] = "0"
+        for column in analyzer.METADATA_COLUMNS:
+            second[column] = ""
+        second["session_id"] = "21"
+        path = self.write_log("identity-change.csv", [first, second])
+
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "identity changed"):
+            analyzer.load_log(path)
+
+    def test_rejects_invalid_dimensions_and_negative_metrics(self):
+        invalid_dimension = fixture_row(0, 10.0, 1_000_000, 1000, 5, "1.0")
+        invalid_dimension["source_width"] = "0"
+        path = self.write_log("invalid-dimension.csv", [invalid_dimension])
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "source_width"):
+            analyzer.load_log(path)
+
+        negative_metric = fixture_row(0, 10.0, 1_000_000, 1000, 5, "1.0")
+        negative_metric["process_cpu_percent"] = "-1"
+        path = self.write_log("negative-metric.csv", [negative_metric])
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "negative process_cpu_percent"):
+            analyzer.load_log(path)
+
     def test_counter_reset_does_not_produce_a_misleading_delta(self):
         path = self.write_log(
             "reset.csv",

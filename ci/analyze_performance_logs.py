@@ -217,6 +217,7 @@ def load_log(path: str | Path) -> dict:
 
     samples = []
     metadata = None
+    recording_identity = None
     previous_elapsed = -1
     for row_number, raw in enumerate(raw_rows, start=2):
         if None in raw or any(value is None for value in raw.values()):
@@ -291,10 +292,35 @@ def load_log(path: str | Path) -> dict:
             raise PerformanceLogError(f"{path}: row {row_number} has missing required tracking fields")
         if not sample["source_id"] or not sample["session_id"]:
             raise PerformanceLogError(f"{path}: row {row_number} has an invalid source/session identity")
+        identity = (sample["source_id"], sample["session_id"])
+        if recording_identity is None:
+            recording_identity = identity
+        elif identity != recording_identity:
+            raise PerformanceLogError(f"{path}: source/session identity changed during the recording")
+        for column in (
+            "source_generation",
+            "session_generation",
+            "stream_generation",
+            "geometry_generation",
+            "tracker_generation",
+        ):
+            if sample[column] <= 0:
+                raise PerformanceLogError(f"{path}: row {row_number} has an invalid {column}")
+        if sample["state"] not in STATE_NAMES:
+            raise PerformanceLogError(f"{path}: row {row_number} has an unknown state code")
+        if sample["reason"] not in REASON_NAMES:
+            raise PerformanceLogError(f"{path}: row {row_number} has an unknown reason code")
+        for column in ("source_width", "source_height", "output_width", "output_height"):
+            if sample[column] <= 0:
+                raise PerformanceLogError(f"{path}: row {row_number} has an invalid {column}")
         for column in METRIC_COLUMNS:
             sample[column] = _number(raw[column], column, row_number)
+            if sample[column] is not None and sample[column] < 0:
+                raise PerformanceLogError(f"{path}: row {row_number} has a negative {column}")
         for column in COUNTER_COLUMNS:
             sample[column] = _number(raw[column], column, row_number, integer=True)
+            if sample[column] is not None and sample[column] < 0:
+                raise PerformanceLogError(f"{path}: row {row_number} has a negative {column}")
         samples.append(sample)
 
     if metadata is None:
