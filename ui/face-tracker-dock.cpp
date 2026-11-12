@@ -513,8 +513,10 @@ void ft_dock_add(const char *name, obs_data_t *props, bool show)
 	dock->load_properties(props);
 
 	std::string id = "ft." + dock->name;
-	if (!obs_frontend_add_dock_by_id(id.c_str(), dock->name.c_str(), static_cast<QWidget *>(dock)))
+	if (!obs_frontend_add_dock_by_id(id.c_str(), dock->name.c_str(), static_cast<QWidget *>(dock))) {
+		delete dock;
 		return;
+	}
 
 	if (docks)
 		docks->push_back(dock);
