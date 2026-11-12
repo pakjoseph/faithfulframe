@@ -82,7 +82,7 @@ void obs_module_unload()
 #endif
 #ifdef WITH_DOCK
 	ft_docks_release();
-#endif // WITH_DOCK
+#endif
 	// Remaining source and filter destroy callbacks run after this function
 	// returns. Prevent their workers from calling OBS logging after module unload.
 	faithfulframe_worker_log_shutdown();
