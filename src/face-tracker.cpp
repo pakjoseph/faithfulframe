@@ -1280,10 +1280,10 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		std::lock_guard<std::mutex> bindings_lock(runtime->bindings_mutex);
 		previous = runtime->active.exchange(nullptr);
 		if (previous) {
-			previous->set_active_child(false);
 			previous->transition_pending.store(true, std::memory_order_release);
 			const bool was_closed = previous->closed.exchange(true, std::memory_order_acq_rel);
 			previous->render_executor.store(nullptr, std::memory_order_release);
+			previous->set_active_child(false);
 			auto executor = std::atomic_load_explicit(&previous->executor, std::memory_order_acquire);
 			if (executor) {
 				if (!was_closed)
