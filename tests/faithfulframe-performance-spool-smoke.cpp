@@ -71,5 +71,26 @@ int main()
 	const QByteArray exported = exported_file.readAll();
 	const std::string expected = csv_header() + csv_row(first) + csv_row(second) + csv_row(third);
 	CHECK(exported == QByteArray(expected.data(), static_cast<int>(expected.size())));
+
+	csv_spool chunked_spool;
+	CHECK(chunked_spool.open());
+	CHECK(chunked_spool.append(first));
+	std::string chunked_expected = csv_header() + csv_row(first);
+	for (uint64_t index = 0; index < 1024; ++index) {
+		sample repeated = second;
+		repeated.elapsed_milliseconds = 3000 + static_cast<int64_t>(index);
+		CHECK(chunked_spool.append(repeated));
+		chunked_expected += csv_row(repeated);
+	}
+	CHECK(chunked_expected.size() > 64 * 1024);
+	const QString chunked_path = output_directory.filePath("chunked.csv");
+	CHECK(chunked_spool.export_to(chunked_path));
+	CHECK(chunked_spool.append(third)); // A successful export also restores the append position.
+	chunked_expected += csv_row(third);
+	CHECK(chunked_spool.export_to(chunked_path));
+	QFile chunked_file(chunked_path);
+	CHECK(chunked_file.open(QIODevice::ReadOnly));
+	const QByteArray chunked_exported = chunked_file.readAll();
+	CHECK(chunked_exported == QByteArray(chunked_expected.data(), static_cast<int>(chunked_expected.size())));
 	return 0;
 }
