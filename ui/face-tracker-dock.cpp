@@ -356,6 +356,10 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 			return "Selection or command expired; choose again from the current preview";
 		if (preview.rejection_reason == 7)
 			return "The tracking session has closed; reselect the camera in source settings";
+		if (preview.rejection_reason == FF_REJECTION_INVALID_COMMAND && preview.state == FF_STATE_LOCKED)
+			return "Use Manual Override before selecting a different speaker";
+		if (preview.rejection_reason == FF_REJECTION_INVALID_COMMAND && preview.state == FF_STATE_FROZEN)
+			return "Resume before selecting a speaker";
 		return "Command was rejected without changing framing; review status and try a valid action";
 	}
 	if (!preview.signal_connected)
@@ -1139,6 +1143,10 @@ void FTDock::handlePreviewClick(const QPointF &position)
 		return;
 	if (preview.state == FF_STATE_LOCKED) {
 		safeStatusLabel->setText("Use Manual Override before selecting a different speaker.");
+		return;
+	}
+	if (preview.state == FF_STATE_FROZEN) {
+		safeStatusLabel->setText("Resume before selecting a speaker.");
 		return;
 	}
 	if (preview.state != FF_STATE_MANUAL && preview.state != FF_STATE_SEARCHING && preview.state != FF_STATE_LOST)
