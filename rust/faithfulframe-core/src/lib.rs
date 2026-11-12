@@ -480,8 +480,10 @@ impl TrackingSession {
             Command::SelectCandidate {
                 handle,
                 observation_version,
-            } if matches!(self.state, State::Manual | State::Searching | State::Lost)
-                && status_version == self.status_version
+            } if matches!(
+                self.state,
+                State::Manual | State::Searching | State::Locked | State::Lost
+            ) && status_version == self.status_version
                 && observation_version == self.observation_version =>
             {
                 if let Some(candidate) = self.latest.get(&handle).copied()
@@ -1213,6 +1215,60 @@ mod tests {
         );
         assert_eq!(result.state, State::Locked);
         assert_eq!(result.crop_action, CropAction::Track);
+    }
+
+    #[test]
+    fn explicit_operator_selection_can_correct_a_locked_target() {
+        let mut session = session();
+        let original = lock_test_target(&mut session);
+        let mut replacement = candidate(11, 200, 2, 4);
+        replacement.rect = Rect::normalized(0.6, 0.2, 0.2, 0.4).unwrap();
+
+        let observed = observe(&mut session, replacement, 4);
+        assert_eq!(observed.state, State::Locked);
+        assert_eq!(observed.selected, Some(10));
+
+        let corrected = send(
+            &mut session,
+            5,
+            Command::SelectCandidate {
+                handle: 11,
+                observation_version: observed.observation_version,
+            },
+        );
+
+        assert_eq!(corrected.command_result, CommandResult::Applied);
+        assert_eq!(corrected.state, State::Locked);
+        assert_eq!(corrected.selected, Some(11));
+        assert_eq!(corrected.crop_action, CropAction::Track);
+        assert_eq!(original.selected, Some(10));
+    }
+
+    #[test]
+    fn stale_operator_correction_cannot_replace_a_locked_target() {
+        let mut session = session();
+        let original = lock_test_target(&mut session);
+        let replacement = candidate(11, 200, 2, 4);
+        let observed = observe(&mut session, replacement, 4);
+
+        let stale = session.apply(Event::Command {
+            at: 5,
+            envelope: CommandEnvelope {
+                identity: observed.identity,
+                status_version: original.status_version,
+                generations: observed.generations,
+                command: Command::SelectCandidate {
+                    handle: 11,
+                    observation_version: observed.observation_version,
+                },
+            },
+        });
+
+        assert_eq!(
+            stale.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        assert_policy_no_op(stale, observed);
     }
 
     #[test]
