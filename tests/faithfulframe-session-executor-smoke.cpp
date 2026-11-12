@@ -419,7 +419,7 @@ int run_smoke()
 		return 95;
 	std::weak_ptr<faithfulframe_session_executor> last_source_weak = last_source_executor;
 	last_source_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
-	if (!faithfulframe_retire_session_executor(last_source_executor) || last_source_executor)
+	if (!retire_executor_when_available(last_source_executor) || last_source_executor)
 		return 96;
 	faithfulframe_teardown_instance_destroyed();
 	if (!last_source_weak.expired() || faithfulframe_teardown_register_instance() != 1)
@@ -974,7 +974,7 @@ int run_smoke()
 	std::weak_ptr<faithfulframe_session_executor> retired_weak = retired_executor;
 	retired_executor->request_shutdown();
 	const auto retirement_started = std::chrono::steady_clock::now();
-	if (!faithfulframe_retire_session_executor(retired_executor) || retired_executor ||
+	if (!retire_executor_when_available(retired_executor) || retired_executor ||
 	    std::chrono::steady_clock::now() - retirement_started > std::chrono::seconds(1))
 		return 59;
 	const auto retirement_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -992,7 +992,7 @@ int run_smoke()
 		return 61;
 	std::weak_ptr<faithfulframe_session_executor> unload_weak = unload_executor;
 	unload_executor->request_shutdown();
-	if (!faithfulframe_retire_session_executor(unload_executor) || unload_executor)
+	if (!retire_executor_when_available(unload_executor) || unload_executor)
 		return 62;
 
 	auto terminal_executor =
@@ -1017,7 +1017,7 @@ int run_smoke()
 					      0,
 					      0};
 	auto terminal_join = terminal_executor;
-	if (!faithfulframe_retire_session_executor(terminal_join) || terminal_join)
+	if (!retire_executor_when_available(terminal_join) || terminal_join)
 		return 67;
 	ff_snapshot terminal_snapshot{};
 	const auto terminal_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -1153,7 +1153,7 @@ int run_smoke()
 		return 89;
 	std::weak_ptr<faithfulframe_session_executor> final_pending_weak = final_pending_executor;
 	final_pending_executor->request_shutdown();
-	if (!faithfulframe_retire_session_executor(final_pending_executor) || final_pending_executor)
+	if (!retire_executor_when_available(final_pending_executor) || final_pending_executor)
 		return 90;
 	faithfulframe_teardown_instance_destroyed();
 	if (!final_pending_weak.expired())
@@ -1195,7 +1195,7 @@ int run_smoke()
 		return 102;
 	std::weak_ptr<faithfulframe_session_executor> in_flight_weak = in_flight_executor;
 	in_flight_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
-	if (!faithfulframe_retire_session_executor(in_flight_executor) || in_flight_executor)
+	if (!retire_executor_when_available(in_flight_executor) || in_flight_executor)
 		return 103;
 	faithfulframe_teardown_instance_destroyed();
 	if (!in_flight_weak.expired() || faithfulframe_teardown_register_instance() != 0)
@@ -1216,7 +1216,7 @@ int run_smoke()
 		return 106;
 	std::weak_ptr<faithfulframe_session_executor> racing_weak = racing_executor;
 	racing_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
-	if (!faithfulframe_retire_session_executor(racing_executor) || racing_executor)
+	if (!retire_executor_when_available(racing_executor) || racing_executor)
 		return 107;
 	reaper_drain_test_gate gate;
 	faithfulframe_test_set_reaper_drain_hook(pause_reaper_drain, &gate);
