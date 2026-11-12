@@ -1,3 +1,5 @@
+include("${CMAKE_CURRENT_LIST_DIR}/ExtractMacOSMinimumVersions.cmake")
+
 function(faithfulframe_verify_macos_link_targets)
 	if(NOT APPLE)
 		return()
@@ -57,24 +59,13 @@ function(faithfulframe_verify_macos_link_targets)
 						"Could not inspect ${_architecture} macOS slice of ${_target} at ${_location}: ${_otool_error}")
 				endif()
 
-				string(REGEX MATCHALL "minos[ \t]+[0-9]+(\\.[0-9]+)*" _minimum_versions "${_otool_output}")
-				string(REPLACE "\n" ";" _otool_lines "${_otool_output}")
-				set(_legacy_minimum_pending FALSE)
-				foreach(_line IN LISTS _otool_lines)
-					if(_line MATCHES "^[ \t]*cmd[ \t]+LC_VERSION_MIN_MACOSX[ \t]*$")
-						set(_legacy_minimum_pending TRUE)
-					elseif(_legacy_minimum_pending AND
-					       _line MATCHES "^[ \t]*version[ \t]+([0-9]+(\\.[0-9]+)*)[ \t]*$")
-						list(APPEND _minimum_versions "minos ${CMAKE_MATCH_1}")
-						set(_legacy_minimum_pending FALSE)
-					endif()
-				endforeach()
+				faithfulframe_extract_macos_minimum_versions(_minimum_versions "${_otool_output}")
 				if(NOT _minimum_versions)
 					message(FATAL_ERROR
 						"Could not find a macOS minimum-version load command in ${_target} at ${_location} (${_architecture})")
 				endif()
 				foreach(_entry IN LISTS _minimum_versions)
-					string(REGEX REPLACE "^minos[ \t]+" "" _minimum_version "${_entry}")
+					set(_minimum_version "${_entry}")
 					if(_minimum_version VERSION_GREATER CMAKE_OSX_DEPLOYMENT_TARGET)
 						message(FATAL_ERROR
 							"${_target} at ${_location} (${_architecture}) requires macOS ${_minimum_version}, but "

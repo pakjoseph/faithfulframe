@@ -1,3 +1,5 @@
+include("${CMAKE_CURRENT_LIST_DIR}/ExtractMacOSMinimumVersions.cmake")
+
 if(NOT DEFINED FF_ARCHIVE OR NOT EXISTS "${FF_ARCHIVE}")
 	message(FATAL_ERROR "FaithfulFrame Rust archive is missing: ${FF_ARCHIVE}")
 endif()
@@ -32,13 +34,13 @@ if(NOT _otool_result EQUAL 0)
 	message(FATAL_ERROR "Could not inspect FaithfulFrame Rust archive: ${_otool_error}")
 endif()
 
-string(REGEX MATCHALL "minos[ \t]+[0-9]+(\\.[0-9]+)*" _minimum_versions "${_otool_output}")
+faithfulframe_extract_macos_minimum_versions(_minimum_versions "${_otool_output}")
 if(NOT _minimum_versions)
 	message(FATAL_ERROR "No macOS minimum-version load commands found in ${FF_ARCHIVE}")
 endif()
 
 foreach(_entry IN LISTS _minimum_versions)
-	string(REGEX REPLACE "^minos[ \t]+" "" _minimum_version "${_entry}")
+	set(_minimum_version "${_entry}")
 	if(_minimum_version VERSION_GREATER FF_DEPLOYMENT_TARGET)
 		message(FATAL_ERROR
 			"FaithfulFrame Rust archive contains an object targeting macOS ${_minimum_version}, "

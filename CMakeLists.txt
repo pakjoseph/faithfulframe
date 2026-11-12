@@ -188,6 +188,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		DEPENDS ${FAITHFULFRAME_FFI_MANIFEST}
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-core/Cargo.toml
 			${CMAKE_CURRENT_SOURCE_DIR}/rust-toolchain.toml
+			${CMAKE_CURRENT_SOURCE_DIR}/cmake/ExtractMacOSMinimumVersions.cmake
 			${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyRustMacOSDeployment.cmake
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/Cargo.lock
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-ffi/src/lib.rs
@@ -296,6 +297,8 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_test(NAME faithfulframe-single-adapter-lease-smoke COMMAND faithfulframe-single-adapter-lease-smoke)
 	add_test(NAME faithfulframe-rust-bridge-smoke COMMAND faithfulframe-rust-bridge-smoke)
 	add_test(NAME faithfulframe-session-executor-smoke COMMAND faithfulframe-session-executor-smoke)
+	add_test(NAME faithfulframe-macos-minimum-version-parser
+		COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/VerifyMacOSMinimumVersions.cmake)
 	add_test(NAME faithfulframe-detector-worker-smoke COMMAND faithfulframe-detector-worker-smoke)
 	add_test(NAME faithfulframe-tracker-worker-smoke COMMAND faithfulframe-tracker-worker-smoke)
 	add_test(NAME faithfulframe-worker-log-gate-smoke COMMAND faithfulframe-worker-log-gate-smoke)
