@@ -37,9 +37,17 @@ model_tmp="$(mktemp -d)"
 trap 'rm -rf "$model_tmp"' EXIT
 
 hog_archive="$model_tmp/frontal_face_detector.dat.bz2"
+hog_license="$model_tmp/frontal_face_detector-LICENSE.txt"
 curl --fail --location --retry 3 --silent --show-error \
 	'https://github.com/norihiro/obs-face-tracker/releases/download/0.7.0-hogdata/frontal_face_detector.dat.bz2' \
 	--output "$hog_archive"
+curl --fail --location --retry 3 --silent --show-error \
+	'https://github.com/norihiro/obs-face-tracker/releases/download/0.7.0-hogdata/LICENSE.txt' \
+	--output "$hog_license"
+if ! cmp -s "$hog_license" dlib/LICENSE.txt; then
+	echo "HOG detector license differs from the bundled dlib license" >&2
+	exit 1
+fi
 if command -v sha256sum >/dev/null 2>&1; then
 	actual_hog_sha256="$(sha256sum "$hog_archive" | cut -d ' ' -f1)"
 elif command -v shasum >/dev/null 2>&1; then
