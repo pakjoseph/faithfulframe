@@ -80,10 +80,16 @@ jobs:
             -D CPACK_DEBIAN_PACKAGE_SHLIBDEPS=ON \
             -D PKG_SUFFIX=-obs${{ matrix.obs }}-${{ matrix.ubuntu }}-x86_64 \
             ${{ steps.obsdeps.outputs.PLUGIN_CMAKE_OPTIONS }}
+          python3 -m unittest tests/test_verify_package_assets.py
           cd build
           make -j4
           ctest --output-on-failure
           make package
+          deb_file=$(find . -name '*.deb' -print -quit)
+          test -n "$deb_file"
+          mkdir -p package-audit
+          dpkg-deb --extract "$deb_file" package-audit
+          python3 ../ci/verify-package-assets.py --root package-audit
           echo "FILE_NAME=$(find $PWD -name '*.deb' | head -n 1)" >> $GITHUB_ENV
 
       - name: Upload build artifact
@@ -288,6 +294,11 @@ jobs:
           packagesbuild \
             --build-folder $PWD/package/ \
             build/installer-macOS.generated.pkgproj
+          zip_file=$(find package -name '*.zip' -print -quit)
+          test -n "$zip_file"
+          mkdir -p package-audit
+          unzip -q "$zip_file" -d package-audit
+          python3 ci/verify-package-assets.py --root package-audit
 
       - name: Productsign
         if: ${{ github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' }}
@@ -398,7 +409,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "CMake install failed with exit code $LASTEXITCODE" }
 
       - name: Package plugin
-        run: ci/windows/package-windows.cmd ${{ matrix.obs }} ${{ matrix.arch }}
+        run: |
+          ci/windows/package-windows.cmd ${{ matrix.obs }} ${{ matrix.arch }}
+          if ($LASTEXITCODE -ne 0) { throw "Package build failed with exit code $LASTEXITCODE" }
+          $zip = Get-ChildItem package -Filter *.zip | Select-Object -First 1
+          if (-not $zip) { throw "Plugin ZIP was not produced" }
+          7z x $zip.FullName '-opackage-audit' '-y' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Plugin ZIP extraction failed with exit code $LASTEXITCODE" }
+          python ci/verify-package-assets.py --root package-audit
+          if ($LASTEXITCODE -ne 0) { throw "Package asset verification failed with exit code $LASTEXITCODE" }
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
