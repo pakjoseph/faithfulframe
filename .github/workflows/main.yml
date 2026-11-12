@@ -382,12 +382,18 @@ jobs:
             arch: 'x64'
             runner: 'windows-2022'
             obs-onsdriver: '< 33'
+            # onsdriver's OBS 30 setup crashes when --size calls get_profile()
+            # before OBS has populated General/LastVersion. This module-load
+            # job does not need an explicit canvas size.
+            graphics-size: ''
           - obs: 33
             arch: 'x64'
             runner: 'windows-2025-vs2026'
+            graphics-size: '1280x720'
           - obs: 33
             arch: 'arm64'
             runner: 'windows-11-arm'
+            graphics-size: '1280x720'
     env:
       Configuration: 'RelWithDebInfo'
     defaults:
@@ -457,6 +463,7 @@ jobs:
           obs-plugins: package/*.exe
           first-time-log: ./logs/
           obs-version: ${{ matrix.obs-onsdriver }}
+          graphics-size: ${{ matrix.graphics-size }}
 
       - name: 'Test with onsdriver'
         timeout-minutes: 3
