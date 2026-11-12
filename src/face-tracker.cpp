@@ -241,10 +241,24 @@ struct faithfulframe_source_runtime
 			return;
 		faithfulframe_source_binding *const current = active.peek();
 		for (auto it = bindings.begin(); it != bindings.end();) {
-			if (it->get() != current)
-				it = bindings.erase(it);
-			else
+			if (it->get() == current) {
 				++it;
+				continue;
+			}
+
+			// A binding destructor has a blocking fallback for controlled OBS
+			// teardown. Never reach it from this video-tick reclamation path if
+			// the module reaper cannot accept the worker join. Keep the retired
+			// owner until a later tick can transfer responsibility safely.
+			auto executor = std::atomic_load_explicit(&(*it)->executor, std::memory_order_acquire);
+			if (executor) {
+				executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+				if (!faithfulframe_retire_session_executor(executor)) {
+					++it;
+					continue;
+				}
+			}
+			it = bindings.erase(it);
 		}
 	}
 };
