@@ -2113,8 +2113,8 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 		    displayed_snapshot.identity.session == binding->identity.session && !displayed_snapshot.closed) {
 			has_displayed_snapshot = true;
 			const bool session_crop_is_authorized = faithfulframe_session_crop_is_authorized(
-				static_cast<ff_crop_action>(displayed_snapshot.crop_action),
-				static_cast<ff_state>(displayed_snapshot.state), displayed_snapshot.has_selected);
+				displayed_snapshot.crop_action, displayed_snapshot.state,
+				displayed_snapshot.has_selected);
 			if (!force_wide && !binding->transition_pending.load(std::memory_order_acquire) &&
 			    !binding->source_settings_updated.load(std::memory_order_acquire) &&
 			    session_crop_is_authorized && valid_normalized_rect(displayed_snapshot.crop) &&

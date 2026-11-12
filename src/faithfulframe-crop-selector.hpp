@@ -19,10 +19,10 @@ constexpr faithfulframe_crop_input faithfulframe_select_crop_input(bool safety_p
 
 /// Track crops require an explicit lock. Hold, wide, and none are explicit
 /// session framing decisions. Unknown actions or states fail closed.
-constexpr bool faithfulframe_session_crop_is_authorized(ff_crop_action action, ff_state state,
+constexpr bool faithfulframe_session_crop_is_authorized(uint32_t action, uint32_t state,
 							bool has_selected_target) noexcept
 {
-	if (state < FF_STATE_FROZEN || state > FF_STATE_LOST)
+	if (state > FF_STATE_LOST)
 		return false;
 	switch (action) {
 	case FF_CROP_TRACK:
