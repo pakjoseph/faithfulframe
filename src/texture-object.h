@@ -1,6 +1,5 @@
 #pragma once
 #include <obs-module.h>
-#include <util/threading.h>
 #include <cstdint>
 #include <vector>
 #include <dlib/array2d/array2d_kernel.h>
