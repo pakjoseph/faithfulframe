@@ -2,6 +2,10 @@
 
 use crate::Rect;
 
+const NOMINAL_SAMPLE_PERIOD_SECONDS: f32 = 1.0 / 30.0;
+const MAX_INTEGRATION_STEP_SECONDS: f32 = 0.1;
+const FULL_SPEED_RAMP_SECONDS: f32 = 0.5;
+
 #[derive(Clone, Copy, Debug)]
 pub struct FramingConfig {
     pub source_aspect: f32,
@@ -14,7 +18,9 @@ pub struct FramingConfig {
     /// Fraction inset from each edge of the current crop. Pan holds while the
     /// complete target rectangle stays inside this inner crop region.
     pub dead_zone_fraction: f32,
+    /// Maximum normalized pan displacement per nominal 30 Hz update.
     pub max_pan_step: f32,
+    /// Maximum normalized crop-extent change per nominal 30 Hz update.
     pub max_zoom_step: f32,
 }
 
@@ -39,6 +45,7 @@ impl Default for FramingConfig {
 pub enum FramingError {
     InvalidConfig,
     InvalidTarget,
+    NonMonotonicTime,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -51,10 +58,13 @@ pub struct FramePlan {
 }
 
 /// The controller owns no clocks, threads, or external resources. The caller
-/// invokes `plan` once per authorized target update on the session executor.
+/// invokes `plan_at` once per authorized target update on the session executor.
 pub struct FramingController {
     config: FramingConfig,
     current: Option<Rect>,
+    last_plan_at_ms: Option<u64>,
+    pan_velocity: (f32, f32),
+    zoom_velocity: (f32, f32),
 }
 
 impl FramingController {
@@ -101,11 +111,27 @@ impl FramingController {
         Ok(Self {
             config,
             current: None,
+            last_plan_at_ms: None,
+            pan_velocity: (0.0, 0.0),
+            zoom_velocity: (0.0, 0.0),
         })
     }
 
     pub fn reset(&mut self) {
         self.current = None;
+        self.reset_motion();
+    }
+
+    /// Holds the current crop and clears motion after a pause, target loss, or
+    /// operator action. A later lock starts with zero residual velocity.
+    pub fn hold(&mut self) {
+        self.reset_motion();
+    }
+
+    fn reset_motion(&mut self) {
+        self.last_plan_at_ms = None;
+        self.pan_velocity = (0.0, 0.0);
+        self.zoom_velocity = (0.0, 0.0);
     }
 
     pub fn safe_wide(&self) -> FramePlan {
@@ -116,16 +142,44 @@ impl FramingController {
     }
 
     /// Returns a bounded source crop and an output viewport that preserves its
-    /// aspect ratio. Intermediate plans may use padding while easing from wide.
+    /// aspect ratio. This convenience method advances a deterministic nominal
+    /// 30 Hz step; production callers should use `plan_at` with event time.
     pub fn plan(&mut self, target: Rect) -> Result<FramePlan, FramingError> {
+        let at = self
+            .last_plan_at_ms
+            .map_or(0, |previous| previous.saturating_add(33));
+        self.plan_at(target, at)
+    }
+
+    /// Advances the framing controller using monotonic milliseconds. Pan and
+    /// zoom acceleration are bounded in source-normalized units per second²;
+    /// integration time is capped so a long pause cannot cause a catch-up jump.
+    pub fn plan_at(&mut self, target: Rect, at_ms: u64) -> Result<FramePlan, FramingError> {
         Rect::normalized(target.x, target.y, target.width, target.height)
             .map_err(|_| FramingError::InvalidTarget)?;
+
+        if self
+            .last_plan_at_ms
+            .is_some_and(|previous| at_ms < previous)
+        {
+            return Err(FramingError::NonMonotonicTime);
+        }
+        if self.last_plan_at_ms == Some(at_ms) {
+            return self.plan_for(self.current.unwrap_or_else(Rect::full_frame));
+        }
+
+        let dt = self
+            .last_plan_at_ms
+            .map_or(NOMINAL_SAMPLE_PERIOD_SECONDS, |previous| {
+                ((at_ms - previous) as f32 / 1_000.0).min(MAX_INTEGRATION_STEP_SECONDS)
+            });
+        self.last_plan_at_ms = Some(at_ms);
         let desired = self.desired(target);
         // The first selection begins at safe-wide too. Intermediate crop
         // rectangles may have a different aspect ratio from the output; fit
         // them with padding until pan and zoom converge to the target crop.
         let current = self.current.unwrap_or_else(Rect::full_frame);
-        let next = self.smooth(current, desired, target);
+        let next = self.smooth(current, desired, target, dt);
         Rect::normalized(next.x, next.y, next.width, next.height)
             .map_err(|_| FramingError::InvalidTarget)?;
         let plan = self.plan_for(next)?;
@@ -146,15 +200,17 @@ impl FramingController {
         bounded_centered(target, base_width / zoom, base_height / zoom)
     }
 
-    fn smooth(&self, current: Rect, desired: Rect, target: Rect) -> Rect {
+    fn smooth(&mut self, current: Rect, desired: Rect, target: Rect, dt: f32) -> Rect {
         if desired == Rect::full_frame() {
+            self.pan_velocity = (0.0, 0.0);
+            self.zoom_velocity = (0.0, 0.0);
             return desired;
         }
         let current_center = (
             current.x + current.width * 0.5,
             current.y + current.height * 0.5,
         );
-        let max_pan_delta = self.config.max_pan_step * self.config.pan_smoothing;
+        let max_pan_delta = self.config.max_pan_step;
         let target_inside_x_dead_zone = self.config.dead_zone_fraction > 0.0
             && current != Rect::full_frame()
             && target.x >= current.x + current.width * self.config.dead_zone_fraction
@@ -169,59 +225,96 @@ impl FramingController {
             desired.x + desired.width * 0.5,
             desired.y + desired.height * 0.5,
         );
-        let mut center_x = if target_inside_x_dead_zone {
+        let max_pan_velocity = self.config.max_pan_step / NOMINAL_SAMPLE_PERIOD_SECONDS;
+        let max_zoom_velocity = self.config.max_zoom_step / NOMINAL_SAMPLE_PERIOD_SECONDS;
+        // Ramp to each configured speed cap over half a second. `max_*_step`
+        // continues to bound displacement per update as an additional guard.
+        let max_pan_acceleration = max_pan_velocity / FULL_SPEED_RAMP_SECONDS;
+        let max_zoom_acceleration = max_zoom_velocity / FULL_SPEED_RAMP_SECONDS;
+        let requested_x = if target_inside_x_dead_zone {
             current_center.0
         } else {
-            current_center.0
-                + bounded_delta(
-                    desired_center.0 - current_center.0,
-                    self.config.max_pan_step,
-                ) * self.config.pan_smoothing
+            desired_center.0
         };
-        let mut center_y = if target_inside_y_dead_zone {
+        let requested_y = if target_inside_y_dead_zone {
             current_center.1
         } else {
-            current_center.1
-                + bounded_delta(
-                    desired_center.1 - current_center.1,
-                    self.config.max_pan_step,
-                ) * self.config.pan_smoothing
+            desired_center.1
         };
-        let mut width = current.width
-            + bounded_delta(desired.width - current.width, self.config.max_zoom_step)
-                * self.config.zoom_smoothing;
-        let mut height = current.height
-            + bounded_delta(desired.height - current.height, self.config.max_zoom_step)
-                * self.config.zoom_smoothing;
+        let (pan_x, velocity_x) = advance_axis(
+            current_center.0,
+            requested_x,
+            self.pan_velocity.0,
+            self.config.max_pan_step,
+            max_pan_velocity,
+            max_pan_acceleration,
+            self.config.pan_smoothing,
+            dt,
+        );
+        let (pan_y, velocity_y) = advance_axis(
+            current_center.1,
+            requested_y,
+            self.pan_velocity.1,
+            self.config.max_pan_step,
+            max_pan_velocity,
+            max_pan_acceleration,
+            self.config.pan_smoothing,
+            dt,
+        );
+        let (next_width, velocity_width) = advance_axis(
+            current.width,
+            desired.width,
+            self.zoom_velocity.0,
+            self.config.max_zoom_step,
+            max_zoom_velocity,
+            max_zoom_acceleration,
+            self.config.zoom_smoothing,
+            dt,
+        );
+        let (next_height, velocity_height) = advance_axis(
+            current.height,
+            desired.height,
+            self.zoom_velocity.1,
+            self.config.max_zoom_step,
+            max_zoom_velocity,
+            max_zoom_acceleration,
+            self.config.zoom_smoothing,
+            dt,
+        );
+        self.pan_velocity = (velocity_x, velocity_y);
+        self.zoom_velocity = (velocity_width, velocity_height);
+        let mut center_x = pan_x;
+        let mut center_y = pan_y;
+        let width = next_width;
+        let height = next_height;
         let target_center_x = target.x + target.width * 0.5;
         let target_center_y = target.y + target.height * 0.5;
 
-        // Keep pan within its configured step. If that center cannot yet
-        // contain the target, widen temporarily instead of teleporting the
-        // crop across the source.
-        for _ in 0..3 {
-            width = width.max(2.0 * (target_center_x - center_x).abs() + target.width);
-            height = height.max(2.0 * (target_center_y - center_y).abs() + target.height);
-            if width > 1.0 || height > 1.0 {
-                return Rect::full_frame();
-            }
-
-            center_x = center_x.clamp(width * 0.5, 1.0 - width * 0.5);
-            center_y = center_y.clamp(height * 0.5, 1.0 - height * 0.5);
-            if (center_x - current_center.0).abs() > max_pan_delta + 0.000_001
-                || (center_y - current_center.1).abs() > max_pan_delta + 0.000_001
-            {
-                return Rect::full_frame();
-            }
-            let needed_width = 2.0 * (target_center_x - center_x).abs() + target.width;
-            let needed_height = 2.0 * (target_center_y - center_y).abs() + target.height;
-            if needed_width <= width && needed_height <= height {
-                return bounded_at(center_x, center_y, width, height);
-            }
-            width = width.max(needed_width);
-            height = height.max(needed_height);
+        // Keep pan and zoom within their acceleration limits. If the planned
+        // movement cannot contain the target yet, use safe-wide instead of
+        // widening abruptly and bypassing the zoom ramp.
+        if width > 1.0 || height > 1.0 {
+            self.pan_velocity = (0.0, 0.0);
+            self.zoom_velocity = (0.0, 0.0);
+            return Rect::full_frame();
         }
-        Rect::full_frame()
+        center_x = center_x.clamp(width * 0.5, 1.0 - width * 0.5);
+        center_y = center_y.clamp(height * 0.5, 1.0 - height * 0.5);
+        if (center_x - current_center.0).abs() > max_pan_delta + 0.000_001
+            || (center_y - current_center.1).abs() > max_pan_delta + 0.000_001
+        {
+            self.pan_velocity = (0.0, 0.0);
+            self.zoom_velocity = (0.0, 0.0);
+            return Rect::full_frame();
+        }
+        let needed_width = 2.0 * (target_center_x - center_x).abs() + target.width;
+        let needed_height = 2.0 * (target_center_y - center_y).abs() + target.height;
+        if needed_width > width + 0.000_001 || needed_height > height + 0.000_001 {
+            self.pan_velocity = (0.0, 0.0);
+            self.zoom_velocity = (0.0, 0.0);
+            return Rect::full_frame();
+        }
+        bounded_at(center_x, center_y, width, height)
     }
 
     fn crop_aspect(&self) -> f32 {
@@ -255,6 +348,28 @@ impl FramingController {
 
 fn bounded_delta(value: f32, limit: f32) -> f32 {
     value.clamp(-limit, limit)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_axis(
+    current: f32,
+    target: f32,
+    previous_velocity: f32,
+    max_step: f32,
+    max_velocity: f32,
+    max_acceleration: f32,
+    smoothing: f32,
+    dt: f32,
+) -> (f32, f32) {
+    let requested_delta = bounded_delta(target - current, max_step) * smoothing;
+    let requested_velocity = (requested_delta / dt).clamp(-max_velocity, max_velocity);
+    let velocity_delta = bounded_delta(
+        requested_velocity - previous_velocity,
+        max_acceleration * dt,
+    );
+    let velocity = (previous_velocity + velocity_delta).clamp(-max_velocity, max_velocity);
+    let delta = bounded_delta(velocity * dt, max_step);
+    (current + delta, delta / dt)
 }
 
 fn bounded_centered(target: Rect, width: f32, height: f32) -> Rect {
@@ -480,7 +595,10 @@ mod tests {
         assert!((held_center_y - first_center_y).abs() < 0.000_1);
 
         let moving_target = target(0.57, 0.46, 0.08, 0.08);
-        let moving = controller.plan(moving_target).unwrap();
+        let mut moving = controller.plan(moving_target).unwrap();
+        if moving.source_crop == Rect::full_frame() {
+            moving = controller.plan(moving_target).unwrap();
+        }
         let first_center_x = first.source_crop.x + first.source_crop.width * 0.5;
         let moving_center_x = moving.source_crop.x + moving.source_crop.width * 0.5;
         assert!(moving_center_x > first_center_x);
@@ -530,7 +648,10 @@ mod tests {
             first = controller.plan(centered_target).unwrap();
         }
         let moved_target = target(0.7, 0.46, 0.08, 0.08);
-        let moved = controller.plan(moved_target).unwrap();
+        let mut moved = controller.plan(moved_target).unwrap();
+        if moved.source_crop == Rect::full_frame() {
+            moved = controller.plan(moved_target).unwrap();
+        }
         let first_center_x = first.source_crop.x + first.source_crop.width * 0.5;
         let first_center_y = first.source_crop.y + first.source_crop.height * 0.5;
         let moved_center_x = moved.source_crop.x + moved.source_crop.width * 0.5;
@@ -654,6 +775,88 @@ mod tests {
         assert_ne!(crop, controller.desired(distant_target));
         assert!((center_x - 0.5).abs() <= 0.08 * 0.25);
         assert!((center_y - 0.5).abs() <= 0.08 * 0.25);
+    }
+
+    #[test]
+    fn event_timed_pan_respects_acceleration_bound() {
+        let mut controller = FramingController::new(FramingConfig {
+            pan_smoothing: 1.0,
+            dead_zone_fraction: 0.0,
+            ..FramingConfig::default()
+        })
+        .unwrap();
+        let initial = controller.plan_at(target(0.2, 0.4, 0.1, 0.1), 0).unwrap();
+        let reversal = controller.plan_at(target(0.7, 0.4, 0.1, 0.1), 33).unwrap();
+        let following = controller.plan_at(target(0.7, 0.4, 0.1, 0.1), 66).unwrap();
+
+        let center = |crop: Rect| crop.x + crop.width * 0.5;
+        let dt = 0.033_f32;
+        let first_velocity = (center(reversal.source_crop) - center(initial.source_crop)) / dt;
+        let second_velocity = (center(following.source_crop) - center(reversal.source_crop)) / dt;
+        let maximum_acceleration = (FramingConfig::default().max_pan_step
+            / NOMINAL_SAMPLE_PERIOD_SECONDS)
+            / FULL_SPEED_RAMP_SECONDS;
+
+        assert!(first_velocity.abs() <= maximum_acceleration * dt + 0.001);
+        assert!(
+            (second_velocity - first_velocity).abs() <= maximum_acceleration * dt + 0.001,
+            "velocity changed from {first_velocity} to {second_velocity}"
+        );
+    }
+
+    #[test]
+    fn event_timed_zoom_respects_acceleration_bound() {
+        let mut controller = FramingController::new(FramingConfig {
+            zoom_smoothing: 1.0,
+            dead_zone_fraction: 0.0,
+            ..FramingConfig::default()
+        })
+        .unwrap();
+        let initial = controller.plan_at(target(0.4, 0.4, 0.2, 0.2), 0).unwrap();
+        let reversal = controller
+            .plan_at(target(0.45, 0.45, 0.1, 0.1), 33)
+            .unwrap();
+        let following = controller
+            .plan_at(target(0.45, 0.45, 0.1, 0.1), 66)
+            .unwrap();
+
+        let dt = 0.033_f32;
+        let first_velocity = (reversal.source_crop.width - initial.source_crop.width) / dt;
+        let second_velocity = (following.source_crop.width - reversal.source_crop.width) / dt;
+        let maximum_acceleration = (FramingConfig::default().max_zoom_step
+            / NOMINAL_SAMPLE_PERIOD_SECONDS)
+            / FULL_SPEED_RAMP_SECONDS;
+
+        assert!(
+            (second_velocity - first_velocity).abs() <= maximum_acceleration * dt + 0.001,
+            "zoom velocity changed from {first_velocity} to {second_velocity}"
+        );
+    }
+
+    #[test]
+    fn non_monotonic_plan_time_is_a_strict_no_op() {
+        let mut controller = FramingController::new(FramingConfig::default()).unwrap();
+        controller.plan_at(target(0.4, 0.4, 0.1, 0.1), 100).unwrap();
+        let before = (
+            controller.current,
+            controller.last_plan_at_ms,
+            controller.pan_velocity,
+            controller.zoom_velocity,
+        );
+
+        assert_eq!(
+            controller.plan_at(target(0.6, 0.4, 0.1, 0.1), 99),
+            Err(FramingError::NonMonotonicTime)
+        );
+        assert_eq!(
+            (
+                controller.current,
+                controller.last_plan_at_ms,
+                controller.pan_velocity,
+                controller.zoom_velocity,
+            ),
+            before
+        );
     }
 
     #[test]

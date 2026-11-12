@@ -123,6 +123,8 @@ typedef struct ff_session_config
 	float max_zoom;
 	/* Response factors in (0, 1]; larger values move faster. */
 	float pan_smoothing;
+	/* Normalized change limits per nominal 30 Hz update. Rust ramps to its
+	 * derived speed cap over 500 ms and caps each integration interval at 100 ms. */
 	float max_pan_step;
 	float max_zoom_step;
 	/* Fraction inset from each crop edge before pan begins; range [0, 0.5). */

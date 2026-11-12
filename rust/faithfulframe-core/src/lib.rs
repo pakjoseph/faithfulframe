@@ -921,7 +921,7 @@ impl TrackingEngine {
             match policy.crop_action {
                 CropAction::Track if authorized_target_update => {
                     if let Some(target) = policy.selected_rect {
-                        match self.framing.plan(target) {
+                        match self.framing.plan_at(target, at) {
                             Ok(plan) => self.frame_plan = plan,
                             Err(_) => {
                                 self.session.fail_closed_framing();
@@ -935,7 +935,8 @@ impl TrackingEngine {
                     self.framing.reset();
                     self.frame_plan = self.framing.safe_wide();
                 }
-                CropAction::Track | CropAction::Hold | CropAction::None => {}
+                CropAction::Hold | CropAction::None => self.framing.hold(),
+                CropAction::Track => {}
             }
         }
         self.snapshot_with_result(policy.command_result)
