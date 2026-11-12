@@ -8,6 +8,10 @@ namespace faithfulframe {
 enum class safe_adapter_availability_issue : uint32_t {
 	none = 0,
 	another_adapter_owns_tracking = 1,
+	no_source_selected = 2,
+	invalid_source_binding = 3,
+	waiting_for_video_signal = 4,
+	session_start_failed = 5,
 };
 
 /// Process-wide lease for the one OBS adapter allowed to run safe tracking.

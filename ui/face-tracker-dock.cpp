@@ -413,17 +413,28 @@ static bool send_safe_command(obs_source_t *source, uint32_t kind, const QVarian
 
 static QString safe_state_text(const faithfulframe_safe_preview &preview)
 {
-	if (preview.configuration_issue ==
-	    faithfulframe::safe_adapter_availability_issue::another_adapter_owns_tracking)
+	switch (preview.configuration_issue) {
+	case faithfulframe::safe_adapter_availability_issue::another_adapter_owns_tracking:
 		return "Safe tracking is enabled on another camera adapter. Disable it there, then toggle it off and on here";
+	case faithfulframe::safe_adapter_availability_issue::no_source_selected:
+		return "Choose the camera in the filter's Source Settings, then wait for its video signal";
+	case faithfulframe::safe_adapter_availability_issue::invalid_source_binding:
+		return "The selected source cannot be tracked. Choose an active video input without another face-tracker filter";
+	case faithfulframe::safe_adapter_availability_issue::waiting_for_video_signal:
+		return "Waiting for video from the selected camera; check that the camera is connected and producing a signal";
+	case faithfulframe::safe_adapter_availability_issue::session_start_failed:
+		return "Tracking could not start. Check the camera format, then toggle safe tracking off and on to retry";
+	case faithfulframe::safe_adapter_availability_issue::none:
+		break;
+	}
 	if (preview.session_closed)
 		return "Tracking session stopped; reselect the camera in Source Settings to resume";
 	if (!preview.available)
 		return "FaithfulFrame safe tracking: waiting for a valid source session";
-	if (preview.command_result == 2) {
-		if (preview.rejection_reason == 1)
+	if (preview.command_result == FF_COMMAND_REJECTED) {
+		if (preview.rejection_reason == FF_REJECTION_STALE_COMMAND)
 			return "Selection or command expired; choose again from the current preview";
-		if (preview.rejection_reason == 7)
+		if (preview.rejection_reason == FF_REJECTION_SESSION_CLOSED)
 			return "The tracking session has closed; reselect the camera in source settings";
 		if (preview.rejection_reason == FF_REJECTION_INVALID_COMMAND && preview.state == FF_STATE_LOCKED)
 			return "Use Manual Override before selecting a different speaker";

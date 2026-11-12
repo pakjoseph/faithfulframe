@@ -1285,6 +1285,9 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 
 	if (target_name.empty()) {
 		faithfulframe::single_adapter_lease::release(runtime);
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::no_source_selected),
+			std::memory_order_release);
 		blog(LOG_WARNING, "FaithfulFrame safe tracking has no bound video source");
 		clear_reconfiguration();
 		return;
@@ -1300,6 +1303,9 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	    !(obs_source_get_output_flags(target) & OBS_SOURCE_VIDEO) || !target_id ||
 	    !strcmp(target_id, "face_tracker_source") || has_legacy_tracker) {
 		faithfulframe::single_adapter_lease::release(runtime);
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::invalid_source_binding),
+			std::memory_order_release);
 		blog(LOG_WARNING, "FaithfulFrame rejected an invalid, filtered, or unavailable source binding");
 		if (target)
 			obs_source_release(target);
@@ -1324,6 +1330,9 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		runtime->bindings.reserve(runtime->bindings.size() + 1);
 	} catch (...) {
 		blog(LOG_ERROR, "FaithfulFrame could not reserve a source binding");
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::session_start_failed),
+			std::memory_order_release);
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
 		clear_reconfiguration();
@@ -1332,6 +1341,9 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 
 	std::unique_ptr<faithfulframe_source_binding> binding(new (std::nothrow) faithfulframe_source_binding());
 	if (!binding) {
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::session_start_failed),
+			std::memory_order_release);
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
 		clear_reconfiguration();
@@ -1344,6 +1356,9 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	binding->adapter_active.store(adapter_active, std::memory_order_release);
 	if (!binding->set_active_child(adapter_active)) {
 		blog(LOG_WARNING, "FaithfulFrame could not activate its bound source");
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::session_start_failed),
+			std::memory_order_release);
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
 		clear_reconfiguration();
@@ -1362,8 +1377,17 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		signal_handler_connect_ref(handler, "update", faithfulframe_bound_source_updated, binding.get());
 		binding->target_update_handler = handler;
 	}
-	if (signal_connected)
-		initialize_source_session(s, binding.get(), source_width, source_height);
+	if (signal_connected) {
+		if (!initialize_source_session(s, binding.get(), source_width, source_height))
+			runtime->configuration_issue.store(
+				static_cast<uint32_t>(
+					faithfulframe::safe_adapter_availability_issue::session_start_failed),
+				std::memory_order_release);
+	} else {
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::waiting_for_video_signal),
+			std::memory_order_release);
+	}
 	if (!std::atomic_load_explicit(&binding->executor, std::memory_order_acquire) && signal_connected)
 		blog(LOG_WARNING, "FaithfulFrame failed to create a safe tracking session");
 	faithfulframe_source_binding *published = binding.get();
@@ -1372,6 +1396,9 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		runtime->bindings.push_back(std::move(binding));
 		runtime->active.store(published);
 	} catch (...) {
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::session_start_failed),
+			std::memory_order_release);
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
 		clear_reconfiguration();
@@ -1562,6 +1589,9 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 	auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
 	if (executor && !binding->closed.load(std::memory_order_acquire) && !executor->worker_available()) {
 		blog(LOG_ERROR, "FaithfulFrame tracking worker stopped; closing the session");
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::session_start_failed),
+			std::memory_order_release);
 		fail_source_binding_closed(binding);
 		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
 				  binding->output_height.load(std::memory_order_acquire) > 0;
@@ -1571,10 +1601,17 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 
 	if (connected && !executor) {
 		if (!initialize_source_session(s, binding, width, height)) {
+			runtime->configuration_issue.store(
+				static_cast<uint32_t>(
+					faithfulframe::safe_adapter_availability_issue::session_start_failed),
+				std::memory_order_release);
 			obs_source_release(target);
 			s->target_valid = false;
 			return;
 		}
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::none),
+			std::memory_order_release);
 		binding->source_width.store(width, std::memory_order_release);
 		binding->source_height.store(height, std::memory_order_release);
 		binding->signal_connected.store(true, std::memory_order_release);
