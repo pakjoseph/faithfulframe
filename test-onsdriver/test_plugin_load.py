@@ -13,11 +13,7 @@ from onsdriver import obstest
 PLUGIN_NAME = 'face-tracker'
 
 
-def clear_inherited_setup_safe_mode_sentinel(config_path, logsdir):
-    safe_mode_sentinel = os.path.join(config_path, 'safe_mode')
-    if not os.path.exists(safe_mode_sentinel):
-        return False
-
+def firsttime_setup_was_force_stopped(logsdir):
     firsttime_logs = glob.glob(os.path.join(logsdir, 'firsttime-*.txt'))
     for logfile in firsttime_logs:
         try:
@@ -26,15 +22,45 @@ def clear_inherited_setup_safe_mode_sentinel(config_path, logsdir):
         except OSError:
             continue
         if was_force_stopped:
-            os.remove(safe_mode_sentinel)
             return True
+    return False
+
+
+def clear_inherited_setup_shutdown_sentinels(config_path, logsdir):
+    """Clear OBS shutdown markers only when onsdriver records its forced exit."""
+    safe_mode_sentinel = os.path.join(config_path, 'safe_mode')
+    crash_sentinel_dir = os.path.join(config_path, '.sentinel')
+    crash_sentinels = []
+    if os.path.isdir(crash_sentinel_dir):
+        crash_sentinels = [
+            os.path.join(crash_sentinel_dir, name)
+            for name in os.listdir(crash_sentinel_dir)
+            if name.startswith('run_')
+            and os.path.isfile(os.path.join(crash_sentinel_dir, name))
+        ]
+
+    has_inherited_sentinel = os.path.exists(safe_mode_sentinel) or bool(crash_sentinels)
+    setup_was_force_stopped = firsttime_setup_was_force_stopped(logsdir)
+    if not has_inherited_sentinel:
+        return setup_was_force_stopped
+    if setup_was_force_stopped:
+        for sentinel in [safe_mode_sentinel, *crash_sentinels]:
+            if not os.path.exists(sentinel):
+                continue
+            try:
+                os.remove(sentinel)
+            except OSError as error:
+                raise RuntimeError(
+                    f'Unable to remove inherited OBS shutdown marker: {sentinel}'
+                ) from error
+        return True
     raise RuntimeError(
         'OBS setup profile has an unclean-shutdown sentinel '
         'without an onsdriver force-exit record'
     )
 
 
-class SetupSafeModeSentinelTest(unittest.TestCase):
+class SetupShutdownSentinelTest(unittest.TestCase):
     def test_absent_sentinel_is_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = os.path.join(tmp, 'config')
@@ -42,7 +68,7 @@ class SetupSafeModeSentinelTest(unittest.TestCase):
             os.makedirs(config_path)
             os.makedirs(logsdir)
 
-            self.assertFalse(clear_inherited_setup_safe_mode_sentinel(config_path, logsdir))
+            self.assertFalse(clear_inherited_setup_shutdown_sentinels(config_path, logsdir))
 
     def test_forced_setup_shutdown_clears_only_the_inherited_sentinel(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -56,7 +82,7 @@ class SetupSafeModeSentinelTest(unittest.TestCase):
             with open(os.path.join(logsdir, 'firsttime-setup.txt'), 'w', encoding='utf-8') as fw:
                 fw.write('[shutdown-plugin] force exit.\n')
 
-            self.assertTrue(clear_inherited_setup_safe_mode_sentinel(config_path, logsdir))
+            self.assertTrue(clear_inherited_setup_shutdown_sentinels(config_path, logsdir))
             self.assertFalse(os.path.exists(sentinel))
 
     def test_unexplained_sentinel_fails_closed(self):
@@ -70,7 +96,43 @@ class SetupSafeModeSentinelTest(unittest.TestCase):
                 pass
 
             with self.assertRaisesRegex(RuntimeError, 'without an onsdriver force-exit record'):
-                clear_inherited_setup_safe_mode_sentinel(config_path, logsdir)
+                clear_inherited_setup_shutdown_sentinels(config_path, logsdir)
+            self.assertTrue(os.path.exists(sentinel))
+
+    def test_force_stopped_setup_clears_obs_32_crash_sentinels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = os.path.join(tmp, 'config')
+            logsdir = os.path.join(tmp, 'logs')
+            sentinel_dir = os.path.join(config_path, '.sentinel')
+            os.makedirs(sentinel_dir)
+            os.makedirs(logsdir)
+            sentinels = [os.path.join(sentinel_dir, f'run_{index}') for index in range(2)]
+            for sentinel in sentinels:
+                with open(sentinel, 'w', encoding='utf-8'):
+                    pass
+            unrelated_marker = os.path.join(sentinel_dir, 'keep.txt')
+            with open(unrelated_marker, 'w', encoding='utf-8'):
+                pass
+            with open(os.path.join(logsdir, 'firsttime-setup.txt'), 'w', encoding='utf-8') as fw:
+                fw.write('[shutdown-plugin] force exit.\n')
+
+            self.assertTrue(clear_inherited_setup_shutdown_sentinels(config_path, logsdir))
+            self.assertFalse(any(os.path.exists(sentinel) for sentinel in sentinels))
+            self.assertTrue(os.path.exists(unrelated_marker))
+
+    def test_unexplained_obs_32_crash_sentinel_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = os.path.join(tmp, 'config')
+            logsdir = os.path.join(tmp, 'logs')
+            sentinel_dir = os.path.join(config_path, '.sentinel')
+            os.makedirs(sentinel_dir)
+            os.makedirs(logsdir)
+            sentinel = os.path.join(sentinel_dir, 'run_inherited')
+            with open(sentinel, 'w', encoding='utf-8'):
+                pass
+
+            with self.assertRaisesRegex(RuntimeError, 'without an onsdriver force-exit record'):
+                clear_inherited_setup_shutdown_sentinels(config_path, logsdir)
             self.assertTrue(os.path.exists(sentinel))
 
 
@@ -84,19 +146,17 @@ class PluginLoadTest(obstest.OBSTest):
         self._startup_succeeded = False
         self.addCleanup(self._preserve_final_log)
         # onsdriver's first-time setup can force-stop OBS after its shutdown
-        # timeout and then save that profile. OBS persists a safe_mode sentinel
-        # for this condition and blocks the next launch on a recovery dialog,
-        # before its plugins or websocket are available. OBSTest has copied the
-        # saved profile into an isolated per-test config, so remove only this
-        # inherited sentinel before exercising the plugin's fresh startup.
+        # timeout, leaving a version-specific sentinel that blocks the next
+        # launch. Clear inherited markers only when its log confirms the force
+        # exit.
         try:
-            inherited_sentinel_removed = clear_inherited_setup_safe_mode_sentinel(
+            setup_was_force_stopped = clear_inherited_setup_shutdown_sentinels(
                 self.obs.config.path, os.environ.get('ONSDRIVER_LOGS', 'logs')
             )
         except RuntimeError as error:
             self.fail(str(error))
-        if inherited_sentinel_removed:
-            print('Removing inherited OBS safe_mode sentinel from onsdriver setup')
+        if setup_was_force_stopped:
+            print('Cleared inherited OBS shutdown marker after onsdriver force-stopped setup')
         self.obs.run()
         self._startup_succeeded = True
 
