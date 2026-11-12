@@ -23,13 +23,13 @@
 #include <QFileDialog>
 #include <QLineEdit>
 #include <QMessageBox>
-#include <QSaveFile>
 #include <QSysInfo>
 #include "sanctuary-style.hpp"
 #include "plugin-macros.generated.h"
 #include "face-tracker-dock.hpp"
 #include "face-tracker-widget.hpp"
 #include "face-tracker-dock-internal.hpp"
+#include "faithfulframe-performance-spool.hpp"
 #ifdef ENABLE_RUST_CORE_BRIDGE
 #include "faithfulframe-candidate-selection.hpp"
 #include "faithfulframe-adapter-lease.hpp"
@@ -46,12 +46,12 @@ static bool dock_frontend_closing_docks = false;
 void FTDock::closeEvent(QCloseEvent *event)
 {
 	if (!dock_frontend_shutdown_started && !dock_frontend_closing_docks &&
-	    (performanceRecording || !performanceSamples.empty())) {
+	    (performanceRecording || performanceSampleCount != 0)) {
 		QMessageBox prompt(this);
 		prompt.setWindowTitle("FaithfulFrame performance data");
 		prompt.setText("This dock has performance data that has not been exported.");
 		prompt.setInformativeText(
-			"The CSV contains aggregate system and tracking metrics plus your hardware/workload note as entered. It does not contain preview images or face data; do not include camera/source or speaker names in the note.");
+			"The CSV contains aggregate system and tracking metrics plus your hardware/workload note as entered. Do not include stream keys, server URLs, camera/source or speaker names, or personal details. It does not contain preview images or face data.");
 		QPushButton *save = prompt.addButton("Export CSV", QMessageBox::AcceptRole);
 		QPushButton *discard = prompt.addButton("Discard data", QMessageBox::DestructiveRole);
 		prompt.addButton(QMessageBox::Cancel);
@@ -65,7 +65,10 @@ void FTDock::closeEvent(QCloseEvent *event)
 			}
 		} else if (prompt.clickedButton() == discard) {
 			performanceRecording = false;
-			performanceSamples.clear();
+			performanceSpool.reset();
+			performanceSampleCount = 0;
+			performanceRecordingSourceId = 0;
+			performanceRecordingSessionId = 0;
 		} else {
 			event->ignore();
 			return;
@@ -281,27 +284,6 @@ static obs_performance_sample read_obs_performance_sample()
 		}
 	}
 	return result;
-}
-
-static bool write_performance_csv(const QString &path, const std::vector<faithfulframe::performance::sample> &samples)
-{
-	QSaveFile file(path);
-	if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
-		return false;
-	auto write = [&file](const std::string &text) {
-		return file.write(text.data(), static_cast<qint64>(text.size())) == static_cast<qint64>(text.size());
-	};
-	if (!write(faithfulframe::performance::csv_header())) {
-		file.cancelWriting();
-		return false;
-	}
-	for (const auto &sample : samples) {
-		if (!write(faithfulframe::performance::csv_row(sample))) {
-			file.cancelWriting();
-			return false;
-		}
-	}
-	return file.commit();
 }
 
 static QString safe_framing_preset(obs_source_t *source)
@@ -1118,8 +1100,8 @@ void FTDock::updateState()
 		performanceToggle->hide();
 		performanceLabel->hide();
 		performanceRunNotes->hide();
-		performanceRecordButton->setVisible(!performanceSamples.empty());
-		if (!performanceSamples.empty()) {
+		performanceRecordButton->setVisible(performanceSampleCount != 0);
+		if (performanceSampleCount != 0) {
 			performanceRecordButton->setText("Export CSV");
 			performanceRecordButton->setAccessibleName("Export the saved aggregate performance data");
 		}
@@ -1144,10 +1126,10 @@ void FTDock::updateState()
 	performanceToggle->setVisible(safe_mode);
 	performanceLabel->setVisible(safe_mode && performanceToggle->isChecked());
 	performanceRunNotes->setVisible(
-		safe_mode && (performanceToggle->isChecked() || performanceRecording || !performanceSamples.empty()));
+		safe_mode && (performanceToggle->isChecked() || performanceRecording || performanceSampleCount != 0));
 	performanceRunNotes->setEnabled(!performanceRecording);
 	performanceRecordButton->setVisible(
-		safe_mode && (performanceToggle->isChecked() || performanceRecording || !performanceSamples.empty()));
+		safe_mode && (performanceToggle->isChecked() || performanceRecording || performanceSampleCount != 0));
 	enableButton->setVisible(!safe_mode);
 	notrackButton->setVisible(true);
 	if (safe_mode) {
@@ -1190,13 +1172,14 @@ void FTDock::updateState()
 				stopPerformanceMetrics();
 		}
 		performanceRecordButton->setText(
-			performanceRecording ? "Stop & Export CSV"
-					     : (performanceSamples.empty() ? "Record performance data" : "Export CSV"));
+			performanceRecording
+				? "Stop & Export CSV"
+				: (performanceSampleCount == 0 ? "Record performance data" : "Export CSV"));
 		performanceRecordButton->setAccessibleName(
 			performanceRecording
 				? "Stop recording and export aggregate performance data"
-				: (performanceSamples.empty() ? "Record aggregate performance data for a rehearsal"
-							      : "Export the saved aggregate performance data"));
+				: (performanceSampleCount == 0 ? "Record aggregate performance data for a rehearsal"
+							       : "Export the saved aggregate performance data"));
 		const bool diagnostics_active = performanceToggle->isChecked() || performanceRecording;
 		if (diagnostics_active) {
 			const bool sample_due = processMetricsTimer.isValid() && processMetricsTimer.elapsed() >= 1000;
@@ -1209,13 +1192,13 @@ void FTDock::updateState()
 				processMemoryAvailable = os_get_proc_memory_usage(&processMemoryUsage);
 				processMetricsTimer.restart();
 				if (performanceRecording &&
-				    performanceSamples.size() < faithfulframe::performance::max_samples) {
+				    performanceSampleCount < faithfulframe::performance::max_samples) {
 					faithfulframe::performance::sample sample;
 					sample.utc_timestamp = QDateTime::currentDateTimeUtc()
 								       .toString(Qt::ISODateWithMs)
 								       .toStdString();
-					// Keep run metadata on the first row only to bound long-run memory use.
-					if (performanceSamples.empty()) {
+					// Keep run metadata on the first row only to bound the spool size.
+					if (performanceSampleCount == 0) {
 						sample.run_metadata_present = true;
 						const QString product_version = QSysInfo::productVersion();
 						const QString operating_system =
@@ -1291,14 +1274,32 @@ void FTDock::updateState()
 					sample.detector_work_count = safe_preview.detector_work_count;
 					sample.last_detector_microseconds = safe_preview.detector_last_work_us;
 					sample.max_detector_microseconds = safe_preview.detector_max_work_us;
-					performanceSamples.push_back(std::move(sample));
-					if (performanceSamples.size() == faithfulframe::performance::max_samples) {
+					if (!performanceSpool || !performanceSpool->append(sample)) {
 						performanceRecording = false;
 						operatorNotice =
-							"Performance recording reached its 12-hour limit. Export the saved samples to continue.";
+							"Performance recording stopped because its temporary CSV could not be written. ";
+						if (performanceSampleCount == 0) {
+							performanceSpool.reset();
+							performanceRecordingSourceId = 0;
+							performanceRecordingSessionId = 0;
+						}
+						operatorNotice +=
+							performanceSampleCount
+								? "Export the earlier samples or discard them."
+								: "No samples were retained.";
 						operatorNoticeTimer.start();
 						if (!performanceToggle->isChecked())
 							stopPerformanceMetrics();
+					} else {
+						++performanceSampleCount;
+						if (performanceSampleCount == faithfulframe::performance::max_samples) {
+							performanceRecording = false;
+							operatorNotice =
+								"Performance recording reached its 12-hour limit. Export the saved samples to continue.";
+							operatorNoticeTimer.start();
+							if (!performanceToggle->isChecked())
+								stopPerformanceMetrics();
+						}
 					}
 				}
 			}
@@ -1340,10 +1341,10 @@ void FTDock::updateState()
 					.arg(obs_performance_metrics());
 			if (performanceRecording)
 				diagnostics_text += QString("\nRecording aggregate metrics · %1 samples")
-							    .arg(static_cast<qulonglong>(performanceSamples.size()));
-			else if (!performanceSamples.empty())
+							    .arg(static_cast<qulonglong>(performanceSampleCount));
+			else if (performanceSampleCount != 0)
 				diagnostics_text += QString("\n%1 aggregate samples ready to export")
-							    .arg(static_cast<qulonglong>(performanceSamples.size()));
+							    .arg(static_cast<qulonglong>(performanceSampleCount));
 			performanceLabel->setText(diagnostics_text);
 		}
 		set_pause_button(pauseButton, safe_preview.state == FF_STATE_FROZEN);
@@ -1427,8 +1428,8 @@ void FTDock::updateState()
 		}
 		if (performanceToggle->isChecked())
 			performanceToggle->setChecked(false);
-		performanceRecordButton->setVisible(!performanceSamples.empty());
-		if (!performanceSamples.empty()) {
+		performanceRecordButton->setVisible(performanceSampleCount != 0);
+		if (performanceSampleCount != 0) {
 			performanceRecordButton->setText("Export CSV");
 			performanceRecordButton->setAccessibleName("Export the saved aggregate performance data");
 		}
@@ -1523,8 +1524,10 @@ void FTDock::stopPerformanceMetrics()
 
 bool FTDock::exportPerformanceRecording()
 {
-	if (performanceSamples.empty())
+	if (performanceSampleCount == 0)
 		return true;
+	if (!performanceSpool)
+		return false;
 	const QString suggested_name = QString("faithfulframe-performance-%1.csv")
 					       .arg(QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss"));
 	const QString path = QFileDialog::getSaveFileName(this, "Export FaithfulFrame performance data", suggested_name,
@@ -1532,7 +1535,7 @@ bool FTDock::exportPerformanceRecording()
 	if (path.isEmpty())
 		return false;
 #ifdef ENABLE_RUST_CORE_BRIDGE
-	if (!write_performance_csv(path, performanceSamples)) {
+	if (!performanceSpool->export_to(path)) {
 		showOperatorNotice("The CSV could not be saved. The samples are still available to export again.");
 		return false;
 	}
@@ -1540,14 +1543,15 @@ bool FTDock::exportPerformanceRecording()
 	UNUSED_PARAMETER(path);
 	return false;
 #endif
-	const size_t exported_samples = performanceSamples.size();
-	performanceSamples.clear();
+	const uint64_t exported_samples = performanceSampleCount;
+	performanceSpool.reset();
+	performanceSampleCount = 0;
 	performanceRecordingSourceId = 0;
 	performanceRecordingSessionId = 0;
 	if (!performanceToggle->isChecked())
 		stopPerformanceMetrics();
 	showOperatorNotice(
-		QString("Exported %1 aggregate samples with system/workload metadata. Your note was exported as entered; no preview images or face data were saved.")
+		QString("Exported %1 aggregate system, OBS video, and tracking samples with your run note. No preview images or face data were saved.")
 			.arg(static_cast<qulonglong>(exported_samples)));
 	return true;
 }
@@ -1559,15 +1563,16 @@ void FTDock::performanceRecordButtonClicked()
 		performanceRecordButton->setText("Export CSV");
 		if (!performanceToggle->isChecked())
 			stopPerformanceMetrics();
-		if (performanceSamples.empty()) {
+		if (performanceSampleCount == 0) {
 			showOperatorNotice(
 				"No one-second sample has been captured yet. Start another recording and leave it running for at least one second.");
+			performanceSpool.reset();
 			return;
 		}
 		exportPerformanceRecording();
 		return;
 	}
-	if (!performanceSamples.empty()) {
+	if (performanceSampleCount != 0) {
 		exportPerformanceRecording();
 		return;
 	}
@@ -1586,9 +1591,16 @@ void FTDock::performanceRecordButtonClicked()
 			"Enter the computer/GPU, non-secret OBS encoder settings, and test workload before recording. Do not include stream keys or server URLs.");
 		return;
 	}
+	performanceSpool = std::make_unique<faithfulframe::performance::csv_spool>();
+	if (!performanceSpool->open()) {
+		performanceSpool.reset();
+		showOperatorNotice(
+			"The temporary performance CSV could not be created. Check local disk availability.");
+		return;
+	}
 	performanceRecordingSourceId = preview.source_id;
 	performanceRecordingSessionId = preview.session_id;
-	performanceSamples.clear();
+	performanceSampleCount = 0;
 	performanceRecordingTimer.start();
 	performanceRecording = true;
 	if (!processCpuUsageInfo)

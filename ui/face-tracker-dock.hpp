@@ -5,13 +5,16 @@
 #include <QElapsedTimer>
 #include <QPointF>
 #include <QString>
+#include <memory>
 #include <string>
-#include <vector>
-#include "faithfulframe-performance-log.hpp"
 #include <obs.h>
 #include <obs.hpp>
 #include <obs-frontend-api.h>
 #include <util/platform.h>
+
+namespace faithfulframe::performance {
+class csv_spool;
+}
 
 class FTDock : public QFrame {
 	Q_OBJECT
@@ -48,7 +51,8 @@ public:
 	uint64_t performanceRecordingSourceId = 0;
 	uint64_t performanceRecordingSessionId = 0;
 	QElapsedTimer performanceRecordingTimer;
-	std::vector<faithfulframe::performance::sample> performanceSamples;
+	std::unique_ptr<faithfulframe::performance::csv_spool> performanceSpool;
+	uint64_t performanceSampleCount = 0;
 	QString operatorNotice;
 	QString performanceHardwareAndWorkloadNotes;
 	QElapsedTimer operatorNoticeTimer;
