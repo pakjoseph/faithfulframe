@@ -11,8 +11,7 @@ enum class safe_adapter_availability_issue : uint32_t {
 };
 
 /// Process-wide lease for the one OBS adapter allowed to run safe tracking.
-class single_adapter_lease
-{
+class single_adapter_lease {
 public:
 	static bool try_acquire(const void *owner)
 	{
