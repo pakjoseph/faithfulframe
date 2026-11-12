@@ -1281,12 +1281,14 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		previous = runtime->active.exchange(nullptr);
 		if (previous) {
 			previous->set_active_child(false);
+			previous->transition_pending.store(true, std::memory_order_release);
+			const bool was_closed = previous->closed.exchange(true, std::memory_order_acq_rel);
+			previous->render_executor.store(nullptr, std::memory_order_release);
 			auto executor = std::atomic_load_explicit(&previous->executor, std::memory_order_acquire);
-			if (executor && !previous->closed.load(std::memory_order_acquire)) {
-				previous->transition_pending.store(true, std::memory_order_release);
-				executor->request_shutdown(enabled ? FF_LIFECYCLE_SOURCE_REBOUND
-								   : FF_LIFECYCLE_ADAPTER_DESTROYED);
-				previous->closed.store(true, std::memory_order_release);
+			if (executor) {
+				if (!was_closed)
+					executor->request_shutdown(enabled ? FF_LIFECYCLE_SOURCE_REBOUND
+									   : FF_LIFECYCLE_ADAPTER_DESTROYED);
 				defer_session_join(executor);
 			}
 		}
