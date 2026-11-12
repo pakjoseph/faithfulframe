@@ -2,6 +2,7 @@
 Test plugin is loaded
 '''
 
+import glob
 import os
 import shutil
 import subprocess
@@ -20,6 +21,33 @@ class PluginLoadTest(obstest.OBSTest):
         super().setUp(run=False)
         self._startup_succeeded = False
         self.addCleanup(self._preserve_final_log)
+        # onsdriver's first-time setup can force-stop OBS after its shutdown
+        # timeout and then save that profile. OBS persists a safe_mode sentinel
+        # for this condition and blocks the next launch on a recovery dialog,
+        # before its plugins or websocket are available. OBSTest has copied the
+        # saved profile into an isolated per-test config, so remove only this
+        # inherited sentinel before exercising the plugin's fresh startup.
+        safe_mode_sentinel = os.path.join(self.obs.config.path, 'safe_mode')
+        if os.path.exists(safe_mode_sentinel):
+            logsdir = os.environ.get('ONSDRIVER_LOGS', 'logs')
+            firsttime_logs = glob.glob(os.path.join(logsdir, 'firsttime-*.txt'))
+            setup_was_force_stopped = False
+            for logfile in firsttime_logs:
+                try:
+                    with open(logfile, 'r', encoding='utf-8') as fr:
+                        if '[shutdown-plugin] force exit.' in fr.read():
+                            setup_was_force_stopped = True
+                            break
+                except OSError:
+                    continue
+            if not setup_was_force_stopped:
+                self.fail(
+                    'OBS setup profile has an unclean-shutdown sentinel without an onsdriver force-exit record'
+                )
+            print(
+                'Removing inherited OBS safe_mode sentinel left by onsdriver first-time forced shutdown'
+            )
+            os.remove(safe_mode_sentinel)
         self.obs.run()
         self._startup_succeeded = True
 
