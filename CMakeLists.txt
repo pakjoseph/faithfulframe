@@ -81,7 +81,7 @@ include(cmake/ObsPluginHelpers.cmake)
 if (ENABLE_RUST_CORE_TESTS)
 	find_program(CARGO_EXECUTABLE cargo REQUIRED)
 	add_custom_target(faithfulframe-rust-core-test
-		COMMAND ${CARGO_EXECUTABLE} test --manifest-path
+		COMMAND ${CARGO_EXECUTABLE} test --locked --manifest-path
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-core/Cargo.toml
 		WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-core
 		COMMENT "Running deterministic FaithfulFrame Rust core tests"
@@ -159,7 +159,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	endif()
 	set(FAITHFULFRAME_CARGO_BUILD
 		${CMAKE_COMMAND} -E env "RUSTC=${FAITHFULFRAME_RUSTC_EXECUTABLE}"
-		${CARGO_EXECUTABLE} build --release --manifest-path ${FAITHFULFRAME_FFI_MANIFEST}
+		${CARGO_EXECUTABLE} build --locked --release --manifest-path ${FAITHFULFRAME_FFI_MANIFEST}
 		--target-dir ${FAITHFULFRAME_RUST_TARGET_DIR} ${FAITHFULFRAME_RUST_TARGET_ARGS})
 	if (APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
 		find_program(OTOOL_EXECUTABLE otool)

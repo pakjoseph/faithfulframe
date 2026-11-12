@@ -496,10 +496,10 @@ jobs:
 
       - name: Run deterministic core, fixture, and FFI tests
         run: |
-          cargo test --manifest-path rust/faithfulframe-core/Cargo.toml
-          cargo test --manifest-path rust/faithfulframe-ffi/Cargo.toml
+          cargo test --locked --manifest-path rust/faithfulframe-core/Cargo.toml
+          cargo test --locked --manifest-path rust/faithfulframe-ffi/Cargo.toml
 
       - name: Run Clippy with warnings denied
         run: |
-          cargo clippy --manifest-path rust/faithfulframe-core/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --manifest-path rust/faithfulframe-ffi/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path rust/faithfulframe-core/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path rust/faithfulframe-ffi/Cargo.toml --all-targets -- -D warnings
