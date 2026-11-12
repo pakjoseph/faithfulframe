@@ -36,8 +36,11 @@ public:
 		const std::string row = csv_row(value);
 		const qint64 position = file_.pos();
 		if (!write_all(file_, row.data(), static_cast<qint64>(row.size()))) {
-			if (!file_.resize(position) || !file_.seek(position))
+			if (!file_.resize(position) || !file_.seek(position)) {
 				valid_ = false;
+			} else {
+				file_.unsetError();
+			}
 			return false;
 		}
 		++rows_;
