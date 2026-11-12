@@ -163,6 +163,9 @@ bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session
 /// The caller retains context ownership if the reaper cannot accept the callback.
 bool faithfulframe_retire_cleanup(void (*cleanup)(void *), void *context);
 
-/// Drain all deferred worker joins and cleanup callbacks before module unload.
+/// Final process-teardown barrier. Do not call from obs_module_unload(): libobs
+/// may invoke remaining source destroy callbacks after module unload returns.
+/// The reaper remains available until process teardown so those callbacks can
+/// transfer blocking worker joins off the OBS callback thread.
 extern "C" void faithfulframe_executor_reaper_start();
 extern "C" void faithfulframe_executor_reaper_shutdown();

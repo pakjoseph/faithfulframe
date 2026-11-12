@@ -716,15 +716,47 @@ int run_smoke()
 		    },
 		    &cleanup))
 		return 70;
-	// Module unload is the barrier: it must drain any executor workers still
-	// retained by the reaper and queued cleanup callbacks before plugin code can
-	// be unloaded.
-	faithfulframe_executor_reaper_shutdown();
+	// OBS may destroy plugin sources after obs_module_unload returns. The reaper
+	// must finish queued work without relying on module unload as a shutdown
+	// barrier, and it must continue accepting source teardown afterward.
+	const auto unload_drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while ((!cleanup.completed.load(std::memory_order_acquire) || !unload_weak.expired()) &&
+	       std::chrono::steady_clock::now() < unload_drain_deadline)
+		std::this_thread::yield();
 	if (!cleanup.completed.load(std::memory_order_acquire) || !cleanup.prior_executor_released ||
 	    cleanup.thread_id == destroy_thread)
 		return 71;
 	if (!unload_weak.expired())
 		return 63;
+	auto post_unload_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{111, 211}, generations);
+	ff_snapshot post_unload_snapshot{};
+	if (!await_snapshot(
+		    *post_unload_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    post_unload_snapshot))
+		return 82;
+	std::weak_ptr<faithfulframe_session_executor> post_unload_weak = post_unload_executor;
+	post_unload_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+	if (!faithfulframe_retire_session_executor(post_unload_executor) || post_unload_executor)
+		return 83;
+	const auto post_unload_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (!post_unload_weak.expired() && std::chrono::steady_clock::now() < post_unload_deadline)
+		std::this_thread::yield();
+	if (!post_unload_weak.expired())
+		return 84;
+	std::atomic<bool> post_unload_cleanup_called{false};
+	if (!faithfulframe_retire_cleanup(
+		    [](void *context) {
+			    static_cast<std::atomic<bool> *>(context)->store(true, std::memory_order_release);
+		    },
+		    &post_unload_cleanup_called))
+		return 85;
+	const auto post_unload_cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (!post_unload_cleanup_called.load(std::memory_order_acquire) &&
+	       std::chrono::steady_clock::now() < post_unload_cleanup_deadline)
+		std::this_thread::yield();
+	if (!post_unload_cleanup_called.load(std::memory_order_acquire))
+		return 86;
 	{
 		faithfulframe_session_executor preview_executor(config, ff_identity{110, 210}, generations);
 		ff_snapshot preview_snapshot{};
@@ -778,6 +810,10 @@ int run_smoke()
 		    preview_snapshot.selected_handle != preview_candidate.handle)
 			return 80;
 	}
+	// This explicit barrier represents final process teardown after all OBS
+	// source callbacks have completed. Only after it closes may later retirement
+	// attempts fall back to caller-owned cleanup.
+	faithfulframe_executor_reaper_shutdown();
 	std::atomic<bool> late_cleanup_called{false};
 	if (faithfulframe_retire_cleanup(
 		    [](void *context) {
