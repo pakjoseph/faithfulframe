@@ -646,3 +646,39 @@ fn deterministic_fixtures_replay_to_canonical_traces() {
         );
     }
 }
+
+#[test]
+fn fixtures_reject_unknown_root_and_configuration_fields() {
+    let path = fixture_paths()
+        .into_iter()
+        .next()
+        .expect("at least one replay fixture must exist");
+    let contents = fs::read_to_string(path).expect("fixture must be readable");
+    let original: serde_json::Value =
+        serde_json::from_str(&contents).expect("fixture must be valid JSON");
+
+    let cases = [
+        ("root", "unexpected_root_field"),
+        ("identity", "unexpected_identity_field"),
+        ("generations", "unexpected_generation_field"),
+        ("session", "unexpected_session_field"),
+        ("framing", "unexpected_framing_field"),
+    ];
+    for (object_name, field_name) in cases {
+        let mut value = original.clone();
+        let object = if object_name == "root" {
+            value.as_object_mut()
+        } else {
+            value
+                .get_mut(object_name)
+                .and_then(serde_json::Value::as_object_mut)
+        }
+        .expect("fixture object must exist");
+        object.insert(field_name.to_owned(), serde_json::Value::Null);
+
+        assert!(
+            serde_json::from_value::<Fixture>(value).is_err(),
+            "unknown field {field_name} in {object_name} must fail fixture parsing"
+        );
+    }
+}
