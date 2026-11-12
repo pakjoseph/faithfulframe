@@ -859,8 +859,12 @@ void FTDock::updateState()
 	performanceToggle->setVisible(safe_mode);
 	performanceLabel->setVisible(safe_mode && performanceToggle->isChecked());
 	enableButton->setVisible(!safe_mode);
-	notrackButton->setVisible(!safe_mode);
+	notrackButton->setVisible(true);
 	if (safe_mode) {
+		notrackButton->setText("Show full camera preview");
+		notrackButton->setAccessibleName("Show full camera preview for selecting another speaker");
+		notrackButton->setToolTip(
+			"Changes this dock preview only. The tracking output and selected crop remain unchanged.");
 		const QString tracking_source = safe_preview.target_name.isEmpty() ? "Unavailable"
 										   : safe_preview.target_name;
 		const QString resolution = safe_preview.source_width && safe_preview.source_height &&
@@ -969,6 +973,9 @@ void FTDock::updateState()
 	if (!safe_mode) {
 		resetButton->setText(obs_module_text("Reset"));
 		resetButton->setEnabled(true);
+		notrackButton->setText(obs_module_text("Show all region"));
+		notrackButton->setAccessibleName("Show all regions in the preview");
+		notrackButton->setToolTip(QString());
 	}
 
 	calldata_t cd;

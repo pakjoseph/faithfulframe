@@ -75,6 +75,14 @@ int main()
 
 	const ff_rect outside_candidate{0.0f, 0.0f, 0.1f, 0.1f};
 	check(!ff_preview_candidate_rect(crop, viewport, outside_candidate, mapped));
+	const ff_rect alternate_stage_candidate{0.05f, 0.35f, 0.1f, 0.1f};
+	check(!ff_preview_candidate_rect(crop, viewport, alternate_stage_candidate, mapped));
+	ff_rect wide_crop = crop;
+	ff_rect wide_viewport = viewport;
+	uint32_t wide_width = 1920, wide_height = 1080;
+	check(ff_preview_set_full_source_transform(wide_crop, wide_viewport, wide_width, wide_height, 3840, 2160));
+	check(ff_preview_candidate_rect(wide_crop, wide_viewport, alternate_stage_candidate, mapped));
+	check(near(mapped.x, 0.05) && near(mapped.y, 0.35));
 	const ff_rect invalid_candidate{0.95f, 0.5f, 0.1f, 0.2f};
 	check(!ff_preview_candidate_rect(crop, viewport, invalid_candidate, mapped));
 	const ff_rect non_finite{NAN, 0.2f, 0.1f, 0.1f};
