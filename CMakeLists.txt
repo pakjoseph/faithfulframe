@@ -230,6 +230,9 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		tests/faithfulframe-offline-detector-worker.cpp
 		src/face-detector-dlib-hog.cpp
 		src/texture-object.cpp)
+	if (OS_WINDOWS)
+		target_link_libraries(faithfulframe-offline-replay PRIVATE Psapi)
+	endif()
 	add_executable(faithfulframe-dlib-tracker-lifetime-smoke
 		tests/faithfulframe-dlib-tracker-lifetime-smoke.cpp
 		src/face-tracker-base.cpp

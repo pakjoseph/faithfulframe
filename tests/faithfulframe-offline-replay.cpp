@@ -1,3 +1,17 @@
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <psapi.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <sys/resource.h>
+#else
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
+
 #include "faithfulframe-offline-frame-sequence.hpp"
 
 #include <obs-module.h>
@@ -10,6 +24,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -29,6 +44,77 @@ using steady_clock = std::chrono::steady_clock;
 using faithfulframe::offline::frame_spec;
 using faithfulframe::offline::rgb_frame;
 
+struct process_sample
+{
+	clock_t cpu_time = static_cast<clock_t>(-1);
+	uint64_t resident_bytes = 0;
+	uint64_t peak_resident_bytes = 0;
+	bool memory_valid = false;
+};
+
+process_sample sample_process()
+{
+	process_sample sample;
+	sample.cpu_time = std::clock();
+#ifdef _WIN32
+	PROCESS_MEMORY_COUNTERS_EX counters{};
+	if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&counters),
+				 sizeof(counters))) {
+		sample.resident_bytes = static_cast<uint64_t>(counters.WorkingSetSize);
+		sample.peak_resident_bytes = static_cast<uint64_t>(counters.PeakWorkingSetSize);
+		sample.memory_valid = true;
+	}
+#elif defined(__APPLE__)
+	mach_task_basic_info_data_t task_info_data{};
+	mach_msg_type_number_t task_info_count = MACH_TASK_BASIC_INFO_COUNT;
+	const bool resident_valid = task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+					      reinterpret_cast<task_info_t>(&task_info_data),
+					      &task_info_count) == KERN_SUCCESS;
+	struct rusage usage{};
+	const bool peak_valid = getrusage(RUSAGE_SELF, &usage) == 0;
+	if (resident_valid) {
+		sample.resident_bytes = static_cast<uint64_t>(task_info_data.resident_size);
+		sample.memory_valid = true;
+	}
+	if (peak_valid && usage.ru_maxrss >= 0) {
+		sample.peak_resident_bytes = static_cast<uint64_t>(usage.ru_maxrss);
+		sample.memory_valid = true;
+	}
+#else
+	struct rusage usage{};
+	const bool peak_valid = getrusage(RUSAGE_SELF, &usage) == 0;
+	if (peak_valid && usage.ru_maxrss >= 0 &&
+	    static_cast<uint64_t>(usage.ru_maxrss) <= std::numeric_limits<uint64_t>::max() / 1024) {
+		sample.peak_resident_bytes = static_cast<uint64_t>(usage.ru_maxrss) * 1024;
+		sample.memory_valid = true;
+	}
+	std::ifstream statm("/proc/self/statm");
+	uint64_t total_pages = 0;
+	uint64_t resident_pages = 0;
+	const long page_size = sysconf(_SC_PAGESIZE);
+	if (page_size > 0 && statm >> total_pages >> resident_pages &&
+	    resident_pages <= std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(page_size)) {
+		sample.resident_bytes = resident_pages * static_cast<uint64_t>(page_size);
+		sample.memory_valid = true;
+	}
+#endif
+	if (sample.memory_valid)
+		sample.peak_resident_bytes = std::max(sample.peak_resident_bytes, sample.resident_bytes);
+	return sample;
+}
+
+bool elapsed_cpu_microseconds(clock_t begin, clock_t end, uint64_t &microseconds)
+{
+	if (begin == static_cast<clock_t>(-1) || end == static_cast<clock_t>(-1) || end < begin || CLOCKS_PER_SEC <= 0)
+		return false;
+	const long double elapsed =
+		static_cast<long double>(end - begin) * 1000000.0L / static_cast<long double>(CLOCKS_PER_SEC);
+	if (elapsed < 0.0L || elapsed > static_cast<long double>(std::numeric_limits<uint64_t>::max()))
+		return false;
+	microseconds = static_cast<uint64_t>(elapsed);
+	return true;
+}
+
 void print_usage(std::ostream &output)
 {
 	output << "Usage: faithfulframe-offline-replay --model <frontal_face_detector.dat> --manifest <frames.tsv> "
@@ -38,6 +124,8 @@ void print_usage(std::ostream &output)
 	       << "This tool benchmarks the production dlib HOG detector only; it does not validate OBS capture, "
 		  "target selection, or tracking policy. Frames are processed serially as fast as detection completes; "
 		  "timestamps are recorded but do not pace replay. Completion latency includes up to 1 ms polling delay. "
+		  "CSV rows include process CPU and resident/peak memory samples; CPU time uses std::clock and memory "
+		  "sampling is platform-specific. These process-wide measurements are diagnostic, not production acceptance. "
 		  "The HOG score is currently an upstream placeholder, not calibrated confidence.\n";
 }
 
@@ -220,7 +308,8 @@ int main(int argc, char **argv)
 		csv = &csv_file;
 	}
 	*csv << "frame_index,monotonic_ms,frame_path,width,height,decode_us,completion_wait_us,"
-		"detector_work_us,detection_index,x0,y0,x1,y1,score\n";
+		"detector_work_us,process_cpu_us,process_cpu_percent,cpu_valid,resident_bytes,peak_resident_bytes,"
+		"memory_valid,detection_index,x0,y0,x1,y1,score\n";
 	if (!*csv) {
 		std::cerr << "Failed while writing CSV header\n";
 		return 2;
@@ -228,13 +317,14 @@ int main(int argc, char **argv)
 
 	face_detector_dlib_hog detector;
 	detector.set_model(model_path.string().c_str());
+	const auto replay_started = steady_clock::now();
+	const process_sample process_started = sample_process();
 	if (!detector.start()) {
 		std::cerr << "Could not start the dlib detector worker\n";
 		return 2;
 	}
 	std::vector<uint64_t> work_durations;
 	uint64_t total_detections = 0;
-	const auto replay_started = steady_clock::now();
 	for (size_t frame_index = 0; frame_index < frames.size(); ++frame_index) {
 		rgb_frame image;
 		uint64_t decode_us = 0;
@@ -267,20 +357,50 @@ int main(int argc, char **argv)
 		detector.get_faces(detections);
 		detector.unlock();
 		const uint64_t detector_work_us = detector.last_work_duration_us();
+		const process_sample current_process = sample_process();
+		uint64_t process_cpu_us = 0;
+		const bool cpu_valid =
+			elapsed_cpu_microseconds(process_started.cpu_time, current_process.cpu_time, process_cpu_us);
+		const uint64_t wall_elapsed_us = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::microseconds>(steady_clock::now() - replay_started)
+				.count());
+		const double process_cpu_percent =
+			cpu_valid && wall_elapsed_us > 0
+				? 100.0 * static_cast<double>(process_cpu_us) / static_cast<double>(wall_elapsed_us)
+				: 0.0;
 		work_durations.push_back(detector_work_us);
 		total_detections += detections.size();
 		if (detections.empty()) {
 			*csv << frame_index << ',' << frames[frame_index].monotonic_ms << ','
 			     << csv_path(frames[frame_index].path) << ',' << image.width << ',' << image.height << ','
-			     << decode_us << ',' << queue_latency_us << ',' << detector_work_us << ",,,,,,\n";
+			     << decode_us << ',' << queue_latency_us << ',' << detector_work_us << ','
+			     << (cpu_valid ? std::to_string(process_cpu_us) : std::string{}) << ','
+			     << (cpu_valid ? std::to_string(process_cpu_percent) : std::string{}) << ','
+			     << (cpu_valid ? 1 : 0) << ','
+			     << (current_process.memory_valid ? std::to_string(current_process.resident_bytes)
+							      : std::string{})
+			     << ','
+			     << (current_process.memory_valid ? std::to_string(current_process.peak_resident_bytes)
+							      : std::string{})
+			     << ',' << (current_process.memory_valid ? 1 : 0) << ",,,,,,\n";
 		} else {
 			for (size_t detection_index = 0; detection_index < detections.size(); ++detection_index) {
 				const rect_s &rect = detections[detection_index];
 				*csv << frame_index << ',' << frames[frame_index].monotonic_ms << ','
 				     << csv_path(frames[frame_index].path) << ',' << image.width << ',' << image.height
 				     << ',' << decode_us << ',' << queue_latency_us << ',' << detector_work_us << ','
-				     << detection_index << ',' << rect.x0 << ',' << rect.y0 << ',' << rect.x1 << ','
-				     << rect.y1 << ',' << std::setprecision(6) << rect.score << '\n';
+				     << (cpu_valid ? std::to_string(process_cpu_us) : std::string{}) << ','
+				     << (cpu_valid ? std::to_string(process_cpu_percent) : std::string{}) << ','
+				     << (cpu_valid ? 1 : 0) << ','
+				     << (current_process.memory_valid ? std::to_string(current_process.resident_bytes)
+								      : std::string{})
+				     << ','
+				     << (current_process.memory_valid
+						 ? std::to_string(current_process.peak_resident_bytes)
+						 : std::string{})
+				     << ',' << (current_process.memory_valid ? 1 : 0) << ',' << detection_index << ','
+				     << rect.x0 << ',' << rect.y0 << ',' << rect.x1 << ',' << rect.y1 << ','
+				     << std::setprecision(6) << rect.score << '\n';
 			}
 		}
 		if (!*csv) {
@@ -289,6 +409,7 @@ int main(int argc, char **argv)
 		}
 	}
 	detector.stop();
+	const process_sample process_finished = sample_process();
 	std::sort(work_durations.begin(), work_durations.end());
 	const uint64_t total_work_us = std::accumulate(work_durations.begin(), work_durations.end(), uint64_t{0});
 	const auto percentile = [&work_durations](double fraction) {
@@ -297,11 +418,21 @@ int main(int argc, char **argv)
 	};
 	const uint64_t replay_wall_us = static_cast<uint64_t>(
 		std::chrono::duration_cast<std::chrono::microseconds>(steady_clock::now() - replay_started).count());
+	uint64_t total_process_cpu_us = 0;
+	const bool total_cpu_valid =
+		elapsed_cpu_microseconds(process_started.cpu_time, process_finished.cpu_time, total_process_cpu_us);
 	std::cerr << "frames=" << frames.size() << " detections=" << total_detections
 		  << " replay_wall_us=" << replay_wall_us
 		  << " detector_mean_us=" << (total_work_us / work_durations.size())
 		  << " detector_p50_us=" << percentile(0.50) << " detector_p95_us=" << percentile(0.95)
-		  << " detector_max_us=" << work_durations.back() << '\n';
+		  << " detector_max_us=" << work_durations.back();
+	if (total_cpu_valid && replay_wall_us > 0)
+		std::cerr << " process_cpu_us=" << total_process_cpu_us << " process_cpu_percent="
+			  << 100.0 * static_cast<double>(total_process_cpu_us) / static_cast<double>(replay_wall_us);
+	if (process_finished.memory_valid)
+		std::cerr << " resident_bytes=" << process_finished.resident_bytes
+			  << " peak_resident_bytes=" << process_finished.peak_resident_bytes;
+	std::cerr << '\n';
 	csv->flush();
 	if (!*csv) {
 		std::cerr << "Failed while flushing detector output\n";
