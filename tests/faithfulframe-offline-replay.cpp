@@ -147,7 +147,9 @@ void print_usage(std::ostream &output)
 		  "target selection, or tracking policy. Frames are processed serially as fast as detection completes; "
 		  "timestamps are recorded but do not pace replay. Completion latency includes up to 1 ms polling delay. "
 		  "CSV rows include process CPU and resident/peak memory samples; CPU time uses std::clock and memory "
-		  "sampling is platform-specific. These process-wide measurements are diagnostic, not production acceptance. "
+		  "sampling is platform-specific. process_cpu_percent is process CPU time divided by wall time, where 100% "
+		  "equals one logical CPU and multithreaded use can exceed 100%. These process-wide measurements are "
+		  "diagnostic, not production acceptance. "
 		  "The HOG score is dlib's raw detector margin, not a probability or calibrated confidence.\n";
 }
 
