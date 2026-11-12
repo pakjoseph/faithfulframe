@@ -7,6 +7,8 @@
 #include "faithfulframe-worker-log.hpp"
 
 #include <dlib/image_processing/frontal_face_detector.h>
+#include <cmath>
+#include <limits>
 #include <utility>
 
 #define MAX_ERROR 2
@@ -107,15 +109,23 @@ void face_detector_dlib_hog::detect_main()
 	}
 
 	if (!p->has_error) {
-		std::vector<dlib::rectangle> dets = p->detector(img);
+		std::vector<std::pair<double, dlib::rectangle>> dets;
+		p->detector(img, dets);
 		p->rects.resize(dets.size());
 		for (size_t i = 0; i < dets.size(); i++) {
 			rect_s &r = p->rects[i];
-			r.x0 = (dets[i].left() + x0) * tex->scale;
-			r.y0 = (dets[i].top() + y0) * tex->scale;
-			r.x1 = (dets[i].right() + x0) * tex->scale;
-			r.y1 = (dets[i].bottom() + y0) * tex->scale;
-			r.score = 1.0; // TODO: implement me
+			const dlib::rectangle &rect = dets[i].second;
+			r.x0 = (rect.left() + x0) * tex->scale;
+			r.y0 = (rect.top() + y0) * tex->scale;
+			r.x1 = (rect.right() + x0) * tex->scale;
+			r.y1 = (rect.bottom() + y0) * tex->scale;
+			const double confidence = dets[i].first;
+			// Keep dlib's detection margin so tracker attenuation can distinguish
+			// weak detections. A malformed or unrepresentable score fails closed.
+			r.score = std::isfinite(confidence) && confidence > 0.0 &&
+						  confidence <= std::numeric_limits<float>::max()
+					  ? static_cast<float>(confidence)
+					  : 0.0f;
 		}
 	}
 }

@@ -148,7 +148,7 @@ void print_usage(std::ostream &output)
 		  "timestamps are recorded but do not pace replay. Completion latency includes up to 1 ms polling delay. "
 		  "CSV rows include process CPU and resident/peak memory samples; CPU time uses std::clock and memory "
 		  "sampling is platform-specific. These process-wide measurements are diagnostic, not production acceptance. "
-		  "The HOG score is currently an upstream placeholder, not calibrated confidence.\n";
+		  "The HOG score is dlib's raw detector margin, not a probability or calibrated confidence.\n";
 }
 
 bool parse_arguments(int argc, char **argv, std::filesystem::path &model_path, std::filesystem::path &manifest_path,
