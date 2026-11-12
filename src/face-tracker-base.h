@@ -14,6 +14,7 @@ class face_tracker_base {
 	std::atomic<bool> stop_requested{false};
 	std::atomic<bool> stopped{false};
 	std::atomic<bool> suspend_requested{false};
+	std::atomic<bool> failed{false};
 	void *leak_test;
 
 	static void *thread_routine(void *);
@@ -40,4 +41,5 @@ public:
 	void request_stop();
 	void request_suspend();
 	bool is_stopped();
+	bool has_failed() const { return failed.load(std::memory_order_acquire); }
 };

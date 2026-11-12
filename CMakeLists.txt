@@ -140,6 +140,8 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		tests/faithfulframe-session-executor-smoke.cpp src/faithfulframe-core-bridge.cpp)
 	add_executable(faithfulframe-detector-worker-smoke
 		tests/faithfulframe-detector-worker-smoke.cpp src/face-detector-base.cpp)
+	add_executable(faithfulframe-tracker-worker-smoke
+		tests/faithfulframe-tracker-worker-smoke.cpp src/face-tracker-base.cpp)
 	add_executable(faithfulframe-worker-log-gate-smoke tests/faithfulframe-worker-log-gate-smoke.cpp)
 	add_executable(faithfulframe-texture-object-smoke
 		tests/faithfulframe-texture-object-smoke.cpp src/texture-object.cpp)
@@ -154,6 +156,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	target_include_directories(faithfulframe-rust-bridge-smoke PRIVATE src rust/faithfulframe-ffi/include)
 	target_include_directories(faithfulframe-session-executor-smoke PRIVATE src rust/faithfulframe-ffi/include)
 	target_include_directories(faithfulframe-detector-worker-smoke PRIVATE ${CMAKE_CURRENT_BINARY_DIR} src)
+	target_include_directories(faithfulframe-tracker-worker-smoke PRIVATE ${CMAKE_CURRENT_BINARY_DIR} src)
 	target_include_directories(faithfulframe-texture-object-smoke PRIVATE ${CMAKE_CURRENT_BINARY_DIR} src)
 	target_compile_definitions(faithfulframe-detector-worker-smoke PRIVATE
 		FAITHFULFRAME_DETECTOR_WORKER_STANDALONE=1)
@@ -164,6 +167,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	target_link_libraries(faithfulframe-rust-bridge-smoke PRIVATE Threads::Threads)
 	target_link_libraries(faithfulframe-session-executor-smoke PRIVATE faithfulframe-rust-ffi Threads::Threads)
 	target_link_libraries(faithfulframe-detector-worker-smoke PRIVATE Threads::Threads)
+	target_link_libraries(faithfulframe-tracker-worker-smoke PRIVATE Threads::Threads)
 	target_link_libraries(faithfulframe-texture-object-smoke PRIVATE dlib Threads::Threads)
 	enable_testing()
 	add_test(NAME faithfulframe-preview-geometry-smoke COMMAND faithfulframe-preview-geometry-smoke)
@@ -171,11 +175,13 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_test(NAME faithfulframe-rust-bridge-smoke COMMAND faithfulframe-rust-bridge-smoke)
 	add_test(NAME faithfulframe-session-executor-smoke COMMAND faithfulframe-session-executor-smoke)
 	add_test(NAME faithfulframe-detector-worker-smoke COMMAND faithfulframe-detector-worker-smoke)
+	add_test(NAME faithfulframe-tracker-worker-smoke COMMAND faithfulframe-tracker-worker-smoke)
 	add_test(NAME faithfulframe-worker-log-gate-smoke COMMAND faithfulframe-worker-log-gate-smoke)
 	add_test(NAME faithfulframe-texture-object-smoke COMMAND faithfulframe-texture-object-smoke)
 	add_test(NAME faithfulframe-tracker-association-smoke COMMAND faithfulframe-tracker-association-smoke)
 	add_test(NAME faithfulframe-tracker-worker-budget-smoke COMMAND faithfulframe-tracker-worker-budget-smoke)
-	set_tests_properties(faithfulframe-detector-worker-smoke faithfulframe-worker-log-gate-smoke
+	set_tests_properties(faithfulframe-detector-worker-smoke faithfulframe-tracker-worker-smoke
+		faithfulframe-worker-log-gate-smoke
 		faithfulframe-texture-object-smoke PROPERTIES TIMEOUT 10)
 endif()
 
@@ -213,6 +219,8 @@ endif()
 
 if (ENABLE_RUST_CORE_BRIDGE)
 	target_include_directories(faithfulframe-texture-object-smoke PRIVATE
+		"$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
+	target_include_directories(faithfulframe-tracker-worker-smoke PRIVATE
 		"$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
 endif()
 

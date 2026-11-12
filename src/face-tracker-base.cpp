@@ -41,8 +41,12 @@ void *face_tracker_base::thread_routine(void *p)
 			try {
 				base->track_main();
 			} catch (std::exception &e) {
+				base->failed.store(true, std::memory_order_release);
+				base->suspend_requested.store(true, std::memory_order_release);
 				faithfulframe_worker_log(LOG_ERROR, "track_main: exception %s", e.what());
 			} catch (...) {
+				base->failed.store(true, std::memory_order_release);
+				base->suspend_requested.store(true, std::memory_order_release);
 				faithfulframe_worker_log(LOG_ERROR, "track_main: unknown exception");
 			}
 		}
@@ -55,6 +59,8 @@ void *face_tracker_base::thread_routine(void *p)
 
 bool face_tracker_base::start()
 {
+	if (failed.load(std::memory_order_acquire))
+		return false;
 	stop_requested.store(false, std::memory_order_relaxed);
 	stopped.store(false, std::memory_order_relaxed);
 	if (!running) {

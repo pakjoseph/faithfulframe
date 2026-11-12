@@ -69,7 +69,7 @@ inline void face_tracker_manager::retire_tracker(int ix)
 face_tracker_base *face_tracker_manager::take_idle_tracker()
 {
 	for (auto it = trackers_idlepool.begin(); it != trackers_idlepool.end(); ++it) {
-		if (!it->tracker || it->tracker->trylock() != 0)
+		if (!it->tracker || it->tracker->has_failed() || it->tracker->trylock() != 0)
 			continue;
 		face_tracker_base *tracker = it->tracker;
 		tracker->unlock();
@@ -390,8 +390,14 @@ inline int face_tracker_manager::stage_surface_to_tracker(struct tracker_inst_s 
 inline void face_tracker_manager::stage_to_trackers(std::shared_ptr<texture_object> &frame, bool &capture_attempted)
 {
 	bool have_new_tracker = false;
-	for (size_t i = 0; i < trackers.size(); i++) {
+	for (size_t i = 0; i < trackers.size();) {
 		struct tracker_inst_s &t = trackers[i];
+		if (t.tracker->has_failed()) {
+			// Retire the candidate immediately and keep its failed worker in the
+			// bounded pool for controlled teardown. Never join it in this callback.
+			retire_tracker(static_cast<int>(i));
+			continue;
+		}
 		if (t.state == tracker_inst_s::tracker_state_constructing) {
 			if (!t.tracker->trylock()) {
 				if (!stage_surface_to_tracker(t, frame, capture_attempted)) {
@@ -433,6 +439,7 @@ inline void face_tracker_manager::stage_to_trackers(std::shared_ptr<texture_obje
 				t.tracker->unlock();
 			}
 		}
+		++i;
 	}
 
 	if (have_new_tracker)
