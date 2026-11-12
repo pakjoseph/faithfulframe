@@ -23,6 +23,7 @@
 #include "source_list.h"
 #ifdef ENABLE_RUST_CORE_BRIDGE
 #include "faithfulframe-core-bridge.hpp"
+#include "faithfulframe-adapter-lease.hpp"
 #include "faithfulframe-config-guard.hpp"
 #include "faithfulframe-preview-geometry.hpp"
 #endif
@@ -189,6 +190,8 @@ struct faithfulframe_source_runtime
 	double requested_loss_grace_seconds = 5.0;
 	std::atomic<uint64_t> configuration_version{0};
 	std::atomic<uint64_t> tracker_configuration_version{0};
+	std::atomic<uint32_t> configuration_issue{
+		static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::none)};
 	std::atomic<uint32_t> last_output_width{0};
 	std::atomic<uint32_t> last_output_height{0};
 	std::mutex pending_settings_mutex;
@@ -220,6 +223,7 @@ struct faithfulframe_source_runtime
 		}
 		if (pending_settings)
 			obs_data_release(pending_settings);
+		faithfulframe::single_adapter_lease::release(this);
 	}
 };
 
@@ -1232,15 +1236,23 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	s->ftm->reset_requested = true;
 
 	runtime->processed_configuration_version = revision;
-	if (!enabled) {
+	runtime->configuration_issue.store(static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::none),
+					   std::memory_order_release);
+	const auto clear_reconfiguration = [runtime, revision] {
 		faithfulframe::clear_reconfiguration_if_current(runtime->configuration_mutex,
 								runtime->configuration_version,
 								runtime->reconfiguration_pending, revision);
+	};
+	if (!enabled) {
+		faithfulframe::single_adapter_lease::release(runtime);
+		clear_reconfiguration();
 		return;
 	}
 
 	if (target_name.empty()) {
+		faithfulframe::single_adapter_lease::release(runtime);
 		blog(LOG_WARNING, "FaithfulFrame safe tracking has no bound video source");
+		clear_reconfiguration();
 		return;
 	}
 
@@ -1253,10 +1265,23 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	    obs_source_get_type(target) != OBS_SOURCE_TYPE_INPUT ||
 	    !(obs_source_get_output_flags(target) & OBS_SOURCE_VIDEO) || !target_id ||
 	    !strcmp(target_id, "face_tracker_source") || has_legacy_tracker) {
+		faithfulframe::single_adapter_lease::release(runtime);
 		blog(LOG_WARNING, "FaithfulFrame rejected invalid, filtered, or unavailable source binding '%s'",
 		     target_name.c_str());
 		if (target)
 			obs_source_release(target);
+		clear_reconfiguration();
+		return;
+	}
+	if (!faithfulframe::single_adapter_lease::try_acquire(runtime)) {
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(
+				faithfulframe::safe_adapter_availability_issue::another_adapter_owns_tracking),
+			std::memory_order_release);
+		blog(LOG_WARNING,
+		     "FaithfulFrame allows safe tracking on one source adapter at a time; disable it on the other adapter first");
+		obs_source_release(target);
+		clear_reconfiguration();
 		return;
 	}
 	// Grow the owning container before starting an executor. If allocation fails,
@@ -1265,13 +1290,17 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		runtime->bindings.reserve(runtime->bindings.size() + 1);
 	} catch (...) {
 		blog(LOG_ERROR, "FaithfulFrame could not reserve a source binding for '%s'", target_name.c_str());
+		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
+		clear_reconfiguration();
 		return;
 	}
 
 	std::unique_ptr<faithfulframe_source_binding> binding(new (std::nothrow) faithfulframe_source_binding());
 	if (!binding) {
+		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
+		clear_reconfiguration();
 		return;
 	}
 	binding->target_name = target_name;
@@ -1281,7 +1310,9 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	binding->adapter_active.store(adapter_active, std::memory_order_release);
 	if (!binding->set_active_child(adapter_active)) {
 		blog(LOG_WARNING, "FaithfulFrame could not activate bound source '%s'", target_name.c_str());
+		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
+		clear_reconfiguration();
 		return;
 	}
 	const uint32_t source_width = obs_source_get_width(target);
@@ -1306,7 +1337,9 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	try {
 		runtime->bindings.push_back(std::move(binding));
 	} catch (...) {
+		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
+		clear_reconfiguration();
 		return;
 	}
 	runtime->active.store(published, std::memory_order_release);
@@ -1319,8 +1352,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	runtime->last_output_height.store(published->output_height.load(std::memory_order_acquire),
 					  std::memory_order_release);
 	runtime->processed_tracker_configuration_version = tracker_revision;
-	faithfulframe::clear_reconfiguration_if_current(runtime->configuration_mutex, runtime->configuration_version,
-							runtime->reconfiguration_pending, revision);
+	clear_reconfiguration();
 	s->ftm->crop_cur = rectf_s{0.0f, 0.0f, (float)published->source_width.load(std::memory_order_acquire),
 				   (float)published->source_height.load(std::memory_order_acquire)};
 	if (target)
@@ -1467,6 +1499,7 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 		}
 		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
 				  binding->output_height.load(std::memory_order_acquire) > 0;
+		faithfulframe::single_adapter_lease::release(runtime);
 		return;
 	}
 	if (obs_source_removed(target)) {
@@ -1481,6 +1514,7 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
 				  binding->output_height.load(std::memory_order_acquire) > 0;
 		obs_source_release(target);
+		faithfulframe::single_adapter_lease::release(runtime);
 		return;
 	}
 
@@ -2479,6 +2513,10 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	auto *s = static_cast<face_tracker_filter *>(data);
 	const bool enabled = s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire);
 	calldata_set_bool(cd, "safe_enabled", enabled);
+	const uint32_t configuration_issue =
+		s->safe_runtime ? s->safe_runtime->configuration_issue.load(std::memory_order_acquire)
+				: static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::none);
+	calldata_set_int(cd, "configuration_issue", configuration_issue);
 	calldata_set_bool(cd, "available", false);
 	calldata_set_int(cd, "candidate_count", 0);
 	calldata_set_int(cd, "status_snapshot_age_ms", -1);

@@ -24,6 +24,7 @@
 #include "face-tracker-dock-internal.hpp"
 #ifdef ENABLE_RUST_CORE_BRIDGE
 #include "faithfulframe-candidate-selection.hpp"
+#include "faithfulframe-adapter-lease.hpp"
 #include "faithfulframe-preview-geometry.hpp"
 #include "faithfulframe_ffi.h"
 #endif
@@ -54,6 +55,8 @@ struct faithfulframe_safe_preview
 	bool session_closed = false;
 	bool target_active = false;
 	bool signal_connected = false;
+	faithfulframe::safe_adapter_availability_issue configuration_issue =
+		faithfulframe::safe_adapter_availability_issue::none;
 	uint32_t state = 0;
 	uint32_t reason = 0;
 	uint32_t command_result = 0;
@@ -161,6 +164,10 @@ static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &
 	calldata_get_bool(&cd, "session_closed", &preview.session_closed);
 	calldata_get_bool(&cd, "target_active", &preview.target_active);
 	calldata_get_bool(&cd, "signal_connected", &preview.signal_connected);
+	uint64_t configuration_issue = 0;
+	if (read_calldata_int(&cd, "configuration_issue", configuration_issue))
+		preview.configuration_issue =
+			static_cast<faithfulframe::safe_adapter_availability_issue>(configuration_issue);
 	long long snapshot_age_ms = -1;
 	if (calldata_get_int(&cd, "status_snapshot_age_ms", &snapshot_age_ms))
 		preview.status_snapshot_age_ms = snapshot_age_ms;
@@ -347,6 +354,9 @@ static bool send_safe_command(obs_source_t *source, uint32_t kind, const QVarian
 
 static QString safe_state_text(const faithfulframe_safe_preview &preview)
 {
+	if (preview.configuration_issue ==
+	    faithfulframe::safe_adapter_availability_issue::another_adapter_owns_tracking)
+		return "Safe tracking is enabled on another camera adapter. Disable it there, then toggle it off and on here";
 	if (preview.session_closed)
 		return "Tracking session stopped; reselect the camera in Source Settings to resume";
 	if (!preview.available)
