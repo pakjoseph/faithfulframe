@@ -65,7 +65,10 @@ void face_detector_base::thread_routine(face_detector_base *base)
 #if defined(__APPLE__)
 	// Keep CPU-bound detector work below OBS's interactive/rendering QoS.
 	// Darwin's PRIO_PROCESS would instead change the whole OBS process.
-	(void)pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+	const int qos_result = pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+	if (qos_result != 0)
+		detector_log(LOG_WARNING, "face_detector_base: could not set worker utility QoS (error %d)",
+			     qos_result);
 #elif !defined(_WIN32)
 	setpriority(PRIO_PROCESS, 0, 19);
 #else

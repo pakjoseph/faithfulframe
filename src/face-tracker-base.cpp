@@ -38,7 +38,10 @@ void *face_tracker_base::thread_routine(void *p)
 #if defined(__APPLE__)
 	// Darwin's PRIO_PROCESS changes the OBS process priority. Set only this
 	// worker's QoS so tracking cannot demote rendering, encoding, or the UI.
-	(void)pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+	const int qos_result = pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+	if (qos_result != 0)
+		faithfulframe_worker_log(LOG_WARNING, "face_tracker_base: could not set worker utility QoS (error %d)",
+					 qos_result);
 #elif !defined(_WIN32)
 	setpriority(PRIO_PROCESS, 0, 17);
 #else
