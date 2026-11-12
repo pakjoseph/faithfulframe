@@ -1,9 +1,8 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
-#include <mutex>
+#include <thread>
 
 /// Lock-free reader pinning for a replaceable raw pointer. A writer may reclaim
 /// a retired object only after it has unpublished the pointer and the reader
@@ -48,8 +47,8 @@ public:
 	private:
 		void release()
 		{
-			if (owner && owner->readers.fetch_sub(1, std::memory_order_seq_cst) == 1)
-				owner->drained.notify_all();
+			if (owner)
+				owner->readers.fetch_sub(1, std::memory_order_seq_cst);
 			owner = nullptr;
 			value = nullptr;
 		}
@@ -75,8 +74,8 @@ public:
 
 	void wait_until_drained()
 	{
-		std::unique_lock<std::mutex> lock(drain_mutex);
-		drained.wait(lock, [this] { return readers.load(std::memory_order_seq_cst) == 0; });
+		while (readers.load(std::memory_order_seq_cst) != 0)
+			std::this_thread::yield();
 	}
 
 private:
@@ -85,6 +84,4 @@ private:
 
 	std::atomic<T *> active{nullptr};
 	std::atomic<uint64_t> readers{0};
-	std::mutex drain_mutex;
-	std::condition_variable drained;
 };
