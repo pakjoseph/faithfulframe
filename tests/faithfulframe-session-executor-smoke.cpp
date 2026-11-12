@@ -715,6 +715,27 @@ int run_smoke()
 		return 71;
 	if (!unload_weak.expired())
 		return 63;
+	std::atomic<bool> late_cleanup_called{false};
+	if (faithfulframe_retire_cleanup(
+		    [](void *context) {
+			    static_cast<std::atomic<bool> *>(context)->store(true, std::memory_order_release);
+		    },
+		    &late_cleanup_called) ||
+	    late_cleanup_called.load(std::memory_order_acquire))
+		return 72;
+	auto late_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{108, 208}, generations);
+	ff_snapshot late_snapshot{};
+	if (!await_snapshot(
+		    *late_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    late_snapshot))
+		return 73;
+	late_executor->request_shutdown();
+	if (faithfulframe_retire_session_executor(late_executor) || !late_executor)
+		return 74;
+	// A caller that loses the reaper race retains ownership and performs the
+	// blocking final join itself rather than leaking a worker.
+	late_executor->shutdown();
 	return 0;
 }
 
