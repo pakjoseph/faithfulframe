@@ -26,6 +26,7 @@
 #include "faithfulframe-active-slot.hpp"
 #include "faithfulframe-adapter-lease.hpp"
 #include "faithfulframe-config-guard.hpp"
+#include "faithfulframe-crop-selector.hpp"
 #include "faithfulframe-preview-geometry.hpp"
 #endif
 
@@ -2408,7 +2409,8 @@ static void fts_render(void *data, gs_effect_t *)
 {
 	auto *s = (struct face_tracker_filter *)data;
 #ifdef ENABLE_RUST_CORE_BRIDGE
-	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+	const bool safety_policy_enabled = s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire);
+	if (faithfulframe_select_crop_input(safety_policy_enabled) == faithfulframe_crop_input::safe_session) {
 		auto binding_lease = s->safe_runtime->active.read();
 		faithfulframe_source_binding *binding = binding_lease.get();
 		if (s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire)) {
@@ -2499,7 +2501,8 @@ static void cb_render_frame(void *data, calldata_t *cd)
 	bool debug_notrack = false;
 	calldata_get_bool(cd, "notrack", &debug_notrack);
 #ifdef ENABLE_RUST_CORE_BRIDGE
-	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+	const bool safety_policy_enabled = s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire);
+	if (faithfulframe_select_crop_input(safety_policy_enabled) == faithfulframe_crop_input::safe_session) {
 		auto binding_lease = s->safe_runtime->active.read();
 		const bool reconfiguring = s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire);
 		auto *binding = reconfiguring ? nullptr : binding_lease.get();
