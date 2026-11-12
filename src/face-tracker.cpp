@@ -1116,8 +1116,7 @@ static void set_safe_adapter_activation(face_tracker_filter *s, bool active)
 	// The source must be active as a child of this adapter for OBS to activate
 	// its capture. Keep that relationship scoped to the immutable binding.
 	if (!binding->set_active_child(active)) {
-		blog(LOG_WARNING, "FaithfulFrame could not %s bound source '%s'", active ? "activate" : "deactivate",
-		     binding->target_name.c_str());
+		blog(LOG_WARNING, "FaithfulFrame could not %s its bound source", active ? "activate" : "deactivate");
 		fail_source_binding_closed(binding);
 		return;
 	}
@@ -1273,8 +1272,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	    !(obs_source_get_output_flags(target) & OBS_SOURCE_VIDEO) || !target_id ||
 	    !strcmp(target_id, "face_tracker_source") || has_legacy_tracker) {
 		faithfulframe::single_adapter_lease::release(runtime);
-		blog(LOG_WARNING, "FaithfulFrame rejected invalid, filtered, or unavailable source binding '%s'",
-		     target_name.c_str());
+		blog(LOG_WARNING, "FaithfulFrame rejected an invalid, filtered, or unavailable source binding");
 		if (target)
 			obs_source_release(target);
 		clear_reconfiguration();
@@ -1296,7 +1294,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	try {
 		runtime->bindings.reserve(runtime->bindings.size() + 1);
 	} catch (...) {
-		blog(LOG_ERROR, "FaithfulFrame could not reserve a source binding for '%s'", target_name.c_str());
+		blog(LOG_ERROR, "FaithfulFrame could not reserve a source binding");
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
 		clear_reconfiguration();
@@ -1316,7 +1314,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	const bool adapter_active = runtime->adapter_active.load(std::memory_order_acquire);
 	binding->adapter_active.store(adapter_active, std::memory_order_release);
 	if (!binding->set_active_child(adapter_active)) {
-		blog(LOG_WARNING, "FaithfulFrame could not activate bound source '%s'", target_name.c_str());
+		blog(LOG_WARNING, "FaithfulFrame could not activate its bound source");
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
 		clear_reconfiguration();
@@ -1338,8 +1336,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	if (signal_connected)
 		initialize_source_session(s, binding.get(), source_width, source_height);
 	if (!std::atomic_load_explicit(&binding->executor, std::memory_order_acquire) && signal_connected)
-		blog(LOG_WARNING, "FaithfulFrame failed to create a safe tracking session for '%s'",
-		     target_name.c_str());
+		blog(LOG_WARNING, "FaithfulFrame failed to create a safe tracking session");
 	faithfulframe_source_binding *published = binding.get();
 	try {
 		runtime->bindings.push_back(std::move(binding));
@@ -1532,8 +1529,7 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 	const uint64_t now = source_monotonic_millis();
 	auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
 	if (executor && !binding->closed.load(std::memory_order_acquire) && !executor->worker_available()) {
-		blog(LOG_ERROR, "FaithfulFrame tracking worker stopped for bound source '%s'; closing the session",
-		     binding->target_name.c_str());
+		blog(LOG_ERROR, "FaithfulFrame tracking worker stopped; closing the session");
 		fail_source_binding_closed(binding);
 		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
 				  binding->output_height.load(std::memory_order_acquire) > 0;

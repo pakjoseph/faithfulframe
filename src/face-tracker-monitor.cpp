@@ -207,12 +207,12 @@ static void ftmon_tick(void *data, float)
 
 	if (source_specified && !s->source_ref) {
 		if (s->n_error < MAX_ERROR) {
-			blog(LOG_INFO, "failed to get source \"%s\"", s->source_name);
+			blog(LOG_INFO, "failed to resolve the configured source");
 			s->n_error++;
 		}
 	} else if (filter_specified && !s->filter_ref) {
 		if (s->n_error < MAX_ERROR) {
-			blog(LOG_INFO, "failed to get filter \"%s\"", s->filter_name);
+			blog(LOG_INFO, "failed to resolve the configured filter");
 			s->n_error++;
 		}
 	} else {
