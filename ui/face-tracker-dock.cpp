@@ -1487,8 +1487,13 @@ void ft_docks_release()
 	if (docks) {
 		while (!docks->empty()) {
 			FTDock *dock = docks->back();
-			dock->close();
-			delete dock;
+			QPointer<FTDock> dock_lifetime(dock);
+			const std::string id = "ft." + dock->name;
+			obs_frontend_remove_dock(id.c_str());
+			if (dock_lifetime) {
+				dock_lifetime->close();
+				delete dock_lifetime.data();
+			}
 		}
 		delete docks;
 		docks = NULL;
