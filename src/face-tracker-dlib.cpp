@@ -49,6 +49,8 @@ face_tracker_dlib::face_tracker_dlib()
 
 face_tracker_dlib::~face_tracker_dlib()
 {
+	// track_main() reads p; join the worker before releasing the derived state.
+	stop();
 	bfree(p->landmark_detection_data);
 	if (p->tracker)
 		delete p->tracker;
