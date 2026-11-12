@@ -217,6 +217,19 @@ static QString obs_performance_metrics()
 
 struct obs_performance_sample
 {
+	bool video_configuration_available = false;
+	std::string graphics_module;
+	int64_t fps_num = -1;
+	int64_t fps_den = -1;
+	int64_t base_width = -1;
+	int64_t base_height = -1;
+	int64_t canvas_output_width = -1;
+	int64_t canvas_output_height = -1;
+	int64_t output_format = -1;
+	int64_t colorspace = -1;
+	int64_t range = -1;
+	int64_t scale_type = -1;
+	int64_t gpu_conversion = -1;
 	double active_fps = -1.0;
 	int64_t render_frames = -1;
 	int64_t render_lagged_frames = -1;
@@ -229,6 +242,23 @@ struct obs_performance_sample
 static obs_performance_sample read_obs_performance_sample()
 {
 	obs_performance_sample result;
+	obs_video_info video_info{};
+	if (obs_get_video_info(&video_info)) {
+		result.video_configuration_available = true;
+		if (video_info.graphics_module)
+			result.graphics_module = video_info.graphics_module;
+		result.fps_num = video_info.fps_num;
+		result.fps_den = video_info.fps_den;
+		result.base_width = video_info.base_width;
+		result.base_height = video_info.base_height;
+		result.canvas_output_width = video_info.output_width;
+		result.canvas_output_height = video_info.output_height;
+		result.output_format = video_info.output_format;
+		result.colorspace = video_info.colorspace;
+		result.range = video_info.range;
+		result.scale_type = video_info.scale_type;
+		result.gpu_conversion = video_info.gpu_conversion ? 1 : 0;
+	}
 	if (!obs_video_active())
 		return result;
 
@@ -825,10 +855,10 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	mainLayout->addWidget(performanceLabel);
 	performanceRunNotes = new QLineEdit(this);
 	performanceRunNotes->setPlaceholderText(
-		"Hardware + workload (e.g., PC model; 4K → 1080p; multiple faces). No source or speaker names.");
+		"Computer/GPU, encoder settings + workload (e.g., PC model; H.264 preset; 4K → 1080p).");
 	performanceRunNotes->setAccessibleName("Hardware and workload notes for reproducible performance measurements");
 	performanceRunNotes->setToolTip(
-		"Describe the machine and test workload. This note is exported as entered, so omit camera/source names, speaker names, and personal details. OS version, CPU architecture, OBS and FaithfulFrame versions, and video dimensions are recorded automatically.");
+		"Describe the computer/GPU, non-secret OBS encoder settings, and workload. This note is exported as entered, so omit stream keys, server URLs, camera/source and speaker names, and personal details. OS, CPU architecture, OBS and FaithfulFrame versions, OBS canvas/video settings, and input/output dimensions are recorded automatically.");
 	performanceRunNotes->setMaxLength(512);
 	performanceRunNotes->hide();
 	mainLayout->addWidget(performanceRunNotes);
@@ -1213,10 +1243,25 @@ void FTDock::updateState()
 					sample.status_version = safe_preview.status_version;
 					sample.state = safe_preview.state;
 					sample.reason = safe_preview.reason;
+					const obs_performance_sample obs_metrics = read_obs_performance_sample();
 					sample.source_width = safe_preview.source_width;
 					sample.source_height = safe_preview.source_height;
 					sample.output_width = safe_preview.output_width;
 					sample.output_height = safe_preview.output_height;
+					sample.obs_video_configuration_available =
+						obs_metrics.video_configuration_available;
+					sample.obs_graphics_module = obs_metrics.graphics_module;
+					sample.obs_fps_num = obs_metrics.fps_num;
+					sample.obs_fps_den = obs_metrics.fps_den;
+					sample.obs_base_width = obs_metrics.base_width;
+					sample.obs_base_height = obs_metrics.base_height;
+					sample.obs_canvas_output_width = obs_metrics.canvas_output_width;
+					sample.obs_canvas_output_height = obs_metrics.canvas_output_height;
+					sample.obs_output_format = obs_metrics.output_format;
+					sample.obs_colorspace = obs_metrics.colorspace;
+					sample.obs_range = obs_metrics.range;
+					sample.obs_scale_type = obs_metrics.scale_type;
+					sample.obs_gpu_conversion = obs_metrics.gpu_conversion;
 					sample.status_snapshot_age_milliseconds = safe_preview.status_snapshot_age_ms;
 					sample.process_cpu_percent = processCpuPercent;
 					if (processMemoryAvailable) {
@@ -1225,7 +1270,6 @@ void FTDock::updateState()
 						sample.virtual_bytes =
 							static_cast<int64_t>(processMemoryUsage.virtual_size);
 					}
-					const obs_performance_sample obs_metrics = read_obs_performance_sample();
 					sample.active_fps = obs_metrics.active_fps;
 					sample.render_frames = obs_metrics.render_frames;
 					sample.render_lagged_frames = obs_metrics.render_lagged_frames;
@@ -1539,7 +1583,7 @@ void FTDock::performanceRecordButtonClicked()
 	performanceHardwareAndWorkloadNotes = performanceRunNotes->text().trimmed();
 	if (performanceHardwareAndWorkloadNotes.isEmpty()) {
 		showOperatorNotice(
-			"Enter the computer model and test workload in the performance notes field before recording.");
+			"Enter the computer/GPU, non-secret OBS encoder settings, and test workload before recording. Do not include stream keys or server URLs.");
 		return;
 	}
 	performanceRecordingSourceId = preview.source_id;
@@ -1552,7 +1596,7 @@ void FTDock::performanceRecordButtonClicked()
 	processMetricsTimer.start();
 	performanceRecordButton->setText("Stop & Export CSV");
 	showOperatorNotice(
-		"Recording aggregate performance metrics once per second. Your note is exported as entered, so omit camera/source and speaker names. Preview images and face data are not collected.");
+		"Recording aggregate performance metrics once per second. Your note is exported as entered; omit stream keys, server URLs, camera/source and speaker names, and personal details. Preview images and face data are not collected.");
 #else
 	showOperatorNotice("Performance recording requires the FaithfulFrame safety tracking bridge.");
 #endif

@@ -44,6 +44,8 @@ int main()
 	CHECK(header.find("resident_bytes") != std::string::npos);
 	CHECK(header.find("last_detector_microseconds") != std::string::npos);
 	CHECK(header.find("hardware_and_workload_notes") != std::string::npos);
+	CHECK(header.find("obs_video_configuration_available") != std::string::npos);
+	CHECK(header.find("obs_canvas_output_width") != std::string::npos);
 	CHECK(header.find("candidate") == std::string::npos);
 	CHECK(header.find("image") == std::string::npos);
 	CHECK(max_samples == 43200);
@@ -72,6 +74,19 @@ int main()
 	value.source_height = 2160;
 	value.output_width = 1920;
 	value.output_height = 1080;
+	value.obs_video_configuration_available = true;
+	value.obs_graphics_module = "libobs-opengl";
+	value.obs_fps_num = 30;
+	value.obs_fps_den = 1;
+	value.obs_base_width = 1920;
+	value.obs_base_height = 1080;
+	value.obs_canvas_output_width = 1280;
+	value.obs_canvas_output_height = 720;
+	value.obs_output_format = 2;
+	value.obs_colorspace = 2;
+	value.obs_range = 0;
+	value.obs_scale_type = 0;
+	value.obs_gpu_conversion = 1;
 	value.status_snapshot_age_milliseconds = 12;
 	value.process_cpu_percent = 22.5;
 	value.resident_bytes = 4096;
@@ -81,7 +96,7 @@ int main()
 	value.max_detector_microseconds = 7000;
 	const std::string row = csv_row(value);
 	CHECK(row.starts_with(
-		"1,1,2026-11-12T12:34:56.789Z,1000,7,9,2,macOS 26.0,arm64,33.0.1,0.9.1,\"Mac mini, 4K \"\"stage\"\" -> 1080p\",3,4,5,6,10,1,2,3840,2160,1920,1080,12,22.50,4096,8192,59.940,"));
+		"2,1,2026-11-12T12:34:56.789Z,1000,7,9,2,macOS 26.0,arm64,33.0.1,0.9.1,\"Mac mini, 4K \"\"stage\"\" -> 1080p\",3,4,5,6,10,1,2,3840,2160,1920,1080,1,libobs-opengl,30,1,1920,1080,1280,720,2,2,0,0,1,12,22.50,4096,8192,59.940,"));
 	CHECK(row.ends_with(",7000\n"));
 	CHECK(csv_field_count(header) == csv_field_count(row));
 

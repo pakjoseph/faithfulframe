@@ -11,7 +11,7 @@
 
 namespace faithfulframe::performance {
 
-inline constexpr uint32_t schema_version = 1;
+inline constexpr uint32_t schema_version = 2;
 inline constexpr size_t max_samples = 12 * 60 * 60;
 
 struct sample
@@ -38,6 +38,19 @@ struct sample
 	uint32_t source_height = 0;
 	uint32_t output_width = 0;
 	uint32_t output_height = 0;
+	bool obs_video_configuration_available = false;
+	std::string obs_graphics_module;
+	int64_t obs_fps_num = -1;
+	int64_t obs_fps_den = -1;
+	int64_t obs_base_width = -1;
+	int64_t obs_base_height = -1;
+	int64_t obs_canvas_output_width = -1;
+	int64_t obs_canvas_output_height = -1;
+	int64_t obs_output_format = -1;
+	int64_t obs_colorspace = -1;
+	int64_t obs_range = -1;
+	int64_t obs_scale_type = -1;
+	int64_t obs_gpu_conversion = -1;
 	int64_t status_snapshot_age_milliseconds = -1;
 	double process_cpu_percent = -1.0;
 	int64_t resident_bytes = -1;
@@ -92,7 +105,10 @@ inline std::string csv_header()
 	return "schema_version,run_metadata_present,utc_timestamp,elapsed_milliseconds,source_id,session_id,source_generation,"
 	       "operating_system,cpu_architecture,obs_version,plugin_version,hardware_and_workload_notes,"
 	       "session_generation,stream_generation,geometry_generation,tracker_generation,status_version,state,reason,"
-	       "source_width,source_height,output_width,output_height,status_snapshot_age_milliseconds,"
+	       "source_width,source_height,output_width,output_height,"
+	       "obs_video_configuration_available,obs_graphics_module,obs_fps_num,obs_fps_den,obs_base_width,"
+	       "obs_base_height,obs_canvas_output_width,obs_canvas_output_height,obs_output_format,obs_colorspace,"
+	       "obs_range,obs_scale_type,obs_gpu_conversion,status_snapshot_age_milliseconds,"
 	       "process_cpu_percent,resident_bytes,virtual_bytes,active_fps,render_frames,render_lagged_frames,"
 	       "encode_frames,encode_skipped_frames,stream_frames,stream_dropped_frames,queue_depth,queue_high_water,"
 	       "queue_oldest_age_microseconds,accepted_work,rejected_work,coalesced_work,last_queue_wait_microseconds,"
@@ -112,7 +128,34 @@ inline std::string csv_row(const sample &value)
 	    << value.session_generation << ',' << value.stream_generation << ',' << value.geometry_generation << ','
 	    << value.tracker_generation << ',' << value.status_version << ',' << value.state << ',' << value.reason
 	    << ',' << value.source_width << ',' << value.source_height << ',' << value.output_width << ','
-	    << value.output_height << ',';
+	    << value.output_height << ',' << (value.obs_video_configuration_available ? 1 : 0) << ','
+	    << csv_field(value.obs_graphics_module) << ',';
+	auto optional_integer = [&row](int64_t field) {
+		if (field >= 0)
+			row << field;
+	};
+	optional_integer(value.obs_fps_num);
+	row << ',';
+	optional_integer(value.obs_fps_den);
+	row << ',';
+	optional_integer(value.obs_base_width);
+	row << ',';
+	optional_integer(value.obs_base_height);
+	row << ',';
+	optional_integer(value.obs_canvas_output_width);
+	row << ',';
+	optional_integer(value.obs_canvas_output_height);
+	row << ',';
+	optional_integer(value.obs_output_format);
+	row << ',';
+	optional_integer(value.obs_colorspace);
+	row << ',';
+	optional_integer(value.obs_range);
+	row << ',';
+	optional_integer(value.obs_scale_type);
+	row << ',';
+	optional_integer(value.obs_gpu_conversion);
+	row << ',';
 	if (value.status_snapshot_age_milliseconds >= 0)
 		row << value.status_snapshot_age_milliseconds;
 	row << ',';

@@ -19,7 +19,7 @@ def fixture_row(elapsed_ms, cpu, resident, render_frames, render_lag, plugin_ver
     utc_timestamp = timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     row.update(
         {
-            "schema_version": "1",
+            "schema_version": "2",
             "run_metadata_present": "0",
             "utc_timestamp": utc_timestamp,
             "elapsed_milliseconds": str(elapsed_ms),
@@ -37,6 +37,19 @@ def fixture_row(elapsed_ms, cpu, resident, render_frames, render_lag, plugin_ver
             "source_height": "2160",
             "output_width": "1920",
             "output_height": "1080",
+            "obs_video_configuration_available": "1",
+            "obs_graphics_module": "libobs-opengl",
+            "obs_fps_num": "30",
+            "obs_fps_den": "1",
+            "obs_base_width": "1920",
+            "obs_base_height": "1080",
+            "obs_canvas_output_width": "1280",
+            "obs_canvas_output_height": "720",
+            "obs_output_format": "2",
+            "obs_colorspace": "2",
+            "obs_range": "0",
+            "obs_scale_type": "0",
+            "obs_gpu_conversion": "1",
             "status_snapshot_age_milliseconds": "15",
             "process_cpu_percent": str(cpu),
             "resident_bytes": str(resident),
@@ -106,6 +119,8 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
 
         self.assertEqual(report["sample_count"], 2)
         self.assertEqual(report["duration_hours"], 1.0)
+        self.assertTrue(report["obs_video_configuration_complete"])
+        self.assertTrue(report["obs_video_configuration_stable"])
         self.assertEqual(report["metrics"]["process_cpu_percent"]["p95"], 12.0)
         self.assertEqual(report["counter_deltas"]["render_frames"], 1000)
         self.assertAlmostEqual(report["frame_drop_rates_percent"]["render_lag_percent"], 1.0)
@@ -148,6 +163,57 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         candidate_path = self.write_log("candidate.csv", [candidate_first, candidate_second])
 
         with self.assertRaisesRegex(analyzer.PerformanceLogError, "hardware_and_workload_notes"):
+            analyzer.compare_logs(analyzer.load_log(reference_path), analyzer.load_log(candidate_path))
+
+    def test_rejects_mismatched_obs_version(self):
+        reference_path = self.write_log(
+            "reference.csv",
+            [
+                fixture_row(0, 10.0, 1_000_000, 1000, 5, "upstream"),
+                fixture_row(3_600_000, 12.0, 1_100_000, 2000, 15, "upstream"),
+            ],
+        )
+        candidate_first = fixture_row(0, 10.0, 1_000_000, 1000, 5, "faithfulframe")
+        candidate_first["obs_version"] = "30.2.0"
+        candidate_second = fixture_row(3_600_000, 12.0, 1_100_000, 2000, 15, "faithfulframe")
+        candidate_second["run_metadata_present"] = "0"
+        for column in analyzer.METADATA_COLUMNS:
+            candidate_second[column] = ""
+        candidate_path = self.write_log("candidate.csv", [candidate_first, candidate_second])
+
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "obs_version"):
+            analyzer.compare_logs(analyzer.load_log(reference_path), analyzer.load_log(candidate_path))
+
+    def test_rejects_mismatched_or_unstable_obs_video_configuration(self):
+        reference_path = self.write_log(
+            "reference.csv",
+            [
+                fixture_row(0, 10.0, 1_000_000, 1000, 5, "upstream"),
+                fixture_row(3_600_000, 12.0, 1_100_000, 2000, 15, "upstream"),
+            ],
+        )
+        candidate_first = fixture_row(0, 10.0, 1_000_000, 1000, 5, "faithfulframe")
+        candidate_first["obs_output_format"] = "3"
+        candidate_second = fixture_row(3_600_000, 12.0, 1_100_000, 2000, 15, "faithfulframe")
+        candidate_second["obs_output_format"] = "3"
+        candidate_second["run_metadata_present"] = "0"
+        for column in analyzer.METADATA_COLUMNS:
+            candidate_second[column] = ""
+        candidate_path = self.write_log("candidate.csv", [candidate_first, candidate_second])
+
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "obs_video_configuration"):
+            analyzer.compare_logs(analyzer.load_log(reference_path), analyzer.load_log(candidate_path))
+
+        candidate_second["obs_output_format"] = "2"
+        candidate_path = self.write_log("changing-settings.csv", [candidate_first, candidate_second])
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "stable for every sample"):
+            analyzer.compare_logs(analyzer.load_log(reference_path), analyzer.load_log(candidate_path))
+
+        candidate_second["obs_video_configuration_available"] = "0"
+        for column in ("obs_graphics_module", *analyzer.OBS_VIDEO_INTEGER_COLUMNS):
+            candidate_second[column] = ""
+        candidate_path = self.write_log("incomplete.csv", [candidate_first, candidate_second])
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "stable for every sample"):
             analyzer.compare_logs(analyzer.load_log(reference_path), analyzer.load_log(candidate_path))
 
     def test_rejects_non_monotonic_elapsed_time(self):

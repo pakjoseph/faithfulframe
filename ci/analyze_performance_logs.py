@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EXPECTED_COLUMNS = [
     "schema_version",
     "run_metadata_present",
@@ -42,6 +42,19 @@ EXPECTED_COLUMNS = [
     "source_height",
     "output_width",
     "output_height",
+    "obs_video_configuration_available",
+    "obs_graphics_module",
+    "obs_fps_num",
+    "obs_fps_den",
+    "obs_base_width",
+    "obs_base_height",
+    "obs_canvas_output_width",
+    "obs_canvas_output_height",
+    "obs_output_format",
+    "obs_colorspace",
+    "obs_range",
+    "obs_scale_type",
+    "obs_gpu_conversion",
     "status_snapshot_age_milliseconds",
     "process_cpu_percent",
     "resident_bytes",
@@ -138,6 +151,20 @@ METADATA_COLUMNS = (
     "hardware_and_workload_notes",
 )
 
+OBS_VIDEO_INTEGER_COLUMNS = (
+    "obs_fps_num",
+    "obs_fps_den",
+    "obs_base_width",
+    "obs_base_height",
+    "obs_canvas_output_width",
+    "obs_canvas_output_height",
+    "obs_output_format",
+    "obs_colorspace",
+    "obs_range",
+    "obs_scale_type",
+    "obs_gpu_conversion",
+)
+
 
 class PerformanceLogError(ValueError):
     """Raised when a CSV does not satisfy the versioned recording contract."""
@@ -218,6 +245,7 @@ def load_log(path: str | Path) -> dict:
     samples = []
     metadata = None
     recording_identity = None
+    obs_video_configurations = []
     previous_elapsed = -1
     for row_number, raw in enumerate(raw_rows, start=2):
         if None in raw or any(value is None for value in raw.values()):
@@ -313,6 +341,51 @@ def load_log(path: str | Path) -> dict:
         for column in ("source_width", "source_height", "output_width", "output_height"):
             if sample[column] <= 0:
                 raise PerformanceLogError(f"{path}: row {row_number} has an invalid {column}")
+
+        video_configuration_available = _number(
+            raw["obs_video_configuration_available"],
+            "obs_video_configuration_available",
+            row_number,
+            integer=True,
+        )
+        if video_configuration_available not in (0, 1):
+            raise PerformanceLogError(f"{path}: row {row_number} has an invalid OBS video configuration flag")
+        sample["obs_video_configuration_available"] = bool(video_configuration_available)
+        sample["obs_graphics_module"] = raw["obs_graphics_module"]
+        for column in OBS_VIDEO_INTEGER_COLUMNS:
+            sample[column] = _number(raw[column], column, row_number, integer=True)
+        if video_configuration_available:
+            if not sample["obs_graphics_module"].strip():
+                raise PerformanceLogError(f"{path}: row {row_number} lacks an OBS graphics module")
+            for column in OBS_VIDEO_INTEGER_COLUMNS:
+                if sample[column] is None or sample[column] < 0:
+                    raise PerformanceLogError(f"{path}: row {row_number} has an invalid {column}")
+            for column in (
+                "obs_fps_num",
+                "obs_fps_den",
+                "obs_base_width",
+                "obs_base_height",
+                "obs_canvas_output_width",
+                "obs_canvas_output_height",
+            ):
+                if sample[column] == 0:
+                    raise PerformanceLogError(f"{path}: row {row_number} has an invalid {column}")
+            if sample["obs_gpu_conversion"] not in (0, 1):
+                raise PerformanceLogError(f"{path}: row {row_number} has an invalid obs_gpu_conversion")
+            obs_video_configurations.append(
+                {
+                    "graphics_module": sample["obs_graphics_module"],
+                    **{column: sample[column] for column in OBS_VIDEO_INTEGER_COLUMNS},
+                }
+            )
+        else:
+            if sample["obs_graphics_module"] or any(
+                sample[column] is not None for column in OBS_VIDEO_INTEGER_COLUMNS
+            ):
+                raise PerformanceLogError(
+                    f"{path}: row {row_number} has OBS video settings while marked unavailable"
+                )
+            obs_video_configurations.append(None)
         for column in METRIC_COLUMNS:
             sample[column] = _number(raw[column], column, row_number)
             if sample[column] is not None and sample[column] < 0:
@@ -325,6 +398,15 @@ def load_log(path: str | Path) -> dict:
 
     if metadata is None:
         raise PerformanceLogError(f"{path}: run metadata was not found")
+    known_obs_video_configurations = []
+    for configuration in obs_video_configurations:
+        if configuration is not None and configuration not in known_obs_video_configurations:
+            known_obs_video_configurations.append(configuration)
+    obs_video_configuration_stable = (
+        len(obs_video_configurations) == len(samples)
+        and all(configuration is not None for configuration in obs_video_configurations)
+        and len(known_obs_video_configurations) == 1
+    )
     elapsed_hours = (samples[-1]["elapsed_milliseconds"] - samples[0]["elapsed_milliseconds"]) / 3_600_000.0
     resolution_pairs = sorted(
         {
@@ -374,6 +456,11 @@ def load_log(path: str | Path) -> dict:
         "path": str(path),
         "schema_version": SCHEMA_VERSION,
         "metadata": metadata,
+        "obs_video_configuration_complete": all(
+            configuration is not None for configuration in obs_video_configurations
+        ),
+        "obs_video_configuration_stable": obs_video_configuration_stable,
+        "obs_video_configurations": known_obs_video_configurations,
         "sample_count": len(samples),
         "duration_hours": elapsed_hours,
         "sample_interval_milliseconds": _series_summary(
@@ -406,6 +493,12 @@ def compare_logs(reference: dict, candidate: dict) -> dict:
     for field in ("operating_system", "cpu_architecture", "obs_version", "hardware_and_workload_notes"):
         if reference["metadata"][field] != candidate["metadata"][field]:
             context_mismatches.append(field)
+    if not reference["obs_video_configuration_stable"] or not candidate["obs_video_configuration_stable"]:
+        raise PerformanceLogError(
+            "runs are not comparable; OBS video configuration must be available and stable for every sample"
+        )
+    if reference["obs_video_configurations"] != candidate["obs_video_configurations"]:
+        context_mismatches.append("obs_video_configuration")
     if reference_resolution != candidate_resolution:
         context_mismatches.append("video_resolutions")
     if context_mismatches:
