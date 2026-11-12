@@ -377,23 +377,24 @@ static void use_full_source_preview_transform(faithfulframe_safe_preview &previe
 					     preview.output_height, preview.source_width, preview.source_height);
 }
 
-static bool send_safe_command(obs_source_t *source, uint32_t kind, const QVariantMap *candidate = nullptr)
+static bool enqueue_safe_command(obs_source_t *source, const faithfulframe_safe_preview &preview, uint32_t kind,
+				 const QVariantMap *candidate = nullptr)
 {
-	faithfulframe_safe_preview preview;
-	if (!read_safe_preview(source, preview) || !preview.enabled || !preview.available)
+	if (!source || !preview.enabled || !preview.available)
 		return false;
 	if (candidate) {
-		// Selection uses the identity and versions attached to the short-lived
-		// preview item; a stale item is intentionally left for Rust to reject.
-		preview.source_id = candidate->value("source_id").toULongLong();
-		preview.session_id = candidate->value("session_id").toULongLong();
-		preview.status_version = candidate->value("status_version").toULongLong();
-		preview.observation_version = candidate->value("observation_version").toULongLong();
-		preview.source_generation = candidate->value("source_generation").toULongLong();
-		preview.session_generation = candidate->value("session_generation").toULongLong();
-		preview.stream_generation = candidate->value("stream_generation").toULongLong();
-		preview.geometry_generation = candidate->value("geometry_generation").toULongLong();
-		preview.tracker_generation = candidate->value("tracker_generation").toULongLong();
+		// Selection commands carry the exact identity and versions of the preview
+		// snapshot used to resolve or hit-test this opaque candidate handle.
+		if (candidate->value("source_id").toULongLong() != preview.source_id ||
+		    candidate->value("session_id").toULongLong() != preview.session_id ||
+		    candidate->value("status_version").toULongLong() != preview.status_version ||
+		    candidate->value("observation_version").toULongLong() != preview.observation_version ||
+		    candidate->value("source_generation").toULongLong() != preview.source_generation ||
+		    candidate->value("session_generation").toULongLong() != preview.session_generation ||
+		    candidate->value("stream_generation").toULongLong() != preview.stream_generation ||
+		    candidate->value("geometry_generation").toULongLong() != preview.geometry_generation ||
+		    candidate->value("tracker_generation").toULongLong() != preview.tracker_generation)
+			return false;
 	}
 
 	proc_handler_t *handler = obs_source_get_proc_handler(source);
@@ -418,6 +419,14 @@ static bool send_safe_command(obs_source_t *source, uint32_t kind, const QVarian
 	calldata_get_bool(&cd, "queued", &queued);
 	calldata_free(&cd);
 	return called && queued;
+}
+
+static bool send_safe_command(obs_source_t *source, uint32_t kind, const QVariantMap *candidate = nullptr)
+{
+	faithfulframe_safe_preview preview;
+	if (!read_safe_preview(source, preview))
+		return false;
+	return enqueue_safe_command(source, preview, kind, candidate);
 }
 
 static QString safe_state_text(const faithfulframe_safe_preview &preview)
@@ -1291,13 +1300,44 @@ void FTDock::manualOverrideButtonClicked()
 void FTDock::selectCandidateButtonClicked()
 {
 #ifdef ENABLE_RUST_CORE_BRIDGE
-	const QVariantMap candidate = candidateSelector->currentData().toMap();
-	if (candidate.isEmpty()) {
+	const QVariantMap selected_candidate = candidateSelector->currentData().toMap();
+	const uint64_t selected_handle = selected_candidate.value("handle").toULongLong();
+	if (selected_candidate.isEmpty() || !selected_handle) {
 		showOperatorNotice("No fresh candidate is available. Wait for a face to appear in the preview.");
 		return;
 	}
 	OBSSource target = get_source();
-	if (!send_safe_command(target, FF_COMMAND_SELECT_CANDIDATE, &candidate))
+	faithfulframe_safe_preview preview;
+	if (!read_safe_preview(target, preview) || !preview.enabled || !preview.available) {
+		showOperatorNotice("The current preview is unavailable. Wait for tracking status to refresh.");
+		return;
+	}
+	std::array<uint64_t, 8> current_handles{};
+	for (size_t i = 0; i < preview.candidates.size(); ++i)
+		current_handles[i] = preview.candidates.at(static_cast<qsizetype>(i)).value("handle").toULongLong();
+	const ff_identity previous_identity{selected_candidate.value("source_id").toULongLong(),
+					    selected_candidate.value("session_id").toULongLong()};
+	const ff_generations previous_generations{selected_candidate.value("source_generation").toULongLong(),
+						  selected_candidate.value("session_generation").toULongLong(),
+						  selected_candidate.value("stream_generation").toULongLong(),
+						  selected_candidate.value("geometry_generation").toULongLong(),
+						  selected_candidate.value("tracker_generation").toULongLong()};
+	const ff_identity current_identity{preview.source_id, preview.session_id};
+	const ff_generations current_generations{preview.source_generation, preview.session_generation,
+						 preview.stream_generation, preview.geometry_generation,
+						 preview.tracker_generation};
+	size_t current_index = 0;
+	if (!faithfulframe_candidate_restore_index(selected_handle, previous_identity, previous_generations,
+						   current_identity, current_generations, current_handles.data(),
+						   preview.candidates.size(), current_index)) {
+		showOperatorNotice("That face is no longer available. Choose a face from the current preview.");
+		return;
+	}
+	// Keyboard selection is by stable opaque handle, not by the cached rectangle.
+	// Resolve it against the current preview so routine detector updates do not
+	// make an otherwise current selection command stale.
+	const QVariantMap current_candidate = preview.candidates.at(static_cast<qsizetype>(current_index));
+	if (!enqueue_safe_command(target, preview, FF_COMMAND_SELECT_CANDIDATE, &current_candidate))
 		showOperatorNotice("Selection expired or changed. Choose the face again from the current preview.");
 #endif
 }
@@ -1345,7 +1385,7 @@ void FTDock::handlePreviewClick(const QPointF &position)
 					    : "Click inside one visible face to select its speaker");
 		return;
 	}
-	if (!send_safe_command(target, FF_COMMAND_SELECT_CANDIDATE, &hit))
+	if (!enqueue_safe_command(target, preview, FF_COMMAND_SELECT_CANDIDATE, &hit))
 		showOperatorNotice("Selection expired or changed. Click the face again in the current preview.");
 #else
 	UNUSED_PARAMETER(position);
