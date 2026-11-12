@@ -218,6 +218,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_executable(faithfulframe-single-adapter-lease-smoke
 		tests/faithfulframe-single-adapter-lease-smoke.cpp)
 	target_include_directories(faithfulframe-single-adapter-lease-smoke PRIVATE src)
+	target_link_libraries(faithfulframe-single-adapter-lease-smoke PRIVATE Threads::Threads)
 	add_executable(faithfulframe-tracker-association-smoke tests/faithfulframe-tracker-association-smoke.cpp)
 	add_executable(faithfulframe-tracker-worker-budget-smoke
 		tests/faithfulframe-tracker-worker-budget-smoke.cpp)
