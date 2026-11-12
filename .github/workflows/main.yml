@@ -103,6 +103,23 @@ jobs:
           path: '${{ env.FILE_NAME }}'
 
       - name: 'Setup with onsdriver'
+        id: onsdriver_setup
+        uses: noris-plugins-for-obs/onsdriver@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          obs-plugins: ${{ env.FILE_NAME }}
+          first-time-log: ./logs/
+        # Launchpad occasionally returns transient 5xx errors while the driver
+        # resolves the OBS PPA. Retry once, but keep setup required overall.
+        continue-on-error: true
+
+      - name: Wait before onsdriver retry
+        if: steps.onsdriver_setup.outcome == 'failure'
+        run: sleep 30
+
+      - name: Retry setup with onsdriver
+        if: steps.onsdriver_setup.outcome == 'failure'
         uses: noris-plugins-for-obs/onsdriver@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
