@@ -247,13 +247,17 @@ jobs:
             --libdir release/${PLUGIN_NAME}.plugin/Contents/lib \
             --verbose \
             release/${PLUGIN_NAME}.plugin/Contents/MacOS/${PLUGIN_NAME}
-          ci/macos/change-rpath.py \
-            --exclude-regex='(/usr/lib/|/System/Library/)' \
-            --exclude-regex='.*(obs-frontend-api|libobs|/Qt)' \
-            --check-invalid-regex='(/usr/local|/opt)' \
-            --check \
+          for dylib in \
             release/${PLUGIN_NAME}.plugin/Contents/MacOS/${PLUGIN_NAME} \
-            release/${PLUGIN_NAME}.plugin/Contents/lib/*
+            release/${PLUGIN_NAME}.plugin/Contents/lib/*.dylib; do
+            if test -f "$dylib"; then
+              ci/macos/change-rpath.py \
+                --exclude-regex='(/usr/lib/|/System/Library/)' \
+                --exclude-regex='.*(obs-frontend-api|libobs|/Qt)' \
+                --check-invalid-regex='(/usr/local|/opt)' \
+                --check "$dylib"
+            fi
+          done
           python3 ci/macos/verify-deployment-target.py \
             --root release/${PLUGIN_NAME}.plugin \
             --cmake-cache build/CMakeCache.txt
