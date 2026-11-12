@@ -49,6 +49,9 @@ int main()
 	second.hardware_and_workload_notes.clear();
 	second.elapsed_milliseconds = 2000;
 
+	sample third = second;
+	third.elapsed_milliseconds = 3000;
+
 	csv_spool spool;
 	CHECK(spool.open());
 	CHECK(spool.append(first));
@@ -58,13 +61,15 @@ int main()
 	CHECK(spool.append(second));
 	CHECK(spool.row_count() == 2);
 	CHECK(!spool.export_to(output_directory.filePath("missing/run.csv")));
+	CHECK(spool.append(third)); // A failed export must leave later appends at EOF.
+	CHECK(spool.row_count() == 3);
 
 	const QString exported_path = output_directory.filePath("run.csv");
 	CHECK(spool.export_to(exported_path));
 	QFile exported_file(exported_path);
 	CHECK(exported_file.open(QIODevice::ReadOnly));
 	const QByteArray exported = exported_file.readAll();
-	const std::string expected = csv_header() + csv_row(first) + csv_row(second);
+	const std::string expected = csv_header() + csv_row(first) + csv_row(second) + csv_row(third);
 	CHECK(exported == QByteArray(expected.data(), static_cast<int>(expected.size())));
 	return 0;
 }

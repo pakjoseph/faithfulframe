@@ -48,23 +48,34 @@ public:
 	{
 		if (!valid_ || !opened_ || !rows_ || !file_.flush() || !file_.seek(0))
 			return false;
+		auto restore_append_position = [this](bool result) {
+			if (!file_.seek(file_.size()))
+				valid_ = false;
+			return result && valid_;
+		};
 		QSaveFile destination(path);
 		if (!destination.open(QIODevice::WriteOnly))
-			return false;
+			return restore_append_position(false);
+		bool copied = true;
 		while (!file_.atEnd()) {
 			const QByteArray chunk = file_.read(64 * 1024);
 			if (chunk.isEmpty()) {
 				if (file_.error() == QFileDevice::NoError && file_.atEnd())
 					break;
-				destination.cancelWriting();
-				return false;
+				copied = false;
+				break;
 			}
 			if (destination.write(chunk) != chunk.size()) {
-				destination.cancelWriting();
-				return false;
+				copied = false;
+				break;
 			}
 		}
-		return destination.commit();
+		bool exported = false;
+		if (copied)
+			exported = destination.commit();
+		else
+			destination.cancelWriting();
+		return restore_append_position(exported);
 	}
 
 	uint64_t row_count() const { return rows_; }
