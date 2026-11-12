@@ -432,9 +432,12 @@ if (WITH_DOCK)
 	if (TARGET faithfulframe-performance-spool-smoke)
 		target_link_libraries(faithfulframe-performance-spool-smoke PRIVATE Qt::Core)
 		if (WIN32)
+			set(_qt_core_dir_variable "Qt${QT_VERSION}Core_DIR")
+			get_filename_component(_qt_core_config_dir "${${_qt_core_dir_variable}}" ABSOLUTE)
+			get_filename_component(_qt_core_runtime_dir "${_qt_core_config_dir}/../../../bin" ABSOLUTE)
 			add_test(NAME faithfulframe-performance-spool-smoke
 				COMMAND ${CMAKE_COMMAND} -E env
-					"PATH=$<TARGET_FILE_DIR:Qt::Core>$<SEMICOLON>$ENV{PATH}"
+					"PATH=${_qt_core_runtime_dir}$<SEMICOLON>$ENV{PATH}"
 					"$<TARGET_FILE:faithfulframe-performance-spool-smoke>")
 		else()
 			add_test(NAME faithfulframe-performance-spool-smoke COMMAND faithfulframe-performance-spool-smoke)
