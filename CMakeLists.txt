@@ -143,6 +143,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_executable(faithfulframe-tracker-worker-smoke
 		tests/faithfulframe-tracker-worker-smoke.cpp src/face-tracker-base.cpp)
 	add_executable(faithfulframe-worker-log-gate-smoke tests/faithfulframe-worker-log-gate-smoke.cpp)
+	target_include_directories(faithfulframe-worker-log-gate-smoke PRIVATE src)
 	add_executable(faithfulframe-texture-object-smoke
 		tests/faithfulframe-texture-object-smoke.cpp src/texture-object.cpp)
 	add_executable(faithfulframe-preview-geometry-smoke tests/faithfulframe-preview-geometry-smoke.cpp)
@@ -222,6 +223,9 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		"$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
 	target_include_directories(faithfulframe-tracker-worker-smoke PRIVATE
 		"$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
+	if (OS_WINDOWS)
+		target_link_libraries(faithfulframe-tracker-worker-smoke PRIVATE OBS::w32-pthreads)
+	endif()
 endif()
 
 set(CMAKE_AUTOMOC ON)
