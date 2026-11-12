@@ -12,35 +12,37 @@
 #include <thread>
 
 namespace {
-struct reaper_drain_test_gate
+struct reaper_join_test_gate
 {
 	std::mutex mutex;
 	std::condition_variable condition;
-	bool drain_paused = false;
-	bool release_drain = false;
-	bool unload_returned = false;
+	bool join_paused = false;
+	bool release_join = false;
 };
 
 struct reaper_enqueue_test_gate
 {
 	std::mutex mutex;
 	std::condition_variable condition;
+	std::atomic<bool> pause_claimed{false};
 	bool enqueue_paused = false;
 	bool release_enqueue = false;
 };
 
-void pause_reaper_drain(void *context)
+void pause_reaper_join(void *context)
 {
-	auto *gate = static_cast<reaper_drain_test_gate *>(context);
+	auto *gate = static_cast<reaper_join_test_gate *>(context);
 	std::unique_lock<std::mutex> lock(gate->mutex);
-	gate->drain_paused = true;
+	gate->join_paused = true;
 	gate->condition.notify_all();
-	gate->condition.wait(lock, [gate] { return gate->release_drain; });
+	gate->condition.wait(lock, [gate] { return gate->release_join; });
 }
 
 void pause_reaper_enqueue(void *context)
 {
 	auto *gate = static_cast<reaper_enqueue_test_gate *>(context);
+	if (gate->pause_claimed.exchange(true, std::memory_order_acq_rel))
+		return;
 	std::unique_lock<std::mutex> lock(gate->mutex);
 	gate->enqueue_paused = true;
 	gate->condition.notify_all();
@@ -81,6 +83,14 @@ bool await_worker_unavailable(const faithfulframe_session_executor &executor)
 		std::this_thread::yield();
 	} while (std::chrono::steady_clock::now() < deadline);
 	return false;
+}
+
+template<typename T> bool await_expired(const std::weak_ptr<T> &value)
+{
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (!value.expired() && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::yield();
+	return value.expired();
 }
 
 bool configuration_revision_guard_is_race_safe()
@@ -323,7 +333,7 @@ bool snapshot_publication_is_consistent(const ff_session_config &config, const f
 	       successful_reads.load(std::memory_order_relaxed) > reader_count;
 }
 
-bool retirement_queue_contention_is_nonblocking(const ff_session_config &config, const ff_generations &generations)
+bool retirement_handoffs_are_concurrent(const ff_session_config &config, const ff_generations &generations)
 {
 	auto paused_executor =
 		std::make_shared<faithfulframe_session_executor>(config, ff_identity{150, 250}, generations);
@@ -358,7 +368,7 @@ bool retirement_queue_contention_is_nonblocking(const ff_session_config &config,
 	std::mutex completion_mutex;
 	std::condition_variable completion_condition;
 	std::atomic<bool> contended_finished{false};
-	std::atomic<bool> contended_accepted{true};
+	std::atomic<bool> contended_accepted{false};
 	std::thread contended_handoff([&] {
 		contended_accepted.store(faithfulframe_retire_session_executor(contended_executor),
 					 std::memory_order_release);
@@ -368,10 +378,10 @@ bool retirement_queue_contention_is_nonblocking(const ff_session_config &config,
 		}
 		completion_condition.notify_all();
 	});
-	bool contended_returned_while_locked = false;
+	bool contended_returned_while_first_paused = false;
 	{
 		std::unique_lock<std::mutex> lock(completion_mutex);
-		contended_returned_while_locked =
+		contended_returned_while_first_paused =
 			completion_condition.wait_for(lock, std::chrono::milliseconds(250), [&] {
 				return contended_finished.load(std::memory_order_acquire);
 			});
@@ -384,11 +394,9 @@ bool retirement_queue_contention_is_nonblocking(const ff_session_config &config,
 	paused_handoff.join();
 	contended_handoff.join();
 	faithfulframe_test_set_reaper_enqueue_hook(nullptr, nullptr);
-	if (!paused_inside_enqueue || !contended_returned_while_locked ||
+	if (!paused_inside_enqueue || !contended_returned_while_first_paused ||
 	    !paused_accepted.load(std::memory_order_acquire) || paused_executor ||
-	    contended_accepted.load(std::memory_order_acquire) || !contended_executor)
-		return false;
-	if (!retire_executor_when_available(contended_executor) || contended_executor)
+	    !contended_accepted.load(std::memory_order_acquire) || contended_executor)
 		return false;
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
 	while ((!paused_weak.expired() || !contended_weak.expired()) && std::chrono::steady_clock::now() < deadline)
@@ -405,7 +413,7 @@ int run_smoke()
 		return 1;
 	const ff_session_config config{5000, 500,  8,     3840,  2160,  1920,  1080, 0.45f,
 				       1.0f, 4.0f, 0.25f, 0.08f, 0.08f, 0.05f, 0.25f};
-	if (!retirement_queue_contention_is_nonblocking(config, ff_generations{1, 1, 1, 1, 1}))
+	if (!retirement_handoffs_are_concurrent(config, ff_generations{1, 1, 1, 1, 1}))
 		return 110;
 	if (faithfulframe_teardown_register_instance() != 1)
 		return 94;
@@ -422,10 +430,10 @@ int run_smoke()
 	if (!retire_executor_when_available(last_source_executor) || last_source_executor)
 		return 96;
 	faithfulframe_teardown_instance_destroyed();
-	if (!last_source_weak.expired() || faithfulframe_teardown_register_instance() != 1)
+	if (!await_expired(last_source_weak) || faithfulframe_teardown_register_instance() != 1)
 		return 97;
 	// Failed creates only release their reservation. They do not turn into
-	// active source instances and cannot defer the destruction-thread drain.
+	// active source instances or change reaper ownership.
 	faithfulframe_teardown_instance_creation_failed();
 	if (faithfulframe_teardown_register_instance() != 1 || faithfulframe_teardown_register_instance() != 1)
 		return 87;
@@ -1160,17 +1168,10 @@ int run_smoke()
 		return 72;
 	auto late_executor =
 		std::make_shared<faithfulframe_session_executor>(config, ff_identity{108, 208}, generations);
-	ff_snapshot late_snapshot{};
-	if (!await_snapshot(
-		    *late_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
-		    late_snapshot))
-		return 73;
-	late_executor->request_shutdown();
-	if (faithfulframe_retire_session_executor(late_executor) || !late_executor)
+	if (late_executor->worker_available())
 		return 74;
-	// A caller that loses the reaper race retains ownership and performs the
-	// blocking final join itself rather than leaking a worker.
-	late_executor->shutdown();
+	// Session construction fails closed after module unload instead of creating
+	// a worker that cannot be handed to the join reaper.
 	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
 		return 98;
 	faithfulframe_teardown_begin_module_unload();
@@ -1195,129 +1196,105 @@ int run_smoke()
 		return 102;
 	std::weak_ptr<faithfulframe_session_executor> in_flight_weak = in_flight_executor;
 	in_flight_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+	reaper_join_test_gate unload_gate;
+	faithfulframe_test_set_reaper_join_hook(pause_reaper_join, &unload_gate);
 	if (!retire_executor_when_available(in_flight_executor) || in_flight_executor)
 		return 103;
-	faithfulframe_teardown_instance_destroyed();
-	if (!in_flight_weak.expired() || faithfulframe_teardown_register_instance() != 0)
+	bool unload_join_paused = false;
+	{
+		std::unique_lock<std::mutex> lock(unload_gate.mutex);
+		unload_join_paused = unload_gate.condition.wait_for(lock, std::chrono::seconds(2),
+								    [&unload_gate] { return unload_gate.join_paused; });
+	}
+	std::mutex unload_destroy_mutex;
+	std::condition_variable unload_destroy_condition;
+	std::atomic<bool> unload_destroy_returned{false};
+	std::thread unload_destroy_thread([&] {
+		faithfulframe_teardown_instance_destroyed();
+		{
+			std::lock_guard<std::mutex> lock(unload_destroy_mutex);
+			unload_destroy_returned.store(true, std::memory_order_release);
+		}
+		unload_destroy_condition.notify_all();
+	});
+	bool unload_destroy_returned_while_join_paused = false;
+	{
+		std::unique_lock<std::mutex> lock(unload_destroy_mutex);
+		unload_destroy_returned_while_join_paused =
+			unload_destroy_condition.wait_for(lock, std::chrono::milliseconds(250), [&] {
+				return unload_destroy_returned.load(std::memory_order_acquire);
+			});
+	}
+	{
+		std::lock_guard<std::mutex> lock(unload_gate.mutex);
+		unload_gate.release_join = true;
+	}
+	unload_gate.condition.notify_all();
+	unload_destroy_thread.join();
+	faithfulframe_test_set_reaper_join_hook(nullptr, nullptr);
+	if (!unload_join_paused || unload_destroy_returned_while_join_paused ||
+	    !unload_destroy_returned.load(std::memory_order_acquire) || !in_flight_weak.expired() ||
+	    faithfulframe_teardown_register_instance() != 0)
 		return 104;
 
-	// Hold the last-source drain after all joins complete but before its final
-	// lifecycle check. Module unload must observe the drain barrier and return
-	// without attempting to join the reaper on its caller thread.
+	// A normal source destroy callback must not wait for session executor joins.
 	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
 		return 105;
 	faithfulframe_teardown_instance_created();
-	auto racing_executor =
+	auto destroy_executor =
 		std::make_shared<faithfulframe_session_executor>(config, ff_identity{114, 214}, generations);
-	ff_snapshot racing_snapshot{};
+	ff_snapshot destroy_snapshot{};
 	if (!await_snapshot(
-		    *racing_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
-		    racing_snapshot))
+		    *destroy_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    destroy_snapshot))
 		return 106;
-	std::weak_ptr<faithfulframe_session_executor> racing_weak = racing_executor;
-	racing_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
-	if (!retire_executor_when_available(racing_executor) || racing_executor)
+	std::weak_ptr<faithfulframe_session_executor> destroy_weak = destroy_executor;
+	destroy_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+	reaper_join_test_gate gate;
+	faithfulframe_test_set_reaper_join_hook(pause_reaper_join, &gate);
+	if (!retire_executor_when_available(destroy_executor) || destroy_executor)
 		return 107;
-	reaper_drain_test_gate gate;
-	faithfulframe_test_set_reaper_drain_hook(pause_reaper_drain, &gate);
-	std::thread destroy_thread([] { faithfulframe_teardown_instance_destroyed(); });
-	bool drain_paused = false;
+	bool join_paused = false;
 	{
 		std::unique_lock<std::mutex> lock(gate.mutex);
-		drain_paused =
-			gate.condition.wait_for(lock, std::chrono::seconds(2), [&gate] { return gate.drain_paused; });
+		join_paused =
+			gate.condition.wait_for(lock, std::chrono::seconds(2), [&gate] { return gate.join_paused; });
 	}
-	std::thread unload_thread([&gate] {
-		faithfulframe_teardown_begin_module_unload();
+	std::mutex destroy_mutex;
+	std::condition_variable destroy_condition;
+	std::atomic<bool> destroy_returned{false};
+	std::thread destroy_thread([&] {
+		faithfulframe_teardown_instance_destroyed();
 		{
-			std::lock_guard<std::mutex> lock(gate.mutex);
-			gate.unload_returned = true;
+			std::lock_guard<std::mutex> lock(destroy_mutex);
+			destroy_returned.store(true, std::memory_order_release);
 		}
-		gate.condition.notify_all();
+		destroy_condition.notify_all();
 	});
-	bool unload_returned_before_drain_release = false;
+	bool destroy_returned_while_join_paused = false;
 	{
-		std::unique_lock<std::mutex> lock(gate.mutex);
-		unload_returned_before_drain_release = gate.condition.wait_for(lock, std::chrono::seconds(2), [&gate] {
-			return gate.unload_returned;
-		});
-	}
-	std::atomic<bool> registration_finished{false};
-	std::atomic<int> registration_result{-1};
-	std::thread registration_thread([&] {
-		const int result = faithfulframe_teardown_register_instance();
-		if (result == 1)
-			faithfulframe_teardown_instance_creation_failed();
-		{
-			std::lock_guard<std::mutex> lock(gate.mutex);
-			registration_result.store(result, std::memory_order_release);
-			registration_finished.store(true, std::memory_order_release);
-		}
-		gate.condition.notify_all();
-	});
-	bool registration_finished_during_drain = false;
-	{
-		std::unique_lock<std::mutex> lock(gate.mutex);
-		registration_finished_during_drain = gate.condition.wait_for(lock, std::chrono::seconds(2), [&] {
-			return registration_finished.load(std::memory_order_acquire);
-		});
-	}
-	auto contended_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{115, 215}, generations);
-	ff_snapshot contended_snapshot{};
-	if (!await_snapshot(
-		    *contended_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
-		    contended_snapshot))
-		return 109;
-	contended_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
-	std::mutex handoff_mutex;
-	std::condition_variable handoff_condition;
-	std::atomic<bool> handoff_started{false};
-	std::atomic<bool> handoff_finished{false};
-	std::atomic<bool> handoff_accepted{true};
-	std::weak_ptr<faithfulframe_session_executor> contended_weak = contended_executor;
-	std::thread handoff_thread([&] {
-		handoff_started.store(true, std::memory_order_release);
-		handoff_accepted.store(faithfulframe_retire_session_executor(contended_executor),
-				       std::memory_order_release);
-		{
-			std::lock_guard<std::mutex> lock(handoff_mutex);
-			handoff_finished.store(true, std::memory_order_release);
-		}
-		handoff_condition.notify_all();
-	});
-	while (!handoff_started.load(std::memory_order_acquire))
-		std::this_thread::yield();
-	bool handoff_finished_during_drain = false;
-	{
-		std::unique_lock<std::mutex> lock(handoff_mutex);
-		handoff_finished_during_drain = handoff_condition.wait_for(lock, std::chrono::seconds(2), [&] {
-			return handoff_finished.load(std::memory_order_acquire);
-		});
+		std::unique_lock<std::mutex> lock(destroy_mutex);
+		destroy_returned_while_join_paused =
+			destroy_condition.wait_for(lock, std::chrono::milliseconds(250),
+						   [&] { return destroy_returned.load(std::memory_order_acquire); });
 	}
 	{
 		std::unique_lock<std::mutex> lock(gate.mutex);
-		gate.release_drain = true;
+		gate.release_join = true;
 	}
 	gate.condition.notify_all();
 	destroy_thread.join();
-	unload_thread.join();
-	registration_thread.join();
-	handoff_thread.join();
-	faithfulframe_test_set_reaper_drain_hook(nullptr, nullptr);
-	if (!drain_paused || !unload_returned_before_drain_release || !registration_finished_during_drain ||
-	    registration_result.load(std::memory_order_acquire) != 0 || !racing_weak.expired() ||
-	    !handoff_finished_during_drain || !handoff_accepted.load(std::memory_order_acquire) || contended_executor ||
-	    !contended_weak.expired()) {
-		std::fprintf(stderr,
-			     "drain race: paused=%d unload=%d registration=%d registration_result=%d racing_reaped=%d "
-			     "handoff=%d accepted=%d owner_empty=%d contended_reaped=%d\n",
-			     drain_paused, unload_returned_before_drain_release, registration_finished_during_drain,
-			     registration_result.load(std::memory_order_acquire), racing_weak.expired(),
-			     handoff_finished_during_drain, handoff_accepted.load(std::memory_order_acquire),
-			     !contended_executor, contended_weak.expired());
+	faithfulframe_test_set_reaper_join_hook(nullptr, nullptr);
+	if (!join_paused || !destroy_returned_while_join_paused || !await_expired(destroy_weak)) {
+		std::fprintf(stderr, "source destroy wait: join_paused=%d callback_returned=%d executor_reaped=%d\n",
+			     join_paused, destroy_returned_while_join_paused, destroy_weak.expired());
 		return 108;
 	}
+	// Module unload remains the controlled barrier that closes and joins the
+	// reaper after all source destruction callbacks have finished.
+	faithfulframe_teardown_begin_module_unload();
+	if (faithfulframe_teardown_register_instance() != 0)
+		return 109;
 	return 0;
 }
 

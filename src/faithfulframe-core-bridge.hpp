@@ -13,6 +13,8 @@
 #include "faithfulframe_ffi.h"
 #include "faithfulframe-candidate-limits.hpp"
 
+class faithfulframe_executor_reaper;
+
 class faithfulframe_core_bridge {
 public:
 	faithfulframe_core_bridge(const ff_session_config &, const ff_identity &, const ff_generations &,
@@ -99,6 +101,7 @@ public:
 
 private:
 	friend class faithfulframe_executor_reaper;
+	friend bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
 
 	enum class work_kind : uint8_t { tick, candidates, command, lifecycle, stop };
 	struct work_item
@@ -133,6 +136,10 @@ private:
 	const ff_session_config config;
 	const ff_identity identity;
 	const ff_generations initial_generations;
+	// Pin the module reaper for the executor lifetime. Source teardown can hand
+	// off without consulting a global mutex, and unload cannot reclaim the
+	// reaper while an adapter still owns an executor.
+	const std::shared_ptr<faithfulframe_executor_reaper> reaper;
 	static constexpr size_t max_queued_work = 16;
 	std::array<work_item, max_queued_work + 1> queue{};
 	size_t queue_head = 0;
@@ -166,11 +173,12 @@ private:
 	bool retirement_queued = false;
 };
 
-/// Nonblocking handoff of an executor with pending shutdown/terminal work to
-/// the shared join reaper. Returns false on either queue lock contention or if
-/// the reaper cannot accept the executor; the caller retains ownership and may
-/// retry. No OBS callback waits for a reaper mutex or worker join.
+/// Allocation-free handoff of a stopped executor to its pinned module reaper.
+/// The queue lock protects only intrusive-list updates; the reaper performs
+/// joins after releasing it. False means the executor has no live reaper or
+/// the reaper has closed; ownership stays with the caller.
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
+std::shared_ptr<faithfulframe_executor_reaper> faithfulframe_acquire_executor_reaper();
 
 /// Starts the asynchronous session-join worker. Module loading must fail if it
 /// cannot be started, so nonblocking OBS callbacks can transfer joins safely.
@@ -186,8 +194,8 @@ extern "C" void faithfulframe_teardown_instance_created();
 extern "C" void faithfulframe_teardown_instance_destroyed();
 extern "C" void faithfulframe_teardown_instance_creation_failed();
 extern "C" void faithfulframe_teardown_begin_module_unload();
-#ifdef FAITHFULFRAME_TEST_REAPER_DRAIN_HOOK
-extern "C" void faithfulframe_test_set_reaper_drain_hook(void (*hook)(void *), void *context);
+#ifdef FAITHFULFRAME_TEST_REAPER_JOIN_HOOK
+extern "C" void faithfulframe_test_set_reaper_join_hook(void (*hook)(void *), void *context);
 #endif
 #ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
 extern "C" void faithfulframe_test_set_reaper_enqueue_hook(void (*hook)(void *), void *context);
