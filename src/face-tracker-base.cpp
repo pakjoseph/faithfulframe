@@ -11,6 +11,10 @@
 #include <windows.h>
 #endif // _WIN32
 
+#ifdef FAITHFULFRAME_TEST_TRACKER_TEARDOWN_HOOK
+extern "C" void faithfulframe_test_tracker_stop_attempted(void);
+#endif
+
 face_tracker_base::face_tracker_base()
 {
 	pthread_mutex_init(&mutex, NULL);
@@ -86,6 +90,9 @@ bool face_tracker_base::start()
 
 void face_tracker_base::stop()
 {
+#ifdef FAITHFULFRAME_TEST_TRACKER_TEARDOWN_HOOK
+	faithfulframe_test_tracker_stop_attempted();
+#endif
 	lock();
 	stop_requested.store(true, std::memory_order_relaxed);
 	signal();

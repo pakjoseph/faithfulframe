@@ -10,6 +10,10 @@
 #include <chrono>
 #include <utility>
 
+#ifdef FAITHFULFRAME_TEST_TRACKER_TEARDOWN_HOOK
+extern "C" void faithfulframe_test_tracker_work_entered(void);
+#endif
+
 struct face_tracker_dlib_private_s
 {
 	std::shared_ptr<texture_object> tex;
@@ -106,6 +110,9 @@ template<typename Tx, typename Ta> inline Tx internal_division(Tx x0, Tx x1, Ta 
 
 void face_tracker_dlib::track_main()
 {
+#ifdef FAITHFULFRAME_TEST_TRACKER_TEARDOWN_HOOK
+	faithfulframe_test_tracker_work_entered();
+#endif
 	std::shared_ptr<texture_object> tex = std::move(p->tex);
 	if (!tex) {
 		p->n_track = 0;

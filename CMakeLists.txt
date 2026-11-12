@@ -242,6 +242,8 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		src/face-tracker-base.cpp
 		src/face-tracker-dlib.cpp
 		src/texture-object.cpp)
+	target_compile_definitions(faithfulframe-dlib-tracker-lifetime-smoke PRIVATE
+		FAITHFULFRAME_TEST_TRACKER_TEARDOWN_HOOK=1)
 	add_dependencies(faithfulframe-rust-bridge-smoke faithfulframe-rust-ffi-build)
 	add_dependencies(faithfulframe-session-executor-smoke faithfulframe-rust-ffi-build)
 	target_include_directories(faithfulframe-rust-bridge-smoke PRIVATE src rust/faithfulframe-ffi/include)

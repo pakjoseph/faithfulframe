@@ -1,17 +1,14 @@
 #include <obs-module.h>
 #include "faithfulframe-worker-log.hpp"
 #include "face-tracker-dlib.h"
-#include "texture-object.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <memory>
 #include <thread>
-#include <vector>
 
 extern "C" void *bmalloc(size_t size)
 {
@@ -37,88 +34,68 @@ namespace {
 
 using steady_clock = std::chrono::steady_clock;
 
-std::shared_ptr<texture_object> make_pattern_frame(uint32_t width, uint32_t height, uint64_t timestamp_ms,
-						   uint32_t phase)
-{
-	const size_t stride = static_cast<size_t>(width) * 3;
-	std::vector<uint8_t> pixels(stride * height);
-	for (uint32_t y = 0; y < height; ++y) {
-		for (uint32_t x = 0; x < width; ++x) {
-			const uint32_t pattern = (x * 31u + y * 17u + ((x ^ y) * 13u) + phase * 47u) & 0xffu;
-			const size_t offset = static_cast<size_t>(y) * stride + static_cast<size_t>(x) * 3;
-			pixels[offset] = static_cast<uint8_t>(pattern);
-			pixels[offset + 1] = static_cast<uint8_t>(pattern ^ (x & 0xffu));
-			pixels[offset + 2] = static_cast<uint8_t>(pattern ^ (y & 0xffu));
-		}
-	}
+std::atomic<bool> worker_entered{false};
+std::atomic<bool> release_worker{false};
+std::atomic<bool> stop_attempted{false};
 
-	obs_source_frame source_frame{};
-	source_frame.data[0] = pixels.data();
-	source_frame.linesize[0] = static_cast<uint32_t>(stride);
-	source_frame.width = width;
-	source_frame.height = height;
-	source_frame.format = VIDEO_FORMAT_BGR3;
-	auto texture = std::make_shared<texture_object>();
-	texture->scale = 1.0f;
-	texture->captured_at_ms = timestamp_ms;
-	texture->set_texture_obsframe(&source_frame, 1);
-	return texture;
-}
-
-bool wait_for_worker_to_hold_tracker_lock(face_tracker_dlib &tracker)
+bool wait_for(const std::atomic<bool> &flag, std::chrono::seconds timeout)
 {
-	const auto deadline = steady_clock::now() + std::chrono::seconds(10);
+	const auto deadline = steady_clock::now() + timeout;
 	while (steady_clock::now() < deadline) {
-		if (tracker.trylock() != 0)
+		if (flag.load(std::memory_order_acquire))
 			return true;
-		tracker.unlock();
-		std::this_thread::sleep_for(std::chrono::microseconds(50));
+		std::this_thread::yield();
 	}
-	return false;
-}
-
-bool destroy_while_tracking()
-{
-	constexpr uint32_t width = 1'920;
-	constexpr uint32_t height = 1'080;
-	auto *tracker = new face_tracker_dlib();
-	auto first = make_pattern_frame(width, height, 100, 0);
-	tracker->lock();
-	tracker->set_texture(first);
-	tracker->set_position(rect_s{500, 300, 1'100, 900, 1.0f});
-	tracker->set_landmark_detection(nullptr);
-	tracker->unlock();
-	if (!tracker->start()) {
-		delete tracker;
-		return false;
-	}
-	if (!wait_for_worker_to_hold_tracker_lock(*tracker)) {
-		delete tracker;
-		return false;
-	}
-	// Acquiring the mutex after observing the busy worker proves the first frame
-	// has left track_main() before the second update is queued.
-	tracker->lock();
-	first.reset();
-
-	auto second = make_pattern_frame(width, height, 200, 1);
-	tracker->set_texture(second);
-	tracker->signal();
-	tracker->unlock();
-	if (wait_for_worker_to_hold_tracker_lock(*tracker)) {
-		delete tracker;
-		return true;
-	}
-	delete tracker;
-	return false;
+	return flag.load(std::memory_order_acquire);
 }
 
 } // namespace
 
+extern "C" void faithfulframe_test_tracker_work_entered(void)
+{
+	if (!worker_entered.exchange(true, std::memory_order_acq_rel)) {
+		while (!release_worker.load(std::memory_order_acquire))
+			std::this_thread::yield();
+	}
+}
+
+extern "C" void faithfulframe_test_tracker_stop_attempted(void)
+{
+	stop_attempted.store(true, std::memory_order_release);
+}
+
 int main()
 {
-	if (destroy_while_tracking())
-		return 0;
-	std::fprintf(stderr, "dlib tracker lifetime smoke failed to exercise worker teardown\n");
-	return 1;
+	auto *tracker = new face_tracker_dlib();
+	if (!tracker->start()) {
+		delete tracker;
+		std::fprintf(stderr, "dlib tracker lifetime smoke failed to start worker\n");
+		return 1;
+	}
+
+	if (!wait_for(worker_entered, std::chrono::seconds(10))) {
+		release_worker.store(true, std::memory_order_release);
+		delete tracker;
+		std::fprintf(stderr, "dlib tracker lifetime smoke failed to enter worker\n");
+		return 1;
+	}
+
+	std::atomic<bool> destroy_complete{false};
+	std::thread destroyer([&] {
+		delete tracker;
+		destroy_complete.store(true, std::memory_order_release);
+	});
+
+	// The worker hook holds face_tracker_base's mutex. Reaching stop() without
+	// completing destruction proves teardown is waiting for active worker work.
+	const auto stop_reached = wait_for(stop_attempted, std::chrono::seconds(10));
+	const bool destruction_waited = stop_reached && !destroy_complete.load(std::memory_order_acquire);
+	release_worker.store(true, std::memory_order_release);
+	destroyer.join();
+
+	if (!destruction_waited || !destroy_complete.load(std::memory_order_acquire)) {
+		std::fprintf(stderr, "dlib tracker lifetime smoke failed to wait for worker teardown\n");
+		return 1;
+	}
+	return 0;
 }
