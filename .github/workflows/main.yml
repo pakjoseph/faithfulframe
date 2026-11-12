@@ -128,6 +128,7 @@ jobs:
           first-time-log: ./logs/
 
       - name: 'Test with onsdriver'
+        timeout-minutes: 3
         run: |
           python -m unittest discover test-onsdriver/
 
@@ -357,6 +358,7 @@ jobs:
 
       - name: 'Test with onsdriver'
         if: ${{ startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' }}
+        timeout-minutes: 3
         run: |
           python -m unittest discover test-onsdriver/
 
@@ -457,6 +459,7 @@ jobs:
           obs-version: ${{ matrix.obs-onsdriver }}
 
       - name: 'Test with onsdriver'
+        timeout-minutes: 3
         run: |
           python -m unittest discover test-onsdriver/
 
