@@ -16,6 +16,7 @@
 #include <QRectF>
 #include <QTimer>
 #include <QSignalBlocker>
+#include <QPointer>
 #include <QVariantMap>
 #include "sanctuary-style.hpp"
 #include "plugin-macros.generated.h"
@@ -46,6 +47,9 @@ void FTDock::changeEvent(QEvent *event)
 
 // accessed only from UI thread
 static std::vector<FTDock *> *docks;
+static QPointer<QAction> new_dock_action;
+static QPointer<QObject> dock_action_context;
+static bool dock_save_callback_registered = false;
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
 struct faithfulframe_safe_preview
@@ -1450,25 +1454,54 @@ static void save_load_ft_docks(obs_data_t *save_data, bool saving, void *)
 
 void ft_docks_init()
 {
+	if (docks)
+		return;
 	docks = new std::vector<FTDock *>;
 	obs_frontend_add_save_callback(save_load_ft_docks, NULL);
+	dock_save_callback_registered = true;
 
-	QAction *action = static_cast<QAction *>(
+	new_dock_action = static_cast<QAction *>(
 		obs_frontend_add_tools_menu_qaction(obs_module_text("New Face Tracker Dock...")));
+	QAction *action = new_dock_action.data();
 	blog(LOG_INFO, "ft_docks_init: Adding face tracker dock menu action=%p", action);
-	auto cb = [] {
+	if (!action) {
+		blog(LOG_WARNING, "ft_docks_init: could not create the dock menu action");
+		return;
+	}
+	QWidget *main_window = static_cast<QWidget *>(obs_frontend_get_main_window());
+	dock_action_context = new QObject(main_window);
+	QObject::connect(action, &QAction::triggered, dock_action_context.data(), [] {
 		obs_data_t *props = obs_data_create();
 		FTDock::default_properties(props);
 		ft_dock_add(NULL, props, true);
 		obs_data_release(props);
-	};
-	QAction::connect(action, &QAction::triggered, cb);
+	});
 }
 
 void ft_docks_release()
 {
-	delete docks;
-	docks = NULL;
+	if (dock_save_callback_registered) {
+		obs_frontend_remove_save_callback(save_load_ft_docks, NULL);
+		dock_save_callback_registered = false;
+	}
+	if (docks) {
+		while (!docks->empty()) {
+			FTDock *dock = docks->back();
+			dock->close();
+			delete dock;
+		}
+		delete docks;
+		docks = NULL;
+	}
+	if (new_dock_action) {
+		new_dock_action->setEnabled(false);
+		new_dock_action->setVisible(false);
+	}
+	QObject *context = dock_action_context.data();
+	dock_action_context.clear();
+	if (context)
+		delete context;
+	new_dock_action.clear();
 }
 
 void FTDock::default_properties(obs_data_t *) {}
