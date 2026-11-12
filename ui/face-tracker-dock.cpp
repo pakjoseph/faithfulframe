@@ -1,6 +1,7 @@
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <QAction>
@@ -22,6 +23,7 @@
 #include "face-tracker-widget.hpp"
 #include "face-tracker-dock-internal.hpp"
 #ifdef ENABLE_RUST_CORE_BRIDGE
+#include "faithfulframe-candidate-selection.hpp"
 #include "faithfulframe-preview-geometry.hpp"
 #include "faithfulframe_ffi.h"
 #endif
@@ -909,6 +911,8 @@ void FTDock::updateState()
 			use_full_source_preview_transform(display_preview);
 		QSignalBlocker blocker(candidateSelector);
 		candidateSelector->clear();
+		candidateSelector->addItem("Choose a detected face", QVariantMap{});
+		std::array<uint64_t, 8> visible_candidate_handles{};
 		int visible_candidate_count = 0;
 		for (const QVariantMap &candidate : safe_preview.candidates) {
 			QRectF visible;
@@ -921,12 +925,35 @@ void FTDock::updateState()
 							   .arg(x)
 							   .arg(y),
 						   candidate);
-			if (candidate.value("handle").toULongLong() == previous_handle)
-				candidateSelector->setCurrentIndex(candidateSelector->count() - 1);
+			visible_candidate_handles[static_cast<size_t>(visible_candidate_count - 1)] =
+				candidate.value("handle").toULongLong();
 		}
-		if (!visible_candidate_count)
-			candidateSelector->addItem("No fresh face candidates");
-		selectCandidateButton->setEnabled(safe_preview.available && visible_candidate_count > 0 &&
+		if (!visible_candidate_count) {
+			candidateSelector->setItemText(0, "No fresh face candidates");
+		} else {
+			size_t restore_index = 0;
+			const ff_identity previous_identity{previous_candidate.value("source_id").toULongLong(),
+							    previous_candidate.value("session_id").toULongLong()};
+			const ff_generations previous_generations{
+				previous_candidate.value("source_generation").toULongLong(),
+				previous_candidate.value("session_generation").toULongLong(),
+				previous_candidate.value("stream_generation").toULongLong(),
+				previous_candidate.value("geometry_generation").toULongLong(),
+				previous_candidate.value("tracker_generation").toULongLong()};
+			const ff_identity current_identity{safe_preview.source_id, safe_preview.session_id};
+			const ff_generations current_generations{safe_preview.source_generation,
+								 safe_preview.session_generation,
+								 safe_preview.stream_generation,
+								 safe_preview.geometry_generation,
+								 safe_preview.tracker_generation};
+			if (faithfulframe_candidate_restore_index(
+				    previous_handle, previous_identity, previous_generations, current_identity,
+				    current_generations, visible_candidate_handles.data(),
+				    static_cast<size_t>(visible_candidate_count), restore_index))
+				candidateSelector->setCurrentIndex(static_cast<int>(restore_index + 1));
+		}
+		const bool has_explicit_candidate = !candidateSelector->currentData().toMap().isEmpty();
+		selectCandidateButton->setEnabled(safe_preview.available && has_explicit_candidate &&
 						  (safe_preview.state == FF_STATE_MANUAL ||
 						   safe_preview.state == FF_STATE_SEARCHING ||
 						   safe_preview.state == FF_STATE_LOST));
