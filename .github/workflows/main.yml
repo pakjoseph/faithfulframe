@@ -215,6 +215,12 @@ jobs:
           done
           echo "OPENBLAS_HOME=$OPENBLAS_HOME" >> $GITHUB_ENV
           cp $OPENBLAS_HOME/LICENSE data/LICENSE-openblas
+          GCC_HOME="$(brew --prefix gcc)"
+          LIBOMP_HOME="$(brew --prefix libomp)"
+          cp "$GCC_HOME/COPYING" data/LICENSE-gcc
+          cp "$GCC_HOME/COPYING.LIB" data/LICENSE-gcc-lgpl
+          cp "$GCC_HOME/COPYING.RUNTIME" data/LICENSE-gcc-runtime
+          cp "$LIBOMP_HOME/LICENSE.TXT" data/LICENSE-libomp
 
       - name: Download dlib-models
         run: |

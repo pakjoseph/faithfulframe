@@ -2,7 +2,7 @@ Name: @PLUGIN_NAME_FEDORA@
 Version: @VERSION@
 Release: @RELEASE@%{?dist}
 Summary: OBS Studio plugin as video filters to track face for mainly a speaking person
-License: GPLv3+
+License: GPL-2.0-or-later AND LGPL-2.1-or-later AND BSL-1.0
 
 Source0: %{name}-%{version}.tar.bz2
 Source1: %{name}-%{version}-libvisca.tar.bz2
@@ -19,12 +19,7 @@ BuildRequires: libjxl-devel
 %package data
 Summary: Model file for %{name}
 BuildArch: noarch
-License: CC0-1.0
-
-%package data-nonfree
-Summary: Non-free model file for %{name}
-BuildArch: noarch
-License: Nonfree
+License: CC0-1.0 AND BSL-1.0
 
 %description
 This plugin tracks face of a person by detecting and tracking a face.
@@ -37,10 +32,6 @@ under tracking, the frame will be cropped.
 %description data
 Model files for @PLUGIN_NAME_FEDORA@.
 The model files came from https://github.com/davisking/dlib-models/.
-
-%description data-nonfree
-Non-free model files for @PLUGIN_NAME_FEDORA@.
-The model file came from https://github.com/davisking/dlib-models/.
 
 %prep
 %autosetup -p1
@@ -60,11 +51,10 @@ The model file came from https://github.com/davisking/dlib-models/.
 
 mkdir -p %{buildroot}/%{_datadir}/licenses/%{name}/
 mkdir -p %{buildroot}/%{_datadir}/licenses/%{name}-data/
-mkdir -p %{buildroot}/%{_datadir}/licenses/%{name}-data-nonfree/
 cp LICENSE %{buildroot}/%{_datadir}/licenses/%{name}/
+cp libvisca/COPYING %{buildroot}/%{_datadir}/licenses/%{name}/LICENSE-libvisca.txt
 mv %{buildroot}/%{_datadir}/obs/obs-plugins/@PLUGIN_NAME@/LICENSE-dlib %{buildroot}/%{_datadir}/licenses/%{name}/
 mv %{buildroot}/%{_datadir}/obs/obs-plugins/@PLUGIN_NAME@/LICENSE-dlib-models %{buildroot}/%{_datadir}/licenses/%{name}-data/
-mv %{buildroot}/%{_datadir}/obs/obs-plugins/@PLUGIN_NAME@/LICENSE-shape_predictor_68_face_landmarks %{buildroot}/%{_datadir}/licenses/%{name}-data-nonfree/
 
 %files
 %{_libdir}/obs-plugins/@PLUGIN_NAME@.so
@@ -76,8 +66,3 @@ mv %{buildroot}/%{_datadir}/obs/obs-plugins/@PLUGIN_NAME@/LICENSE-shape_predicto
 %{_datadir}/obs/obs-plugins/@PLUGIN_NAME@/dlib_face_landmark_model/shape_predictor_5_face_landmarks.dat
 %{_datadir}/obs/obs-plugins/@PLUGIN_NAME@/dlib_hog_model
 %{_datadir}/licenses/%{name}-data/*
-
-%files data-nonfree
-%{_datadir}/obs/obs-plugins/@PLUGIN_NAME@/dlib_face_landmark_model/shape_predictor_68_face_landmarks.dat
-%{_datadir}/obs/obs-plugins/@PLUGIN_NAME@/dlib_face_landmark_model/shape_predictor_68_face_landmarks_GTX.dat
-%{_datadir}/licenses/%{name}-data-nonfree/*
