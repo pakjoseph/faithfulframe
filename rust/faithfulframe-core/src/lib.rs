@@ -858,6 +858,16 @@ impl TrackingEngine {
 
     pub fn apply(&mut self, event: Event) -> Snapshot {
         let at = event_time(event);
+        let authorized_target_update = match event {
+            Event::Command { envelope, .. } => {
+                matches!(envelope.command, Command::SelectCandidate { .. })
+            }
+            Event::Candidate { candidate, .. } => self
+                .session
+                .selected
+                .is_some_and(|selected| selected.continuity == candidate.continuity),
+            _ => false,
+        };
         let geometry_update = match event {
             Event::Lifecycle {
                 identity,
@@ -897,7 +907,7 @@ impl TrackingEngine {
             self.frame_plan = self.framing.safe_wide();
         } else {
             match policy.crop_action {
-                CropAction::Track => {
+                CropAction::Track if authorized_target_update => {
                     if let Some(target) = policy.selected_rect {
                         match self.framing.plan(target) {
                             Ok(plan) => self.frame_plan = plan,
@@ -913,7 +923,7 @@ impl TrackingEngine {
                     self.framing.reset();
                     self.frame_plan = self.framing.safe_wide();
                 }
-                CropAction::Hold | CropAction::None => {}
+                CropAction::Track | CropAction::Hold | CropAction::None => {}
             }
         }
         self.snapshot_with_result(policy.command_result)
@@ -2339,6 +2349,90 @@ mod tests {
         assert!(locked.crop.x + locked.crop.width <= 1.0);
         assert!(locked.crop.y + locked.crop.height <= 1.0);
         assert_eq!(locked.viewport, Rect::full_frame());
+    }
+
+    #[test]
+    fn framing_advances_only_for_fresh_selected_target_evidence() {
+        let mut engine = TrackingEngine::new(
+            Config::default(),
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        engine.apply(Event::Candidate {
+            at: 2,
+            candidate: candidate(10, 100, 1, 2),
+        });
+        let searching = engine.snapshot();
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: searching.identity,
+                status_version: searching.status_version,
+                generations: searching.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: searching.observation_version,
+                },
+            },
+        });
+        let held_crop = locked.crop;
+
+        let after_tick = engine.apply(Event::Tick { at: 4 });
+        assert_eq!(after_tick.crop, held_crop);
+
+        let unrelated = Candidate {
+            handle: 11,
+            continuity: 999,
+            identity: identity(),
+            observation_version: 2,
+            generations: generations(),
+            observed_at: 5,
+            expires_at: 15,
+            rect: Rect::normalized(0.8, 0.2, 0.1, 0.2).unwrap(),
+        };
+        let after_unrelated = engine.apply(Event::Candidate {
+            at: 5,
+            candidate: unrelated,
+        });
+        assert_eq!(after_unrelated.crop, held_crop);
+
+        let selected_update = Candidate {
+            handle: 12,
+            continuity: 100,
+            identity: identity(),
+            observation_version: 3,
+            generations: generations(),
+            observed_at: 6,
+            expires_at: 16,
+            rect: Rect::normalized(0.65, 0.2, 0.1, 0.2).unwrap(),
+        };
+        let after_selected_update = engine.apply(Event::Candidate {
+            at: 6,
+            candidate: selected_update,
+        });
+        assert_ne!(after_selected_update.crop, held_crop);
+        assert!(after_selected_update.crop.x <= selected_update.rect.x);
+        assert!(after_selected_update.crop.y <= selected_update.rect.y);
+        assert!(
+            after_selected_update.crop.x + after_selected_update.crop.width
+                >= selected_update.rect.x + selected_update.rect.width
+        );
+        assert!(
+            after_selected_update.crop.y + after_selected_update.crop.height
+                >= selected_update.rect.y + selected_update.rect.height
+        );
     }
 
     #[test]

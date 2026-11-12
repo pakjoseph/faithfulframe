@@ -87,6 +87,17 @@ impl FramingController {
         {
             return Err(FramingError::InvalidConfig);
         }
+        let wide_viewport = fit_viewport(config.source_aspect, config.output_aspect);
+        if Rect::normalized(
+            wide_viewport.x,
+            wide_viewport.y,
+            wide_viewport.width,
+            wide_viewport.height,
+        )
+        .is_err()
+        {
+            return Err(FramingError::InvalidConfig);
+        }
         Ok(Self {
             config,
             current: None,
@@ -104,23 +115,22 @@ impl FramingController {
         }
     }
 
-    /// Returns an aspect-correct source crop containing target, or full source
-    /// with fit padding when the target cannot fit the configured zoom limits.
+    /// Returns a bounded source crop and an output viewport that preserves its
+    /// aspect ratio. Intermediate plans may use padding while easing from wide.
     pub fn plan(&mut self, target: Rect) -> Result<FramePlan, FramingError> {
         Rect::normalized(target.x, target.y, target.width, target.height)
             .map_err(|_| FramingError::InvalidTarget)?;
         let desired = self.desired(target);
-        let next = match self.current {
-            None => desired,
-            Some(_) if desired == Rect::full_frame() => desired,
-            Some(current) if !self.has_output_aspect(current) => desired,
-            Some(current) => self.smooth(current, desired, target),
-        };
-        if next != Rect::full_frame() && !self.has_output_aspect(next) {
-            return Err(FramingError::InvalidTarget);
-        }
+        // The first selection begins at safe-wide too. Intermediate crop
+        // rectangles may have a different aspect ratio from the output; fit
+        // them with padding until pan and zoom converge to the target crop.
+        let current = self.current.unwrap_or_else(Rect::full_frame);
+        let next = self.smooth(current, desired, target);
+        Rect::normalized(next.x, next.y, next.width, next.height)
+            .map_err(|_| FramingError::InvalidTarget)?;
+        let plan = self.plan_for(next)?;
         self.current = Some(next);
-        Ok(self.plan_for(next))
+        Ok(plan)
     }
 
     fn desired(&self, target: Rect) -> Rect {
@@ -140,17 +150,18 @@ impl FramingController {
         if desired == Rect::full_frame() {
             return desired;
         }
-        let crop_aspect = self.crop_aspect();
         let current_center = (
             current.x + current.width * 0.5,
             current.y + current.height * 0.5,
         );
         let max_pan_delta = self.config.max_pan_step * self.config.pan_smoothing;
-        let target_inside_dead_zone = self.config.dead_zone_fraction > 0.0
+        let target_inside_x_dead_zone = self.config.dead_zone_fraction > 0.0
             && current != Rect::full_frame()
             && target.x >= current.x + current.width * self.config.dead_zone_fraction
             && target.x + target.width
-                <= current.x + current.width * (1.0 - self.config.dead_zone_fraction)
+                <= current.x + current.width * (1.0 - self.config.dead_zone_fraction);
+        let target_inside_y_dead_zone = self.config.dead_zone_fraction > 0.0
+            && current != Rect::full_frame()
             && target.y >= current.y + current.height * self.config.dead_zone_fraction
             && target.y + target.height
                 <= current.y + current.height * (1.0 - self.config.dead_zone_fraction);
@@ -158,50 +169,57 @@ impl FramingController {
             desired.x + desired.width * 0.5,
             desired.y + desired.height * 0.5,
         );
-        let (mut center_x, mut center_y) = if target_inside_dead_zone {
-            current_center
+        let mut center_x = if target_inside_x_dead_zone {
+            current_center.0
         } else {
-            (
-                current_center.0
-                    + bounded_delta(
-                        desired_center.0 - current_center.0,
-                        self.config.max_pan_step,
-                    ) * self.config.pan_smoothing,
-                current_center.1
-                    + bounded_delta(
-                        desired_center.1 - current_center.1,
-                        self.config.max_pan_step,
-                    ) * self.config.pan_smoothing,
-            )
+            current_center.0
+                + bounded_delta(
+                    desired_center.0 - current_center.0,
+                    self.config.max_pan_step,
+                ) * self.config.pan_smoothing
+        };
+        let mut center_y = if target_inside_y_dead_zone {
+            current_center.1
+        } else {
+            current_center.1
+                + bounded_delta(
+                    desired_center.1 - current_center.1,
+                    self.config.max_pan_step,
+                ) * self.config.pan_smoothing
         };
         let mut width = current.width
             + bounded_delta(desired.width - current.width, self.config.max_zoom_step)
                 * self.config.zoom_smoothing;
+        let mut height = current.height
+            + bounded_delta(desired.height - current.height, self.config.max_zoom_step)
+                * self.config.zoom_smoothing;
+        let target_center_x = target.x + target.width * 0.5;
+        let target_center_y = target.y + target.height * 0.5;
+
         // Keep pan within its configured step. If that center cannot yet
         // contain the target, widen temporarily instead of teleporting the
         // crop across the source.
-        let max_crop_width = crop_aspect.min(1.0);
         for _ in 0..3 {
+            width = width.max(2.0 * (target_center_x - center_x).abs() + target.width);
+            height = height.max(2.0 * (target_center_y - center_y).abs() + target.height);
+            if width > 1.0 || height > 1.0 {
+                return Rect::full_frame();
+            }
+
             center_x = center_x.clamp(width * 0.5, 1.0 - width * 0.5);
-            let height = width / crop_aspect;
             center_y = center_y.clamp(height * 0.5, 1.0 - height * 0.5);
-            if (center_x - current_center.0).abs() > max_pan_delta
-                || (center_y - current_center.1).abs() > max_pan_delta
+            if (center_x - current_center.0).abs() > max_pan_delta + 0.000_001
+                || (center_y - current_center.1).abs() > max_pan_delta + 0.000_001
             {
                 return Rect::full_frame();
             }
-            let needed_width =
-                (2.0 * (target.x + target.width * 0.5 - center_x).abs() + target.width).max(
-                    (2.0 * (target.y + target.height * 0.5 - center_y).abs() + target.height)
-                        * crop_aspect,
-                );
-            if needed_width <= width {
+            let needed_width = 2.0 * (target_center_x - center_x).abs() + target.width;
+            let needed_height = 2.0 * (target_center_y - center_y).abs() + target.height;
+            if needed_width <= width && needed_height <= height {
                 return bounded_at(center_x, center_y, width, height);
             }
-            width = needed_width;
-            if width > max_crop_width {
-                return Rect::full_frame();
-            }
+            width = width.max(needed_width);
+            height = height.max(needed_height);
         }
         Rect::full_frame()
     }
@@ -210,20 +228,28 @@ impl FramingController {
         self.config.output_aspect / self.config.source_aspect
     }
 
-    fn has_output_aspect(&self, crop: Rect) -> bool {
-        (crop.width / crop.height - self.crop_aspect()).abs() <= 0.001
-    }
-
-    fn plan_for(&self, crop: Rect) -> FramePlan {
+    fn plan_for(&self, crop: Rect) -> Result<FramePlan, FramingError> {
+        let crop_pixel_aspect = (f64::from(self.config.source_aspect) * f64::from(crop.width)
+            / f64::from(crop.height)) as f32;
         let output_viewport = if crop == Rect::full_frame() {
             fit_viewport(self.config.source_aspect, self.config.output_aspect)
         } else {
-            Rect::full_frame()
+            if !crop_pixel_aspect.is_finite() || crop_pixel_aspect <= 0.0 {
+                return Err(FramingError::InvalidTarget);
+            }
+            fit_viewport(crop_pixel_aspect, self.config.output_aspect)
         };
-        FramePlan {
+        Rect::normalized(
+            output_viewport.x,
+            output_viewport.y,
+            output_viewport.width,
+            output_viewport.height,
+        )
+        .map_err(|_| FramingError::InvalidTarget)?;
+        Ok(FramePlan {
             source_crop: crop,
             output_viewport,
-        }
+        })
     }
 }
 
@@ -375,7 +401,11 @@ mod tests {
             ..FramingConfig::default()
         })
         .unwrap();
-        let plan = controller.plan(target(0.49, 0.49, 0.01, 0.01)).unwrap();
+        let speaker = target(0.49, 0.49, 0.01, 0.01);
+        let mut plan = controller.plan(speaker).unwrap();
+        for _ in 0..100 {
+            plan = controller.plan(speaker).unwrap();
+        }
         assert!((plan.source_crop.width - 0.5).abs() < 0.000_1);
         assert!((plan.source_crop.height - 0.5).abs() < 0.000_1);
     }
@@ -388,8 +418,17 @@ mod tests {
             ..FramingConfig::default()
         })
         .unwrap();
-        let plan = controller.plan(target(0.4, 0.3, 0.08, 0.16)).unwrap();
-        assert!((plan.source_crop.width / plan.source_crop.height - 81.0 / 256.0).abs() < 0.000_1);
+        let speaker = target(0.4, 0.3, 0.08, 0.16);
+        let mut plan = controller.plan(speaker).unwrap();
+        for _ in 0..100 {
+            plan = controller.plan(speaker).unwrap();
+        }
+        assert!(
+            (plan.source_crop.width / plan.source_crop.height - 81.0 / 256.0).abs() < 0.000_1,
+            "crop {:?}; desired {:?}",
+            plan.source_crop,
+            controller.desired(speaker)
+        );
     }
 
     #[test]
@@ -428,9 +467,17 @@ mod tests {
         })
         .unwrap();
         let first_target = target(0.46, 0.46, 0.08, 0.08);
-        let first = controller.plan(first_target).unwrap();
+        let mut first = controller.plan(first_target).unwrap();
+        for _ in 0..100 {
+            first = controller.plan(first_target).unwrap();
+        }
         let held = controller.plan(target(0.49, 0.46, 0.08, 0.08)).unwrap();
-        assert_eq!(held.source_crop, first.source_crop);
+        let first_center_x = first.source_crop.x + first.source_crop.width * 0.5;
+        let held_center_x = held.source_crop.x + held.source_crop.width * 0.5;
+        let first_center_y = first.source_crop.y + first.source_crop.height * 0.5;
+        let held_center_y = held.source_crop.y + held.source_crop.height * 0.5;
+        assert!((held_center_x - first_center_x).abs() < 0.000_1);
+        assert!((held_center_y - first_center_y).abs() < 0.000_1);
 
         let moving_target = target(0.57, 0.46, 0.08, 0.08);
         let moving = controller.plan(moving_target).unwrap();
@@ -466,6 +513,32 @@ mod tests {
         assert_eq!(next_center, first_center);
         assert!(next.source_crop.width < first.source_crop.width);
         assert!(contains(next.source_crop, narrower_target));
+    }
+
+    #[test]
+    fn horizontal_dead_zone_exit_does_not_pan_vertically() {
+        let mut controller = FramingController::new(FramingConfig {
+            dead_zone_fraction: 0.1,
+            pan_smoothing: 0.5,
+            max_pan_step: 0.2,
+            ..FramingConfig::default()
+        })
+        .unwrap();
+        let centered_target = target(0.46, 0.46, 0.08, 0.08);
+        let mut first = controller.plan(centered_target).unwrap();
+        for _ in 0..100 {
+            first = controller.plan(centered_target).unwrap();
+        }
+        let moved_target = target(0.7, 0.46, 0.08, 0.08);
+        let moved = controller.plan(moved_target).unwrap();
+        let first_center_x = first.source_crop.x + first.source_crop.width * 0.5;
+        let first_center_y = first.source_crop.y + first.source_crop.height * 0.5;
+        let moved_center_x = moved.source_crop.x + moved.source_crop.width * 0.5;
+        let moved_center_y = moved.source_crop.y + moved.source_crop.height * 0.5;
+
+        assert!(moved_center_x > first_center_x);
+        assert!((moved_center_y - first_center_y).abs() < 0.000_1);
+        assert!(contains(moved.source_crop, moved_target));
     }
 
     #[test]
@@ -509,10 +582,78 @@ mod tests {
     #[test]
     fn large_pan_that_breaks_step_limit_falls_back_to_safe_wide() {
         let mut controller = FramingController::new(FramingConfig::default()).unwrap();
-        controller.plan(target(0.2, 0.3, 0.08, 0.16)).unwrap();
+        let first_target = target(0.2, 0.3, 0.08, 0.16);
+        for _ in 0..100 {
+            controller.plan(first_target).unwrap();
+        }
         let plan = controller.plan(target(0.9, 0.3, 0.08, 0.16)).unwrap();
         assert_eq!(plan.source_crop, Rect::full_frame());
         assert_eq!(plan.output_viewport, Rect::full_frame());
+    }
+
+    #[test]
+    fn first_selected_target_moves_and_zooms_from_safe_wide_with_bounds() {
+        let mut controller = FramingController::new(FramingConfig {
+            pan_smoothing: 1.0,
+            max_pan_step: 0.1,
+            zoom_smoothing: 1.0,
+            max_zoom_step: 0.2,
+            ..FramingConfig::default()
+        })
+        .unwrap();
+        let speaker = target(0.2, 0.2, 0.1, 0.2);
+        let plan = controller.plan(speaker).unwrap();
+        let crop = plan.source_crop;
+        let center_x = crop.x + crop.width * 0.5;
+        let center_y = crop.y + crop.height * 0.5;
+
+        assert!(contains(crop, speaker));
+        assert!((center_x - 0.5).abs() <= 0.1);
+        assert!((center_y - 0.5).abs() <= 0.1);
+        assert!((1.0 - crop.width) <= 0.2);
+        assert!((1.0 - crop.height) <= 0.2);
+        assert_ne!(crop, controller.desired(speaker));
+    }
+
+    #[test]
+    fn mismatched_aspect_intermediate_crops_use_fit_padding() {
+        let source_aspect = 4.0 / 3.0;
+        let output_aspect = 16.0 / 9.0;
+        let mut controller = FramingController::new(FramingConfig {
+            source_aspect,
+            output_aspect,
+            ..FramingConfig::default()
+        })
+        .unwrap();
+        let speaker = target(0.4, 0.3, 0.08, 0.16);
+        let plan = controller.plan(speaker).unwrap();
+        let crop_pixel_aspect = source_aspect * plan.source_crop.width / plan.source_crop.height;
+        let viewport_aspect = plan.output_viewport.width / plan.output_viewport.height;
+
+        assert!(contains(plan.source_crop, speaker));
+        assert!(plan.output_viewport.width < 1.0);
+        assert!((viewport_aspect - crop_pixel_aspect / output_aspect).abs() < 0.000_1);
+    }
+
+    #[test]
+    fn crop_recovers_smoothly_after_wide_fallback() {
+        let mut controller = FramingController::new(FramingConfig::default()).unwrap();
+        let first_target = target(0.2, 0.3, 0.08, 0.16);
+        for _ in 0..100 {
+            controller.plan(first_target).unwrap();
+        }
+        let distant_target = target(0.9, 0.3, 0.08, 0.16);
+        let wide = controller.plan(distant_target).unwrap();
+        assert_eq!(wide.source_crop, Rect::full_frame());
+
+        let recovered = controller.plan(distant_target).unwrap();
+        let crop = recovered.source_crop;
+        let center_x = crop.x + crop.width * 0.5;
+        let center_y = crop.y + crop.height * 0.5;
+        assert!(contains(crop, distant_target));
+        assert_ne!(crop, controller.desired(distant_target));
+        assert!((center_x - 0.5).abs() <= 0.08 * 0.25);
+        assert!((center_y - 0.5).abs() <= 0.08 * 0.25);
     }
 
     #[test]
