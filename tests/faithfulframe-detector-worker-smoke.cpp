@@ -8,6 +8,11 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#if defined(__APPLE__)
+#include <cerrno>
+#include <pthread/qos.h>
+#include <sys/resource.h>
+#endif
 
 struct probe_lifetime_state
 {
@@ -21,12 +26,21 @@ class probe_detector final : public face_detector_base {
 	std::condition_variable detection_condition;
 	std::atomic<uint64_t> queued_result_epoch{0};
 	std::atomic<int> throw_kind{0};
+	std::atomic<bool> worker_qos_is_utility{true};
 	bool detecting = false;
 	bool hold_detection = false;
 	bool release_detection = false;
 
 	void detect_main() override
 	{
+#if defined(__APPLE__)
+		qos_class_t qos_class = QOS_CLASS_DEFAULT;
+		int relative_priority = 0;
+		worker_qos_is_utility.store(pthread_get_qos_class_np(pthread_self(), &qos_class, &relative_priority) ==
+							    0 &&
+						    qos_class == QOS_CLASS_UTILITY,
+					    std::memory_order_release);
+#endif
 		// Model the detector retaining the generation of its captured frame while
 		// inference is in progress.
 		set_result_epoch(queued_result_epoch.exchange(0, std::memory_order_acq_rel));
@@ -82,6 +96,7 @@ public:
 	}
 	void queue_result_epoch(uint64_t epoch) { queued_result_epoch.store(epoch, std::memory_order_release); }
 	void throw_on_next_detection(int kind) { throw_kind.store(kind, std::memory_order_release); }
+	bool has_utility_qos() const { return worker_qos_is_utility.load(std::memory_order_acquire); }
 	void release_held_detection()
 	{
 		// Preserve the existing minimum-duration timing assertion for this work.
@@ -93,6 +108,15 @@ public:
 		detection_condition.notify_all();
 	}
 };
+
+#if defined(__APPLE__)
+static bool read_process_priority(int &priority)
+{
+	errno = 0;
+	priority = getpriority(PRIO_PROCESS, 0);
+	return priority != -1 || errno == 0;
+}
+#endif
 
 static bool wait_for_runs(const probe_detector &detector, uint32_t expected)
 {
@@ -169,6 +193,13 @@ static void report_stage(const char *stage)
 
 int main()
 {
+#if defined(__APPLE__)
+	int process_priority_before = 0;
+	if (!read_process_priority(process_priority_before)) {
+		std::fprintf(stderr, "could not read process priority before detector workers\n");
+		return 15;
+	}
+#endif
 	if (!face_detector_result_epoch_is_current(4, 4) || face_detector_result_epoch_is_current(3, 4) ||
 	    face_detector_result_epoch_is_current(0, 0))
 		return 13;
@@ -222,6 +253,12 @@ int main()
 				std::fprintf(stderr, "detector work was lost or not timed\n");
 				result = 4;
 			} else {
+#if defined(__APPLE__)
+				if (!detector.has_utility_qos()) {
+					std::fprintf(stderr, "detector worker did not use utility QoS\n");
+					result = 16;
+				}
+#endif
 				detector.lock();
 				const uint64_t completed_epoch = detector.completed_result_epoch();
 				const bool stale_epoch_accepted =
@@ -296,5 +333,12 @@ int main()
 		std::fprintf(stderr, "derived resources were released before active detection stopped\n");
 		result = 12;
 	}
+#if defined(__APPLE__)
+	int process_priority_after = 0;
+	if (!read_process_priority(process_priority_after) || process_priority_before != process_priority_after) {
+		std::fprintf(stderr, "detector worker changed OBS process priority\n");
+		result = 17;
+	}
+#endif
 	return result;
 }
