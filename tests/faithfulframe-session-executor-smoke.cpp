@@ -618,6 +618,16 @@ int run_smoke()
 		    },
 		    scene_snapshot))
 		return 57;
+	const ff_candidate after_scene_candidate{82, 820, scene_identity,          4, active_generations,
+						 8,  508, {0.5f, 0.2f, 0.1f, 0.2f}};
+	if (!scene_executor.enqueue_candidates(8, &after_scene_candidate, 1) ||
+	    !await_snapshot(
+		    scene_executor,
+		    [](const ff_snapshot &value) {
+			    return value.observation_version == 4 && value.state == FF_STATE_MANUAL;
+		    },
+		    scene_snapshot))
+		return 81;
 	scene_executor.shutdown();
 
 	auto retired_executor =
