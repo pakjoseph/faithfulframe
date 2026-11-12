@@ -16,7 +16,8 @@ class PackageAssetVerificationTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
         for name in verify_package_assets.REQUIRED_FILES:
-            (self.root / name).write_bytes(b"fixture")
+            content = verify_package_assets.REQUIRED_LICENSE_MARKERS.get(name, b"fixture")
+            (self.root / name).write_bytes(content)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -44,6 +45,13 @@ class PackageAssetVerificationTests(unittest.TestCase):
         (self.root / "LICENSE").write_bytes(b"")
         self.assertIn(
             "required package file is empty: LICENSE",
+            verify_package_assets.package_errors(self.root),
+        )
+
+    def test_rejects_wrong_license_notice_under_expected_name(self):
+        (self.root / "LICENSE-dlib-models").write_bytes(b"Boost Software License")
+        self.assertIn(
+            "license notice has unexpected contents: LICENSE-dlib-models",
             verify_package_assets.package_errors(self.root),
         )
 

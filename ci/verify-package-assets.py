@@ -16,6 +16,13 @@ REQUIRED_FILES = {
     "shape_predictor_5_face_landmarks.dat",
 }
 
+REQUIRED_LICENSE_MARKERS = {
+    "LICENSE": b"GNU GENERAL PUBLIC LICENSE",
+    "LICENSE-libvisca.txt": b"GNU LESSER GENERAL PUBLIC LICENSE",
+    "LICENSE-dlib.txt": b"Boost Software License - Version 1.0",
+    "LICENSE-dlib-models": b"CC0 1.0 Universal",
+}
+
 RESTRICTED_FILES = {
     "shape_predictor_68_face_landmarks.dat",
     "shape_predictor_68_face_landmarks.dat.bz2",
@@ -36,6 +43,10 @@ def package_errors(root: Path) -> list[str]:
                   for path in files if path.name in RESTRICTED_FILES)
     errors.extend(f"required package file is empty: {path.relative_to(root)}"
                   for path in files if path.name in REQUIRED_FILES and path.stat().st_size == 0)
+    for name, marker in REQUIRED_LICENSE_MARKERS.items():
+        for path in files:
+            if path.name == name and path.stat().st_size and marker not in path.read_bytes():
+                errors.append(f"license notice has unexpected contents: {path.relative_to(root)}")
     return errors
 
 
