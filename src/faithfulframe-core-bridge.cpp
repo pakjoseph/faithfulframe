@@ -531,6 +531,13 @@ void faithfulframe_session_executor::run()
 			case work_kind::stop:
 				break;
 			}
+			if (call_result != FF_OK) {
+				// A valid executor owns a valid session, so a bridge error means the
+				// policy result cannot be trusted. Stop publishing snapshots; the OBS
+				// adapter will detect the failed worker and use its safe-wide fallback.
+				mark_stopped();
+				return;
+			}
 			if (call_result == FF_OK) {
 				if (item.kind == work_kind::command &&
 				    snapshot.command_result != FF_COMMAND_NOT_APPLICABLE) {
