@@ -27,6 +27,21 @@ class PluginLoadTest(obstest.OBSTest):
         # OBSTest checks the leak summary in tearDown before moving the log.
         # Preserve the final OBS log even when that assertion fails so CI
         # artifacts contain the shutdown diagnostics.
+        process = getattr(self.obs, 'proc_obs', None)
+        if process and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                process.wait()
+
         logsdir = os.environ.get('ONSDRIVER_LOGS', 'logs')
         os.makedirs(logsdir, exist_ok=True)
         logfile = None
@@ -56,21 +71,6 @@ class PluginLoadTest(obstest.OBSTest):
                 filename = f'diagnostic-{self.name.replace(os.sep, "_")}-stderr.txt'
                 with open(os.path.join(logsdir, filename), 'wb') as fw:
                     fw.write(contents)
-
-        process = getattr(self.obs, 'proc_obs', None)
-        if process and process.poll() is None:
-            try:
-                process.terminate()
-            except OSError:
-                pass
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                process.wait()
 
     def tearDown(self):
         # onsdriver's shutdown() enables an unsafe force-exit after five
