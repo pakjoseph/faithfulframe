@@ -478,7 +478,7 @@ private:
 
 namespace {
 std::mutex faithfulframe_reaper_owner_mutex;
-std::unique_ptr<faithfulframe_executor_reaper> faithfulframe_reaper;
+std::shared_ptr<faithfulframe_executor_reaper> faithfulframe_reaper;
 bool faithfulframe_reaper_closed = false;
 std::mutex faithfulframe_module_lifecycle_mutex;
 size_t faithfulframe_pending_creates = 0;
@@ -520,7 +520,7 @@ extern "C" int faithfulframe_executor_reaper_start()
 	if (!faithfulframe_reaper || !faithfulframe_reaper->available()) {
 		faithfulframe_reaper.reset();
 		try {
-			faithfulframe_reaper = std::make_unique<faithfulframe_executor_reaper>();
+			faithfulframe_reaper = std::make_shared<faithfulframe_executor_reaper>();
 		} catch (...) {
 			faithfulframe_reaper_closed = true;
 			return 0;
@@ -544,7 +544,7 @@ extern "C" int faithfulframe_executor_reaper_start()
 
 extern "C" void faithfulframe_executor_reaper_shutdown()
 {
-	std::unique_ptr<faithfulframe_executor_reaper> reaper;
+	std::shared_ptr<faithfulframe_executor_reaper> reaper;
 	{
 		std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
 		faithfulframe_reaper_closed = true;
@@ -616,9 +616,17 @@ extern "C" void faithfulframe_teardown_instance_destroyed()
 	if (shutdown_reaper)
 		faithfulframe_executor_reaper_shutdown();
 	else if (drain_reaper) {
-		std::unique_lock<std::mutex> owner_lock(faithfulframe_reaper_owner_mutex);
-		if (!faithfulframe_reaper_closed && faithfulframe_reaper)
-			faithfulframe_reaper->drain();
+		// Keep the reaper alive across the wait without holding its owner lock.
+		// Source creation and executor retirement must not queue behind joins on
+		// the OBS destruction task.
+		std::shared_ptr<faithfulframe_executor_reaper> reaper;
+		{
+			std::lock_guard<std::mutex> owner_lock(faithfulframe_reaper_owner_mutex);
+			if (!faithfulframe_reaper_closed)
+				reaper = faithfulframe_reaper;
+		}
+		if (reaper)
+			reaper->drain();
 #ifdef FAITHFULFRAME_TEST_REAPER_DRAIN_HOOK
 		void (*test_hook)(void *) = nullptr;
 		void *test_hook_context = nullptr;
@@ -640,7 +648,6 @@ extern "C" void faithfulframe_teardown_instance_destroyed()
 				shutdown_reaper = true;
 			}
 		}
-		owner_lock.unlock();
 		if (shutdown_reaper)
 			faithfulframe_executor_reaper_shutdown();
 	}

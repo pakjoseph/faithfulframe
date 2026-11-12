@@ -1100,6 +1100,20 @@ int run_smoke()
 		}
 		gate.condition.notify_all();
 	});
+	std::atomic<bool> registration_finished{false};
+	std::atomic<int> registration_result{-1};
+	std::thread registration_thread([&] {
+		registration_result.store(faithfulframe_teardown_register_instance(), std::memory_order_release);
+		registration_finished.store(true, std::memory_order_release);
+		gate.condition.notify_all();
+	});
+	bool registration_finished_during_drain = false;
+	{
+		std::unique_lock<std::mutex> lock(gate.mutex);
+		registration_finished_during_drain = gate.condition.wait_for(lock, std::chrono::milliseconds(250), [&] {
+			return registration_finished.load(std::memory_order_acquire);
+		});
+	}
 	auto contended_executor =
 		std::make_shared<faithfulframe_session_executor>(config, ff_identity{115, 215}, generations);
 	ff_snapshot contended_snapshot{};
@@ -1120,6 +1134,7 @@ int run_smoke()
 		handoff_finished.store(true, std::memory_order_release);
 		handoff_condition.notify_all();
 	});
+	std::weak_ptr<faithfulframe_session_executor> contended_weak = contended_executor;
 	while (!handoff_started.load(std::memory_order_acquire))
 		std::this_thread::yield();
 	bool handoff_finished_during_drain = false;
@@ -1140,13 +1155,14 @@ int run_smoke()
 	gate.condition.notify_all();
 	destroy_thread.join();
 	unload_thread.join();
+	registration_thread.join();
 	handoff_thread.join();
 	faithfulframe_test_set_reaper_drain_hook(nullptr, nullptr);
-	if (!drain_paused || !unload_returned_before_drain_release || !racing_weak.expired() ||
-	    !handoff_finished_during_drain || handoff_accepted.load(std::memory_order_acquire) || !contended_executor)
+	if (!drain_paused || !unload_returned_before_drain_release || !registration_finished_during_drain ||
+	    registration_result.load(std::memory_order_acquire) != 0 || !racing_weak.expired() ||
+	    !handoff_finished_during_drain || !handoff_accepted.load(std::memory_order_acquire) || contended_executor ||
+	    !contended_weak.expired())
 		return 108;
-	contended_executor->shutdown();
-	contended_executor.reset();
 	return 0;
 }
 
