@@ -78,27 +78,29 @@ void FTWidget::CreateDisplay()
 {
 	if (!data)
 		return;
-	if (data->disp || !windowHandle()->isExposed())
+	QWindow *window = windowHandle();
+	if (data->disp || !window || !window->isExposed())
 		return;
 
 	blog(LOG_INFO, "FTWidget::CreateDisplay %p", this);
 
 	QSize size = GetPixelSize(this);
+	if (size.width() <= 0 || size.height() <= 0)
+		return;
 	gs_init_data info = {};
 	info.cx = size.width();
 	info.cy = size.height();
 	info.format = GS_BGRA;
 	info.zsformat = GS_ZS_NONE;
-	QWindow *window = windowHandle();
-	if (!window) {
-		blog(LOG_ERROR, "FTWidget %p: windowHandle() returns NULL", this);
-		return;
-	}
 	if (!QTToGSWindow(window, info.window)) {
 		blog(LOG_ERROR, "FTWidget %p: QTToGSWindow failed", this);
 		return;
 	}
 	data->disp = obs_display_create(&info, 0);
+	if (!data->disp) {
+		blog(LOG_ERROR, "FTWidget %p: obs_display_create failed", this);
+		return;
+	}
 	obs_display_add_draw_callback(data->disp, draw, data);
 #ifdef HAVE_DISPLAY_SET_INTERLEAVE
 	blog(LOG_INFO, "calling obs_display_set_interleave interleave=2");
@@ -112,7 +114,8 @@ void FTWidget::resizeEvent(QResizeEvent *event)
 	CreateDisplay();
 
 	QSize size = GetPixelSize(this);
-	obs_display_resize(data->disp, size.width(), size.height());
+	if (data && data->disp && size.width() > 0 && size.height() > 0)
+		obs_display_resize(data->disp, size.width(), size.height());
 }
 
 void FTWidget::paintEvent(QPaintEvent *)
