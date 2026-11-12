@@ -119,6 +119,24 @@ bool elapsed_cpu_microseconds(clock_t begin, clock_t end, uint64_t &microseconds
 	return true;
 }
 
+bool signed_difference(uint64_t end, uint64_t start, int64_t &difference)
+{
+	if (end >= start) {
+		const uint64_t growth = end - start;
+		if (growth > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+			return false;
+		difference = static_cast<int64_t>(growth);
+		return true;
+	}
+	const uint64_t reduction = start - end;
+	const uint64_t minimum_magnitude = static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1;
+	if (reduction > minimum_magnitude)
+		return false;
+	difference = reduction == minimum_magnitude ? std::numeric_limits<int64_t>::min()
+						    : -static_cast<int64_t>(reduction);
+	return true;
+}
+
 void print_usage(std::ostream &output)
 {
 	output << "Usage: faithfulframe-offline-replay --model <frontal_face_detector.dat> --manifest <frames.tsv> "
@@ -436,6 +454,11 @@ int main(int argc, char **argv)
 	if (process_finished.memory_valid)
 		std::cerr << " resident_bytes=" << process_finished.resident_bytes
 			  << " peak_resident_bytes=" << process_finished.peak_resident_bytes;
+	int64_t resident_growth_bytes = 0;
+	if (process_started.memory_valid && process_finished.memory_valid &&
+	    signed_difference(process_finished.resident_bytes, process_started.resident_bytes, resident_growth_bytes))
+		std::cerr << " resident_start_bytes=" << process_started.resident_bytes
+			  << " resident_growth_bytes=" << resident_growth_bytes;
 	std::cerr << '\n';
 	csv->flush();
 	if (!*csv) {
