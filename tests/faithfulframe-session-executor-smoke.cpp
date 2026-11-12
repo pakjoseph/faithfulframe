@@ -1127,6 +1127,7 @@ int run_smoke()
 	std::atomic<bool> handoff_started{false};
 	std::atomic<bool> handoff_finished{false};
 	std::atomic<bool> handoff_accepted{true};
+	std::weak_ptr<faithfulframe_session_executor> contended_weak = contended_executor;
 	std::thread handoff_thread([&] {
 		handoff_started.store(true, std::memory_order_release);
 		handoff_accepted.store(faithfulframe_retire_session_executor(contended_executor),
@@ -1134,7 +1135,6 @@ int run_smoke()
 		handoff_finished.store(true, std::memory_order_release);
 		handoff_condition.notify_all();
 	});
-	std::weak_ptr<faithfulframe_session_executor> contended_weak = contended_executor;
 	while (!handoff_started.load(std::memory_order_acquire))
 		std::this_thread::yield();
 	bool handoff_finished_during_drain = false;
