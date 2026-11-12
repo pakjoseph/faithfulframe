@@ -47,6 +47,7 @@ int main()
 	CHECK(header.find("candidate") == std::string::npos);
 	CHECK(header.find("image") == std::string::npos);
 	CHECK(max_samples == 43200);
+	CHECK(faithfulframe::performance::csv_field("=1+1") == "'=1+1");
 
 	sample value;
 	value.run_metadata_present = true;

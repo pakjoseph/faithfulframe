@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <iomanip>
 #include <locale>
@@ -65,12 +66,18 @@ struct sample
 
 inline std::string csv_field(const std::string &value)
 {
-	if (value.find_first_of(",\"\r\n") == std::string::npos)
-		return value;
+	std::string safe_value = value;
+	size_t first = 0;
+	while (first < safe_value.size() && std::isspace(static_cast<unsigned char>(safe_value[first])))
+		++first;
+	if (first < safe_value.size() && std::string("=+-@").find(safe_value[first]) != std::string::npos)
+		safe_value.insert(0, 1, '\'');
+	if (safe_value.find_first_of(",\"\r\n") == std::string::npos)
+		return safe_value;
 	std::string escaped;
-	escaped.reserve(value.size() + 2);
+	escaped.reserve(safe_value.size() + 2);
 	escaped.push_back('"');
-	for (char character : value) {
+	for (char character : safe_value) {
 		if (character == '"')
 			escaped.push_back('"');
 		escaped.push_back(character);
