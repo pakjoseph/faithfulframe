@@ -252,7 +252,6 @@ struct faithfulframe_source_runtime
 			// owner until a later tick can transfer responsibility safely.
 			auto executor = std::atomic_load_explicit(&(*it)->executor, std::memory_order_acquire);
 			if (executor) {
-				executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
 				if (!faithfulframe_retire_session_executor(executor)) {
 					++it;
 					continue;
