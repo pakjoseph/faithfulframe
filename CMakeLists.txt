@@ -5,7 +5,38 @@ cmake_minimum_required(VERSION 3.12)
 # host SDK minimum even when plugin and Rust archive targets use macOS 13.
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
 	(NOT CMAKE_SYSTEM_NAME AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin"))
-	set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "OBS build architectures for macOS")
+	if(NOT CMAKE_OSX_ARCHITECTURES)
+		execute_process(
+			COMMAND sysctl -n hw.optional.arm64
+			OUTPUT_VARIABLE _faithfulframe_is_apple_silicon
+			OUTPUT_STRIP_TRAILING_WHITESPACE
+			RESULT_VARIABLE _faithfulframe_sysctl_result)
+		if(_faithfulframe_sysctl_result EQUAL 0 AND _faithfulframe_is_apple_silicon STREQUAL "1")
+			set(_faithfulframe_default_macos_arch "arm64")
+		else()
+			execute_process(
+				COMMAND uname -m
+				OUTPUT_VARIABLE _faithfulframe_host_arch
+				OUTPUT_STRIP_TRAILING_WHITESPACE
+				RESULT_VARIABLE _faithfulframe_uname_result)
+			if(_faithfulframe_uname_result EQUAL 0 AND
+			   _faithfulframe_host_arch MATCHES "^(arm64|aarch64)$")
+				set(_faithfulframe_default_macos_arch "arm64")
+			else()
+				set(_faithfulframe_default_macos_arch "x86_64")
+			endif()
+		endif()
+		# An explicitly supplied architecture remains authoritative. An empty
+		# cache value means native host architecture, which must be materialized
+		# before project() so CMake and Cargo agree on Apple Silicon builds.
+		set(CMAKE_OSX_ARCHITECTURES "${_faithfulframe_default_macos_arch}" CACHE STRING
+			"OBS build architectures for macOS" FORCE)
+		unset(_faithfulframe_default_macos_arch)
+		unset(_faithfulframe_host_arch)
+		unset(_faithfulframe_uname_result)
+		unset(_faithfulframe_is_apple_silicon)
+		unset(_faithfulframe_sysctl_result)
+	endif()
 	if(DEFINED ENV{MACOSX_DEPLOYMENT_TARGET} AND NOT "$ENV{MACOSX_DEPLOYMENT_TARGET}" STREQUAL "")
 		set(_faithfulframe_default_macos_target "$ENV{MACOSX_DEPLOYMENT_TARGET}")
 	else()
@@ -91,19 +122,53 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		set(FAITHFULFRAME_RUST_TARGET_DIR
 			${FAITHFULFRAME_RUST_TARGET_DIR}-macos-${CMAKE_OSX_DEPLOYMENT_TARGET})
 	endif()
+	set(FAITHFULFRAME_RUST_TARGET_ARGS)
+	set(FAITHFULFRAME_RUST_ARTIFACT_DIR ${FAITHFULFRAME_RUST_TARGET_DIR})
+	if (APPLE)
+		if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+			set(FAITHFULFRAME_RUST_TARGET_TRIPLE aarch64-apple-darwin)
+		elseif(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+			set(FAITHFULFRAME_RUST_TARGET_TRIPLE x86_64-apple-darwin)
+		else()
+			message(FATAL_ERROR
+				"FaithfulFrame's Rust bridge requires one macOS architecture (arm64 or x86_64); "
+				"CMAKE_OSX_ARCHITECTURES='${CMAKE_OSX_ARCHITECTURES}' is unsupported. Build each architecture separately.")
+		endif()
+		list(APPEND FAITHFULFRAME_RUST_TARGET_ARGS --target ${FAITHFULFRAME_RUST_TARGET_TRIPLE})
+		set(FAITHFULFRAME_RUST_ARTIFACT_DIR
+			${FAITHFULFRAME_RUST_TARGET_DIR}/${FAITHFULFRAME_RUST_TARGET_TRIPLE})
+		execute_process(
+			COMMAND "${RUSTUP_EXECUTABLE}" target list --installed --toolchain ${FAITHFULFRAME_RUST_TOOLCHAIN}
+			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+			OUTPUT_VARIABLE FAITHFULFRAME_RUST_INSTALLED_TARGETS
+			OUTPUT_STRIP_TRAILING_WHITESPACE
+			RESULT_VARIABLE FAITHFULFRAME_RUST_TARGET_LIST_RESULT)
+		if(NOT FAITHFULFRAME_RUST_TARGET_LIST_RESULT EQUAL 0 OR
+		   NOT FAITHFULFRAME_RUST_INSTALLED_TARGETS MATCHES "(^|\\n)${FAITHFULFRAME_RUST_TARGET_TRIPLE}($|\\n)")
+			message(FATAL_ERROR
+				"Rust target ${FAITHFULFRAME_RUST_TARGET_TRIPLE} is required by CMAKE_OSX_ARCHITECTURES='${CMAKE_OSX_ARCHITECTURES}' "
+				"but is not installed for toolchain ${FAITHFULFRAME_RUST_TOOLCHAIN}. Install it with: "
+				"rustup target add --toolchain ${FAITHFULFRAME_RUST_TOOLCHAIN} ${FAITHFULFRAME_RUST_TARGET_TRIPLE}; "
+				"for native Apple Silicon development, configure with -DCMAKE_OSX_ARCHITECTURES=arm64")
+		endif()
+	endif()
 	if (WIN32)
-		set(FAITHFULFRAME_FFI_LIBRARY ${FAITHFULFRAME_RUST_TARGET_DIR}/release/faithfulframe_ffi.lib)
+		set(FAITHFULFRAME_FFI_LIBRARY ${FAITHFULFRAME_RUST_ARTIFACT_DIR}/release/faithfulframe_ffi.lib)
 	else()
-		set(FAITHFULFRAME_FFI_LIBRARY ${FAITHFULFRAME_RUST_TARGET_DIR}/release/libfaithfulframe_ffi.a)
+		set(FAITHFULFRAME_FFI_LIBRARY ${FAITHFULFRAME_RUST_ARTIFACT_DIR}/release/libfaithfulframe_ffi.a)
 	endif()
 	set(FAITHFULFRAME_CARGO_BUILD
 		${CMAKE_COMMAND} -E env "RUSTC=${FAITHFULFRAME_RUSTC_EXECUTABLE}"
 		${CARGO_EXECUTABLE} build --release --manifest-path ${FAITHFULFRAME_FFI_MANIFEST}
-		--target-dir ${FAITHFULFRAME_RUST_TARGET_DIR})
+		--target-dir ${FAITHFULFRAME_RUST_TARGET_DIR} ${FAITHFULFRAME_RUST_TARGET_ARGS})
 	if (APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
 		find_program(OTOOL_EXECUTABLE otool)
 		if (NOT OTOOL_EXECUTABLE)
 			message(FATAL_ERROR "otool is required to validate the macOS Rust archive deployment target")
+		endif()
+		find_program(LIPO_EXECUTABLE lipo)
+		if (NOT LIPO_EXECUTABLE)
+			message(FATAL_ERROR "lipo is required to validate the macOS Rust archive architecture")
 		endif()
 		set(FAITHFULFRAME_CARGO_BUILD
 			${CMAKE_COMMAND} -E env MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
@@ -111,7 +176,9 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		set(FAITHFULFRAME_VERIFY_RUST_DEPLOYMENT
 			COMMAND ${CMAKE_COMMAND}
 				-DFF_ARCHIVE=${FAITHFULFRAME_FFI_LIBRARY}
+				-DFF_ARCHITECTURE=${CMAKE_OSX_ARCHITECTURES}
 				-DFF_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
+				-DFF_LIPO=${LIPO_EXECUTABLE}
 				-DFF_OTOOL=${OTOOL_EXECUTABLE}
 				-P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyRustMacOSDeployment.cmake)
 	endif()
