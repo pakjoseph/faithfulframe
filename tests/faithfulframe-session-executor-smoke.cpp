@@ -1046,7 +1046,11 @@ int run_smoke()
 	if (!post_unload_weak.expired())
 		return 84;
 	{
-		faithfulframe_session_executor preview_executor(config, ff_identity{110, 210}, generations);
+		ff_session_config preview_config = config;
+		// Let the command notice expire before the late-candidate event without
+		// making the selected evidence stale during this isolated version test.
+		preview_config.max_evidence_age_ms = 10'000;
+		faithfulframe_session_executor preview_executor(preview_config, ff_identity{110, 210}, generations);
 		ff_snapshot preview_snapshot{};
 		if (!await_snapshot(
 			    preview_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
@@ -1097,6 +1101,32 @@ int run_smoke()
 		    preview_snapshot.state != FF_STATE_LOCKED ||
 		    preview_snapshot.selected_handle != preview_candidate.handle)
 			return 80;
+		const ff_snapshot after_stale_click = preview_snapshot;
+		const ff_candidate late_candidate{42,   4002, preview_snapshot.identity, 2, generations,
+						  2006, 2506, {0.6f, 0.2f, 0.1f, 0.2f}};
+		if (!preview_executor.enqueue_candidates(2006, &late_candidate, 1))
+			return 91;
+		// Candidate-event rejections are not retained as operator notices. Wait
+		// for this event's publication timestamp, then verify its policy no-op.
+		uint64_t candidate_published_at = 0;
+		const auto candidate_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		do {
+			preview_executor.try_snapshot(preview_snapshot, &candidate_published_at);
+			if (candidate_published_at >= 2006)
+				break;
+			std::this_thread::yield();
+		} while (std::chrono::steady_clock::now() < candidate_deadline);
+		if (candidate_published_at < 2006)
+			return 92;
+		if (preview_snapshot.state != after_stale_click.state ||
+		    preview_snapshot.selected_handle != after_stale_click.selected_handle ||
+		    preview_snapshot.status_version != after_stale_click.status_version ||
+		    preview_snapshot.observation_version != after_stale_click.observation_version ||
+		    preview_snapshot.crop.x != after_stale_click.crop.x ||
+		    preview_snapshot.crop.y != after_stale_click.crop.y ||
+		    preview_snapshot.crop.width != after_stale_click.crop.width ||
+		    preview_snapshot.crop.height != after_stale_click.crop.height)
+			return 93;
 	}
 	// The first destroy callback leaves cleanup available for the second active
 	// source. The last callback drains and closes the reaper.
