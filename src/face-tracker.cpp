@@ -1565,8 +1565,6 @@ static void settle_source_transition(faithfulframe_source_binding *binding)
 static void tick_safe_source(face_tracker_filter *s, float second)
 {
 	faithfulframe_source_runtime *runtime = s->safe_runtime;
-	apply_safe_source_configuration(s, runtime);
-	runtime->collect_retired_bindings();
 	auto binding_lease = runtime->active.read();
 	faithfulframe_source_binding *binding = binding_lease.get();
 	if (!binding) {
@@ -1762,6 +1760,10 @@ static void fts_tick(void *data, float second)
 			}
 		}
 		apply_safe_source_configuration(s, s->safe_runtime);
+		// Retired bindings can remain after a transiently refused reaper handoff.
+		// Retry collection even while safe tracking is disabled so those stopped
+		// executors do not stay resident until the filter itself is destroyed.
+		s->safe_runtime->collect_retired_bindings();
 	}
 	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
 		tick_safe_source(s, second);
