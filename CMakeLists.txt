@@ -148,6 +148,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_executable(faithfulframe-tracker-association-smoke tests/faithfulframe-tracker-association-smoke.cpp)
 	add_executable(faithfulframe-tracker-worker-budget-smoke
 		tests/faithfulframe-tracker-worker-budget-smoke.cpp)
+	target_include_directories(faithfulframe-tracker-worker-budget-smoke PRIVATE src)
 	add_dependencies(faithfulframe-rust-bridge-smoke faithfulframe-rust-ffi-build)
 	add_dependencies(faithfulframe-session-executor-smoke faithfulframe-rust-ffi-build)
 	target_include_directories(faithfulframe-rust-bridge-smoke PRIVATE src rust/faithfulframe-ffi/include)
