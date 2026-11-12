@@ -219,6 +219,17 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_executable(faithfulframe-tracker-worker-budget-smoke
 		tests/faithfulframe-tracker-worker-budget-smoke.cpp)
 	target_include_directories(faithfulframe-tracker-worker-budget-smoke PRIVATE src)
+	add_library(faithfulframe-offline-frame-sequence STATIC
+		tests/faithfulframe-offline-frame-sequence.cpp)
+	target_include_directories(faithfulframe-offline-frame-sequence PUBLIC tests)
+	add_executable(faithfulframe-offline-frame-sequence-smoke
+		tests/faithfulframe-offline-frame-sequence-smoke.cpp)
+	target_link_libraries(faithfulframe-offline-frame-sequence-smoke PRIVATE faithfulframe-offline-frame-sequence)
+	add_executable(faithfulframe-offline-replay
+		tests/faithfulframe-offline-replay.cpp
+		tests/faithfulframe-offline-detector-worker.cpp
+		src/face-detector-dlib-hog.cpp
+		src/texture-object.cpp)
 	add_dependencies(faithfulframe-rust-bridge-smoke faithfulframe-rust-ffi-build)
 	add_dependencies(faithfulframe-session-executor-smoke faithfulframe-rust-ffi-build)
 	target_include_directories(faithfulframe-rust-bridge-smoke PRIVATE src rust/faithfulframe-ffi/include)
@@ -231,12 +242,17 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	target_include_directories(faithfulframe-preview-geometry-smoke PRIVATE src rust/faithfulframe-ffi/include)
 	target_include_directories(faithfulframe-candidate-selection-smoke PRIVATE src rust/faithfulframe-ffi/include)
 	target_include_directories(faithfulframe-tracker-association-smoke PRIVATE src)
+	target_include_directories(faithfulframe-offline-replay PRIVATE
+		${CMAKE_CURRENT_BINARY_DIR} src tests
+		"$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
 	target_link_libraries(faithfulframe-rust-bridge-smoke PRIVATE faithfulframe-rust-ffi)
 	target_link_libraries(faithfulframe-rust-bridge-smoke PRIVATE Threads::Threads)
 	target_link_libraries(faithfulframe-session-executor-smoke PRIVATE faithfulframe-rust-ffi Threads::Threads)
 	target_link_libraries(faithfulframe-detector-worker-smoke PRIVATE Threads::Threads)
 	target_link_libraries(faithfulframe-tracker-worker-smoke PRIVATE Threads::Threads)
 	target_link_libraries(faithfulframe-texture-object-smoke PRIVATE dlib Threads::Threads)
+	target_link_libraries(faithfulframe-offline-replay PRIVATE
+		faithfulframe-offline-frame-sequence dlib Threads::Threads)
 	enable_testing()
 	add_test(NAME faithfulframe-preview-geometry-smoke COMMAND faithfulframe-preview-geometry-smoke)
 	add_test(NAME faithfulframe-candidate-selection-smoke COMMAND faithfulframe-candidate-selection-smoke)
@@ -248,6 +264,8 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_test(NAME faithfulframe-texture-object-smoke COMMAND faithfulframe-texture-object-smoke)
 	add_test(NAME faithfulframe-tracker-association-smoke COMMAND faithfulframe-tracker-association-smoke)
 	add_test(NAME faithfulframe-tracker-worker-budget-smoke COMMAND faithfulframe-tracker-worker-budget-smoke)
+	add_test(NAME faithfulframe-offline-frame-sequence-smoke
+		COMMAND faithfulframe-offline-frame-sequence-smoke)
 	set_tests_properties(faithfulframe-detector-worker-smoke faithfulframe-tracker-worker-smoke
 		faithfulframe-worker-log-gate-smoke
 		faithfulframe-texture-object-smoke PROPERTIES TIMEOUT 10)
