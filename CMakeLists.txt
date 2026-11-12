@@ -307,16 +307,6 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_test(NAME faithfulframe-tracker-worker-smoke COMMAND faithfulframe-tracker-worker-smoke)
 	add_test(NAME faithfulframe-worker-log-gate-smoke COMMAND faithfulframe-worker-log-gate-smoke)
 	add_test(NAME faithfulframe-performance-log-smoke COMMAND faithfulframe-performance-log-smoke)
-	if (TARGET faithfulframe-performance-spool-smoke)
-		if (WIN32)
-			add_test(NAME faithfulframe-performance-spool-smoke
-				COMMAND ${CMAKE_COMMAND} -E env
-					"PATH=$<TARGET_FILE_DIR:Qt::Core>$<SEMICOLON>$ENV{PATH}"
-					"$<TARGET_FILE:faithfulframe-performance-spool-smoke>")
-		else()
-			add_test(NAME faithfulframe-performance-spool-smoke COMMAND faithfulframe-performance-spool-smoke)
-		endif()
-	endif()
 	add_test(NAME faithfulframe-texture-object-smoke COMMAND faithfulframe-texture-object-smoke)
 	add_test(NAME faithfulframe-tracker-association-smoke COMMAND faithfulframe-tracker-association-smoke)
 	add_test(NAME faithfulframe-tracker-worker-budget-smoke COMMAND faithfulframe-tracker-worker-budget-smoke)
@@ -441,6 +431,14 @@ if (WITH_DOCK)
 	find_package(Qt${QT_VERSION} COMPONENTS Widgets Core Gui)
 	if (TARGET faithfulframe-performance-spool-smoke)
 		target_link_libraries(faithfulframe-performance-spool-smoke PRIVATE Qt::Core)
+		if (WIN32)
+			add_test(NAME faithfulframe-performance-spool-smoke
+				COMMAND ${CMAKE_COMMAND} -E env
+					"PATH=$<TARGET_FILE_DIR:Qt::Core>$<SEMICOLON>$ENV{PATH}"
+					"$<TARGET_FILE:faithfulframe-performance-spool-smoke>")
+		else()
+			add_test(NAME faithfulframe-performance-spool-smoke COMMAND faithfulframe-performance-spool-smoke)
+		endif()
 	endif()
 	set(plugin_additional_incs ${plugin_additional_incs} src)
 	set(plugin_additional_libs ${plugin_additional_libs} Qt::Gui Qt::Widgets)
