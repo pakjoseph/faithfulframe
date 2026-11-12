@@ -113,6 +113,41 @@ static bool read_calldata_float(calldata_t *cd, const char *name, float &value)
 	return std::isfinite(value);
 }
 
+static QString obs_performance_metrics()
+{
+	if (!obs_video_active())
+		return "OBS video: inactive";
+
+	const double active_fps = obs_get_active_fps();
+	const uint32_t render_total = obs_get_total_frames();
+	const uint32_t render_lagged = obs_get_lagged_frames();
+	const video_t *video = obs_get_video();
+	const uint32_t encode_total = video ? video_output_get_total_frames(video) : 0;
+	const uint32_t encode_skipped = video ? video_output_get_skipped_frames(video) : 0;
+
+	const QString fps_text = std::isfinite(active_fps) && active_fps > 0.0
+					 ? QString("%1 FPS").arg(active_fps, 0, 'f', 1)
+					 : QString("FPS unavailable");
+	const QString render_text =
+		render_total > 0
+			? QString("%1 / %2 frames (%3%)")
+				  .arg(static_cast<qulonglong>(render_lagged))
+				  .arg(static_cast<qulonglong>(render_total))
+				  .arg(100.0 * static_cast<double>(render_lagged) / static_cast<double>(render_total),
+				       0, 'f', 2)
+			: QString("no frames yet");
+	const QString encode_text =
+		encode_total > 0
+			? QString("%1 / %2 frames (%3%)")
+				  .arg(static_cast<qulonglong>(encode_skipped))
+				  .arg(static_cast<qulonglong>(encode_total))
+				  .arg(100.0 * static_cast<double>(encode_skipped) / static_cast<double>(encode_total),
+				       0, 'f', 2)
+			: QString("no frames yet");
+
+	return QString("OBS: %1 · render lag %2\nEncoding skips: %3").arg(fps_text).arg(render_text).arg(encode_text);
+}
+
 static QString safe_framing_preset(obs_source_t *source)
 {
 	if (!source)
@@ -901,25 +936,29 @@ void FTDock::updateState()
 						 .arg(safe_state_text(safe_preview))
 						 .arg(safe_preview_zoom(safe_preview), 0, 'f', 1)
 						 .arg(resolution));
-		const QString snapshot_age = safe_preview.status_snapshot_age_ms < 0
-						     ? QString("unavailable")
-						     : QString("%1 ms").arg(safe_preview.status_snapshot_age_ms);
-		performanceLabel->setText(
-			QString("Snapshot: %1 | queue: %2 / %3 | wait: %4 / %5 µs | policy: %6 / %7 µs | "
-				"dlib: %8 runs, %9 / %10 µs | accepted %11 · rejected %12 · coalesced %13")
-				.arg(snapshot_age)
-				.arg(static_cast<qulonglong>(safe_preview.executor_queue_depth))
-				.arg(static_cast<qulonglong>(safe_preview.executor_queue_high_water))
-				.arg(static_cast<qulonglong>(safe_preview.executor_last_queue_wait_us))
-				.arg(static_cast<qulonglong>(safe_preview.executor_max_queue_wait_us))
-				.arg(static_cast<qulonglong>(safe_preview.executor_last_processing_us))
-				.arg(static_cast<qulonglong>(safe_preview.executor_max_processing_us))
-				.arg(static_cast<qulonglong>(safe_preview.detector_work_count))
-				.arg(static_cast<qulonglong>(safe_preview.detector_last_work_us))
-				.arg(static_cast<qulonglong>(safe_preview.detector_max_work_us))
-				.arg(static_cast<qulonglong>(safe_preview.executor_accepted_work))
-				.arg(static_cast<qulonglong>(safe_preview.executor_rejected_work))
-				.arg(static_cast<qulonglong>(safe_preview.executor_coalesced_work)));
+		if (performanceToggle->isChecked()) {
+			const QString snapshot_age =
+				safe_preview.status_snapshot_age_ms < 0
+					? QString("unavailable")
+					: QString("%1 ms").arg(safe_preview.status_snapshot_age_ms);
+			performanceLabel->setText(
+				QString("Snapshot: %1 | queue: %2 / %3 | wait: %4 / %5 µs | policy: %6 / %7 µs | "
+					"dlib: %8 runs, %9 / %10 µs | accepted %11 · rejected %12 · coalesced %13\n%14")
+					.arg(snapshot_age)
+					.arg(static_cast<qulonglong>(safe_preview.executor_queue_depth))
+					.arg(static_cast<qulonglong>(safe_preview.executor_queue_high_water))
+					.arg(static_cast<qulonglong>(safe_preview.executor_last_queue_wait_us))
+					.arg(static_cast<qulonglong>(safe_preview.executor_max_queue_wait_us))
+					.arg(static_cast<qulonglong>(safe_preview.executor_last_processing_us))
+					.arg(static_cast<qulonglong>(safe_preview.executor_max_processing_us))
+					.arg(static_cast<qulonglong>(safe_preview.detector_work_count))
+					.arg(static_cast<qulonglong>(safe_preview.detector_last_work_us))
+					.arg(static_cast<qulonglong>(safe_preview.detector_max_work_us))
+					.arg(static_cast<qulonglong>(safe_preview.executor_accepted_work))
+					.arg(static_cast<qulonglong>(safe_preview.executor_rejected_work))
+					.arg(static_cast<qulonglong>(safe_preview.executor_coalesced_work))
+					.arg(obs_performance_metrics()));
+		}
 		set_pause_button(pauseButton, safe_preview.state == FF_STATE_FROZEN);
 		pauseButton->setEnabled(safe_preview.available);
 		resetButton->setText("Reset to Wide");
