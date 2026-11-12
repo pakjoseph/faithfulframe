@@ -1,6 +1,4 @@
 #include <obs-module.h>
-#include <util/platform.h>
-#include <util/threading.h>
 #include "plugin-macros.generated.h"
 #include "texture-object.h"
 #include "face-tracker-dlib.h"
@@ -9,6 +7,7 @@
 #include <dlib/image_processing/scan_fhog_pyramid.h>
 #include <dlib/image_processing/correlation_tracker.h>
 #include <dlib/image_processing.h>
+#include <chrono>
 #include <utility>
 
 struct face_tracker_dlib_private_s
@@ -111,7 +110,8 @@ void face_tracker_dlib::track_main()
 		return;
 	}
 
-	uint64_t ns = os_gettime_ns();
+	const auto now = std::chrono::steady_clock::now().time_since_epoch();
+	const uint64_t ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
 	bool observed = false;
 	if (p->need_restart) {
 		if (!p->tracker)

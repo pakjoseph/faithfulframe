@@ -7,8 +7,6 @@
 #include <mutex>
 #ifndef FAITHFULFRAME_DETECTOR_WORKER_STANDALONE
 #include <obs-module.h>
-#include <util/platform.h>
-#include <util/threading.h>
 #include "plugin-macros.generated.h"
 #endif
 #ifndef _WIN32
@@ -19,7 +17,6 @@
 
 #ifdef FAITHFULFRAME_DETECTOR_WORKER_STANDALONE
 #define detector_log(...) ((void)0)
-#define detector_set_thread_name(name) ((void)0)
 extern "C" void faithfulframe_worker_log_start(void) {}
 extern "C" void faithfulframe_worker_log_shutdown(void) {}
 extern "C" void faithfulframe_worker_log(int, const char *, ...) {}
@@ -66,7 +63,6 @@ extern "C" void faithfulframe_worker_log(int level, const char *format, ...)
 }
 
 #define detector_log(...) faithfulframe_worker_log(__VA_ARGS__)
-#define detector_set_thread_name(name) os_set_thread_name(name)
 #endif
 
 face_detector_base::face_detector_base() : request_stop(false), work_pending(false) {}
@@ -83,8 +79,6 @@ void face_detector_base::thread_routine(face_detector_base *base)
 #else  // _WIN32
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
 #endif // _WIN32
-	detector_set_thread_name("face-det");
-
 	std::unique_lock<std::mutex> lock(base->mutex);
 	while (!base->request_stop) {
 		while (!base->request_stop && !base->work_pending)

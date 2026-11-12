@@ -1,5 +1,4 @@
 #include <obs-module.h>
-#include <util/platform.h>
 #include <util/threading.h>
 #include <util/bmem.h>
 #include "faithfulframe-worker-log.hpp"
@@ -36,8 +35,6 @@ void *face_tracker_base::thread_routine(void *p)
 #else  // _WIN32
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
 #endif // _WIN32
-	os_set_thread_name("face-trk");
-
 	base->lock();
 	while (!base->stop_requested.load(std::memory_order_relaxed)) {
 		if (!base->suspend_requested.load(std::memory_order_relaxed)) {
