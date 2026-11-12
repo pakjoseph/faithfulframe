@@ -419,6 +419,19 @@ if (WITH_DOCK)
 	endif()
 endif()
 
+if(APPLE)
+	include(cmake/VerifyMacOSLinkTargets.cmake)
+	set(_faithfulframe_macos_link_targets OBS::libobs OBS::obs-frontend-api)
+	if(WITH_DOCK)
+		list(APPEND _faithfulframe_macos_link_targets
+			Qt${QT_VERSION}::Core
+			Qt${QT_VERSION}::Gui
+			Qt${QT_VERSION}::Widgets)
+	endif()
+	faithfulframe_verify_macos_link_targets(${_faithfulframe_macos_link_targets})
+	unset(_faithfulframe_macos_link_targets)
+endif()
+
 include_directories(
 	${CMAKE_CURRENT_SOURCE_DIR}/dlib
 	${plugin_additional_incs}
