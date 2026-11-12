@@ -44,6 +44,7 @@ struct ff_executor_diagnostics
 {
 	uint64_t queue_depth = 0;
 	uint64_t queue_high_water = 0;
+	uint64_t oldest_queue_age_us = 0; // Lock-free sample; zero when the queue is empty.
 	uint64_t accepted_work = 0;
 	uint64_t rejected_work = 0;
 	uint64_t coalesced_work = 0;
@@ -126,6 +127,7 @@ private:
 	};
 
 	bool enqueue(work_item item, bool coalesce);
+	void update_oldest_queue_timestamp_locked();
 	void run();
 
 	const ff_session_config config;
@@ -147,6 +149,7 @@ private:
 	snapshot_publisher published;
 	std::atomic<uint64_t> queue_depth{0};
 	std::atomic<uint64_t> queue_high_water{0};
+	std::atomic<uint64_t> oldest_queued_at_ns{0};
 	std::atomic<uint64_t> accepted_work{0};
 	std::atomic<uint64_t> rejected_work{0};
 	std::atomic<uint64_t> coalesced_work{0};

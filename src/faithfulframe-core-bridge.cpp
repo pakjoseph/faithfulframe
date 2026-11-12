@@ -20,6 +20,12 @@ static uint64_t elapsed_microseconds(std::chrono::steady_clock::time_point start
 	return elapsed > 0 ? static_cast<uint64_t>(elapsed) : 0;
 }
 
+static uint64_t steady_timestamp_nanoseconds(std::chrono::steady_clock::time_point time)
+{
+	const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
+	return timestamp > 0 ? static_cast<uint64_t>(timestamp) : 0;
+}
+
 void faithfulframe_core_bridge::deleter::operator()(ff_session *session) const
 {
 	ff_session_destroy(session);
@@ -259,6 +265,7 @@ bool faithfulframe_session_executor::enqueue(work_item item, bool coalesce)
 		const size_t tail = (queue_head + queue_size - 1) % queue.size();
 		if (queue[tail].kind == item.kind) {
 			queue[tail] = item;
+			update_oldest_queue_timestamp_locked();
 			accepted_work.fetch_add(1, std::memory_order_relaxed);
 			coalesced_work.fetch_add(1, std::memory_order_relaxed);
 			last_submitted_ms = std::max(last_submitted_ms, item.monotonic_ms);
@@ -276,12 +283,19 @@ bool faithfulframe_session_executor::enqueue(work_item item, bool coalesce)
 	queue[tail] = item;
 	++queue_size;
 	queue_depth.store(queue_size, std::memory_order_relaxed);
+	update_oldest_queue_timestamp_locked();
 	update_max(queue_high_water, queue_size);
 	accepted_work.fetch_add(1, std::memory_order_relaxed);
 	last_submitted_ms = std::max(last_submitted_ms, item.monotonic_ms);
 	lock.unlock();
 	queue_condition.notify_one();
 	return true;
+}
+
+void faithfulframe_session_executor::update_oldest_queue_timestamp_locked()
+{
+	const uint64_t timestamp = queue_size ? steady_timestamp_nanoseconds(queue[queue_head].enqueued_at) : 0;
+	oldest_queued_at_ns.store(timestamp, std::memory_order_release);
 }
 
 bool faithfulframe_session_executor::try_snapshot(ff_snapshot &output, uint64_t *published_at_ms) const
@@ -295,12 +309,20 @@ bool faithfulframe_session_executor::try_snapshot(ff_snapshot &output, uint64_t 
 
 ff_executor_diagnostics faithfulframe_session_executor::diagnostics() const
 {
-	return ff_executor_diagnostics{
-		queue_depth.load(std::memory_order_relaxed),       queue_high_water.load(std::memory_order_relaxed),
-		accepted_work.load(std::memory_order_relaxed),     rejected_work.load(std::memory_order_relaxed),
-		coalesced_work.load(std::memory_order_relaxed),    last_queue_wait_us.load(std::memory_order_relaxed),
-		max_queue_wait_us.load(std::memory_order_relaxed), last_processing_us.load(std::memory_order_relaxed),
-		max_processing_us.load(std::memory_order_relaxed)};
+	const uint64_t oldest_queued_at = oldest_queued_at_ns.load(std::memory_order_acquire);
+	const uint64_t now = steady_timestamp_nanoseconds(std::chrono::steady_clock::now());
+	const uint64_t oldest_queue_age_us =
+		oldest_queued_at && now > oldest_queued_at ? (now - oldest_queued_at) / 1000 : 0;
+	return ff_executor_diagnostics{queue_depth.load(std::memory_order_relaxed),
+				       queue_high_water.load(std::memory_order_relaxed),
+				       oldest_queue_age_us,
+				       accepted_work.load(std::memory_order_relaxed),
+				       rejected_work.load(std::memory_order_relaxed),
+				       coalesced_work.load(std::memory_order_relaxed),
+				       last_queue_wait_us.load(std::memory_order_relaxed),
+				       max_queue_wait_us.load(std::memory_order_relaxed),
+				       last_processing_us.load(std::memory_order_relaxed),
+				       max_processing_us.load(std::memory_order_relaxed)};
 }
 
 void faithfulframe_session_executor::request_shutdown(uint32_t terminal_lifecycle_kind, uint32_t source_width,
@@ -331,8 +353,11 @@ void faithfulframe_session_executor::request_shutdown(uint32_t terminal_lifecycl
 			queue[0] = stop;
 			queue_size = 1;
 			queue_depth.store(1, std::memory_order_relaxed);
+			update_oldest_queue_timestamp_locked();
 			update_max(queue_high_water, 1);
 		}
+		if (!queue_size)
+			update_oldest_queue_timestamp_locked();
 	}
 	queue_condition.notify_one();
 }
@@ -587,6 +612,7 @@ void faithfulframe_session_executor::run()
 			queue_head = 0;
 			queue_size = 0;
 			queue_depth.store(0, std::memory_order_relaxed);
+			update_oldest_queue_timestamp_locked();
 		}
 		worker_started.store(false, std::memory_order_release);
 		queue_condition.notify_all();
@@ -620,6 +646,7 @@ void faithfulframe_session_executor::run()
 				queue_head = (queue_head + 1) % queue.size();
 				--queue_size;
 				queue_depth.store(queue_size, std::memory_order_relaxed);
+				update_oldest_queue_timestamp_locked();
 			}
 			last_queue_wait_us.store(elapsed_microseconds(item.enqueued_at), std::memory_order_relaxed);
 			update_max(max_queue_wait_us, last_queue_wait_us.load(std::memory_order_relaxed));
@@ -723,6 +750,7 @@ void faithfulframe_session_executor::run()
 					queue_head = 0;
 					queue_size = 0;
 					queue_depth.store(0, std::memory_order_relaxed);
+					update_oldest_queue_timestamp_locked();
 				}
 				queue_condition.notify_all();
 				break;

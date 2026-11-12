@@ -348,9 +348,10 @@ int run_smoke()
 	    snapshot.has_selected)
 		return 8;
 	const ff_executor_diagnostics completed_diagnostics = executor.diagnostics();
-	if (completed_diagnostics.queue_depth != 0 || completed_diagnostics.queue_high_water != 1 ||
-	    completed_diagnostics.accepted_work != 5 || completed_diagnostics.rejected_work != 0 ||
-	    completed_diagnostics.coalesced_work != 0 || completed_diagnostics.last_queue_wait_us > 10'000'000)
+	if (completed_diagnostics.queue_depth != 0 || completed_diagnostics.oldest_queue_age_us != 0 ||
+	    completed_diagnostics.queue_high_water != 1 || completed_diagnostics.accepted_work != 5 ||
+	    completed_diagnostics.rejected_work != 0 || completed_diagnostics.coalesced_work != 0 ||
+	    completed_diagnostics.last_queue_wait_us > 10'000'000)
 		return 15;
 
 	ff_session_config invalid_config = config;
@@ -510,9 +511,10 @@ int run_smoke()
 	    queued.enqueue_candidates(22, &queued_candidate, 1))
 		return 13;
 	const ff_executor_diagnostics teardown_diagnostics = queued.diagnostics();
-	if (teardown_diagnostics.queue_depth != 0 || teardown_diagnostics.accepted_work != 3 ||
-	    teardown_diagnostics.rejected_work != 4 || teardown_diagnostics.coalesced_work != 0 ||
-	    teardown_diagnostics.queue_high_water > 3 || teardown_diagnostics.last_queue_wait_us > 10'000'000)
+	if (teardown_diagnostics.queue_depth != 0 || teardown_diagnostics.oldest_queue_age_us != 0 ||
+	    teardown_diagnostics.accepted_work != 3 || teardown_diagnostics.rejected_work != 4 ||
+	    teardown_diagnostics.coalesced_work != 0 || teardown_diagnostics.queue_high_water > 3 ||
+	    teardown_diagnostics.last_queue_wait_us > 10'000'000)
 		return 16;
 
 	// Hold a callback-owned executor reference after the adapter atomically

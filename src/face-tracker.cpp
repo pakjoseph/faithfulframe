@@ -2535,6 +2535,7 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	const ff_executor_diagnostics diagnostics = executor->diagnostics();
 	calldata_set_int(cd, "executor_queue_depth", ffi_integer(diagnostics.queue_depth));
 	calldata_set_int(cd, "executor_queue_high_water", ffi_integer(diagnostics.queue_high_water));
+	calldata_set_int(cd, "executor_oldest_queue_age_us", ffi_integer(diagnostics.oldest_queue_age_us));
 	calldata_set_int(cd, "executor_accepted_work", ffi_integer(diagnostics.accepted_work));
 	calldata_set_int(cd, "executor_rejected_work", ffi_integer(diagnostics.rejected_work));
 	calldata_set_int(cd, "executor_coalesced_work", ffi_integer(diagnostics.coalesced_work));

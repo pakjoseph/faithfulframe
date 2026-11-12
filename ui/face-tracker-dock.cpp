@@ -69,6 +69,7 @@ struct faithfulframe_safe_preview
 	long long loss_remaining_ms = -1;
 	uint64_t executor_queue_depth = 0;
 	uint64_t executor_queue_high_water = 0;
+	uint64_t executor_oldest_queue_age_us = 0;
 	uint64_t executor_accepted_work = 0;
 	uint64_t executor_rejected_work = 0;
 	uint64_t executor_coalesced_work = 0;
@@ -209,6 +210,7 @@ static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &
 	calldata_get_int(&cd, "loss_remaining_ms", &preview.loss_remaining_ms);
 	read_calldata_int(&cd, "executor_queue_depth", preview.executor_queue_depth);
 	read_calldata_int(&cd, "executor_queue_high_water", preview.executor_queue_high_water);
+	read_calldata_int(&cd, "executor_oldest_queue_age_us", preview.executor_oldest_queue_age_us);
 	read_calldata_int(&cd, "executor_accepted_work", preview.executor_accepted_work);
 	read_calldata_int(&cd, "executor_rejected_work", preview.executor_rejected_work);
 	read_calldata_int(&cd, "executor_coalesced_work", preview.executor_coalesced_work);
@@ -942,11 +944,13 @@ void FTDock::updateState()
 					? QString("unavailable")
 					: QString("%1 ms").arg(safe_preview.status_snapshot_age_ms);
 			performanceLabel->setText(
-				QString("Snapshot: %1 | queue: %2 / %3 | wait: %4 / %5 µs | policy: %6 / %7 µs | "
-					"dlib: %8 runs, %9 / %10 µs | accepted %11 · rejected %12 · coalesced %13\n%14")
+				QString("Snapshot: %1 | queue: %2 / %3, oldest pending %4 µs | wait: %5 / %6 µs | "
+					"policy: %7 / %8 µs | dlib: %9 runs, %10 / %11 µs | accepted %12 · "
+					"rejected %13 · coalesced %14\n%15")
 					.arg(snapshot_age)
 					.arg(static_cast<qulonglong>(safe_preview.executor_queue_depth))
 					.arg(static_cast<qulonglong>(safe_preview.executor_queue_high_water))
+					.arg(static_cast<qulonglong>(safe_preview.executor_oldest_queue_age_us))
 					.arg(static_cast<qulonglong>(safe_preview.executor_last_queue_wait_us))
 					.arg(static_cast<qulonglong>(safe_preview.executor_max_queue_wait_us))
 					.arg(static_cast<qulonglong>(safe_preview.executor_last_processing_us))
