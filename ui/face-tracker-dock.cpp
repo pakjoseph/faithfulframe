@@ -51,7 +51,9 @@ static QPointer<QAction> new_dock_action;
 static QPointer<QObject> dock_action_context;
 static bool dock_save_callback_registered = false;
 static bool dock_event_callback_registered = false;
+static bool dock_frontend_shutdown_started = false;
 
+static void save_load_ft_docks(obs_data_t *save_data, bool saving, void *private_data);
 static void ft_docks_frontend_event_cb(enum obs_frontend_event event, void *private_data);
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
@@ -837,6 +839,16 @@ void FTDock::hideEvent(QHideEvent *)
 // event callback must not mutate OBS's callback list while it is being iterated.
 static void ft_docks_frontend_event_cb(enum obs_frontend_event event, void *)
 {
+	if (event == OBS_FRONTEND_EVENT_EXIT) {
+		dock_frontend_shutdown_started = true;
+		// OBS dispatches EXIT before invalidating the frontend callback API. Remove
+		// the save hook here so module unload does not call through a dead API.
+		if (dock_save_callback_registered) {
+			obs_frontend_remove_save_callback(save_load_ft_docks, NULL);
+			dock_save_callback_registered = false;
+		}
+	}
+
 	if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP || event == OBS_FRONTEND_EVENT_EXIT) {
 		if (docks)
 			while (docks->size()) {
@@ -1473,7 +1485,8 @@ void ft_docks_init()
 void ft_docks_release()
 {
 	if (dock_event_callback_registered) {
-		obs_frontend_remove_event_callback(ft_docks_frontend_event_cb, NULL);
+		if (!dock_frontend_shutdown_started)
+			obs_frontend_remove_event_callback(ft_docks_frontend_event_cb, NULL);
 		dock_event_callback_registered = false;
 	}
 	if (dock_save_callback_registered) {
