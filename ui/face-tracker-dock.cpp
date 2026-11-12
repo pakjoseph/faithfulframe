@@ -145,8 +145,30 @@ static QString obs_performance_metrics()
 				  .arg(100.0 * static_cast<double>(encode_skipped) / static_cast<double>(encode_total),
 				       0, 'f', 2)
 			: QString("no frames yet");
+	QString stream_text = "not streaming";
+	if (obs_frontend_streaming_active()) {
+		obs_output_t *stream = obs_frontend_get_streaming_output();
+		if (!stream) {
+			stream_text = "output unavailable";
+		} else {
+			const int stream_total = obs_output_get_total_frames(stream);
+			const int stream_dropped = obs_output_get_frames_dropped(stream);
+			obs_output_release(stream);
+			stream_text = stream_total > 0 ? QString("%1 / %2 frames (%3%)")
+								 .arg(stream_dropped)
+								 .arg(stream_total)
+								 .arg(100.0 * static_cast<double>(stream_dropped) /
+									      static_cast<double>(stream_total),
+								      0, 'f', 2)
+						       : QString("no frames yet");
+		}
+	}
 
-	return QString("OBS: %1 · render lag %2\nEncoding skips: %3").arg(fps_text).arg(render_text).arg(encode_text);
+	return QString("OBS: %1 · render lag %2\nEncoding skips: %3\nNetwork output drops: %4")
+		.arg(fps_text)
+		.arg(render_text)
+		.arg(encode_text)
+		.arg(stream_text);
 }
 
 static QString safe_framing_preset(obs_source_t *source)
