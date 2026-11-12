@@ -166,9 +166,9 @@ private:
 	bool retirement_queued = false;
 };
 
-/// Transfers an executor with a pending shutdown or terminal lifecycle to the
-/// shared reaper, which joins its worker.
-/// The caller retains ownership if the reaper cannot accept it.
+/// Nonblocking handoff of an executor with pending shutdown/terminal work to
+/// the shared join reaper. Returns false on lock contention or if the reaper
+/// cannot accept the executor; the caller retains ownership and may retry.
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
 
 /// Starts the asynchronous session-join worker. Module loading must fail if it

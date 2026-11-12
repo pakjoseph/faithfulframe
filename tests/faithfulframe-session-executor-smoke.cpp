@@ -135,7 +135,13 @@ bool retirement_queue_handles_concurrent_handoffs(const ff_session_config &confi
 	for (size_t thread_index = 0; thread_index < handoff_threads; ++thread_index) {
 		producers[thread_index] = std::thread([&, thread_index] {
 			for (size_t i = thread_index; i < executor_count; i += handoff_threads) {
-				if (!faithfulframe_retire_session_executor(executors[i]) || executors[i])
+				const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+				while (executors[i] && std::chrono::steady_clock::now() < deadline) {
+					if (faithfulframe_retire_session_executor(executors[i]))
+						break;
+					std::this_thread::yield();
+				}
+				if (executors[i])
 					failed.store(true, std::memory_order_release);
 			}
 		});
@@ -168,12 +174,24 @@ bool retirement_queue_handles_concurrent_handoffs(const ff_session_config &confi
 	std::atomic<bool> duplicate_failed{false};
 	std::thread first_retirement([&] {
 		duplicate_start.arrive_and_wait();
-		if (!faithfulframe_retire_session_executor(duplicate_retirement) || duplicate_retirement)
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while (duplicate_retirement && std::chrono::steady_clock::now() < deadline) {
+			if (faithfulframe_retire_session_executor(duplicate_retirement))
+				break;
+			std::this_thread::yield();
+		}
+		if (duplicate_retirement)
 			duplicate_failed.store(true, std::memory_order_release);
 	});
 	std::thread second_retirement([&] {
 		duplicate_start.arrive_and_wait();
-		if (!faithfulframe_retire_session_executor(duplicate_retirement_copy) || duplicate_retirement_copy)
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while (duplicate_retirement_copy && std::chrono::steady_clock::now() < deadline) {
+			if (faithfulframe_retire_session_executor(duplicate_retirement_copy))
+				break;
+			std::this_thread::yield();
+		}
+		if (duplicate_retirement_copy)
 			duplicate_failed.store(true, std::memory_order_release);
 	});
 	duplicate_start.arrive_and_wait();
@@ -1082,6 +1100,35 @@ int run_smoke()
 		}
 		gate.condition.notify_all();
 	});
+	auto contended_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{115, 215}, generations);
+	ff_snapshot contended_snapshot{};
+	if (!await_snapshot(
+		    *contended_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    contended_snapshot))
+		return 109;
+	contended_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+	std::mutex handoff_mutex;
+	std::condition_variable handoff_condition;
+	std::atomic<bool> handoff_started{false};
+	std::atomic<bool> handoff_finished{false};
+	std::atomic<bool> handoff_accepted{true};
+	std::thread handoff_thread([&] {
+		handoff_started.store(true, std::memory_order_release);
+		handoff_accepted.store(faithfulframe_retire_session_executor(contended_executor),
+				       std::memory_order_release);
+		handoff_finished.store(true, std::memory_order_release);
+		handoff_condition.notify_all();
+	});
+	while (!handoff_started.load(std::memory_order_acquire))
+		std::this_thread::yield();
+	bool handoff_finished_during_drain = false;
+	{
+		std::unique_lock<std::mutex> lock(handoff_mutex);
+		handoff_finished_during_drain = handoff_condition.wait_for(lock, std::chrono::milliseconds(250), [&] {
+			return handoff_finished.load(std::memory_order_acquire);
+		});
+	}
 	bool unload_returned_before_drain_release = false;
 	{
 		std::unique_lock<std::mutex> lock(gate.mutex);
@@ -1093,9 +1140,13 @@ int run_smoke()
 	gate.condition.notify_all();
 	destroy_thread.join();
 	unload_thread.join();
+	handoff_thread.join();
 	faithfulframe_test_set_reaper_drain_hook(nullptr, nullptr);
-	if (!drain_paused || !unload_returned_before_drain_release || !racing_weak.expired())
+	if (!drain_paused || !unload_returned_before_drain_release || !racing_weak.expired() ||
+	    !handoff_finished_during_drain || handoff_accepted.load(std::memory_order_acquire) || !contended_executor)
 		return 108;
+	contended_executor->shutdown();
+	contended_executor.reset();
 	return 0;
 }
 

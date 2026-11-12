@@ -393,13 +393,13 @@ public:
 
 	bool enqueue(const std::shared_ptr<faithfulframe_session_executor> &executor)
 	{
-		if (!executor || !worker.joinable())
+		if (!executor)
 			return false;
 		std::lock_guard<std::mutex> lock(mutex);
-		if (stopping)
-			return false;
 		if (executor->retirement_queued)
 			return true;
+		if (stopping || !worker.joinable())
+			return false;
 
 		// The executor owns itself until the worker moves this reference into a
 		// local variable. No std::function/deque allocation can fail here.
@@ -497,11 +497,14 @@ bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session
 {
 	if (!executor)
 		return true;
-	std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
+	std::unique_lock<std::mutex> lock(faithfulframe_reaper_owner_mutex, std::try_to_lock);
+	if (!lock.owns_lock())
+		return false;
 	// The reaper is created during module load. Creating threads or allocating
-	// queue nodes from an OBS destruction callback would reintroduce a blocking
-	// teardown path, so a missing/closed reaper is treated as a lifecycle
-	// contract violation and left to the caller's explicit failure path.
+	// queue nodes or waiting on the lifecycle owner lock from an OBS callback
+	// would reintroduce a blocking teardown path. Contention, a missing reaper, or a
+	// closed reaper leaves ownership with the caller for a later retry or its
+	// controlled teardown fallback.
 	if (faithfulframe_reaper_closed || !faithfulframe_reaper)
 		return false;
 	if (!faithfulframe_reaper->enqueue(executor))
