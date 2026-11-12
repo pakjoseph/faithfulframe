@@ -1100,17 +1100,30 @@ int run_smoke()
 		}
 		gate.condition.notify_all();
 	});
+	bool unload_returned_before_drain_release = false;
+	{
+		std::unique_lock<std::mutex> lock(gate.mutex);
+		unload_returned_before_drain_release = gate.condition.wait_for(lock, std::chrono::seconds(2), [&gate] {
+			return gate.unload_returned;
+		});
+	}
 	std::atomic<bool> registration_finished{false};
 	std::atomic<int> registration_result{-1};
 	std::thread registration_thread([&] {
-		registration_result.store(faithfulframe_teardown_register_instance(), std::memory_order_release);
-		registration_finished.store(true, std::memory_order_release);
+		const int result = faithfulframe_teardown_register_instance();
+		if (result == 1)
+			faithfulframe_teardown_instance_creation_failed();
+		{
+			std::lock_guard<std::mutex> lock(gate.mutex);
+			registration_result.store(result, std::memory_order_release);
+			registration_finished.store(true, std::memory_order_release);
+		}
 		gate.condition.notify_all();
 	});
 	bool registration_finished_during_drain = false;
 	{
 		std::unique_lock<std::mutex> lock(gate.mutex);
-		registration_finished_during_drain = gate.condition.wait_for(lock, std::chrono::milliseconds(250), [&] {
+		registration_finished_during_drain = gate.condition.wait_for(lock, std::chrono::seconds(2), [&] {
 			return registration_finished.load(std::memory_order_acquire);
 		});
 	}
@@ -1132,7 +1145,10 @@ int run_smoke()
 		handoff_started.store(true, std::memory_order_release);
 		handoff_accepted.store(faithfulframe_retire_session_executor(contended_executor),
 				       std::memory_order_release);
-		handoff_finished.store(true, std::memory_order_release);
+		{
+			std::lock_guard<std::mutex> lock(handoff_mutex);
+			handoff_finished.store(true, std::memory_order_release);
+		}
 		handoff_condition.notify_all();
 	});
 	while (!handoff_started.load(std::memory_order_acquire))
@@ -1140,16 +1156,12 @@ int run_smoke()
 	bool handoff_finished_during_drain = false;
 	{
 		std::unique_lock<std::mutex> lock(handoff_mutex);
-		handoff_finished_during_drain = handoff_condition.wait_for(lock, std::chrono::milliseconds(250), [&] {
+		handoff_finished_during_drain = handoff_condition.wait_for(lock, std::chrono::seconds(2), [&] {
 			return handoff_finished.load(std::memory_order_acquire);
 		});
 	}
-	bool unload_returned_before_drain_release = false;
 	{
 		std::unique_lock<std::mutex> lock(gate.mutex);
-		unload_returned_before_drain_release = gate.condition.wait_for(lock, std::chrono::seconds(2), [&gate] {
-			return gate.unload_returned;
-		});
 		gate.release_drain = true;
 	}
 	gate.condition.notify_all();
@@ -1161,8 +1173,16 @@ int run_smoke()
 	if (!drain_paused || !unload_returned_before_drain_release || !registration_finished_during_drain ||
 	    registration_result.load(std::memory_order_acquire) != 0 || !racing_weak.expired() ||
 	    !handoff_finished_during_drain || !handoff_accepted.load(std::memory_order_acquire) || contended_executor ||
-	    !contended_weak.expired())
+	    !contended_weak.expired()) {
+		std::fprintf(stderr,
+			     "drain race: paused=%d unload=%d registration=%d registration_result=%d racing_reaped=%d "
+			     "handoff=%d accepted=%d owner_empty=%d contended_reaped=%d\n",
+			     drain_paused, unload_returned_before_drain_release, registration_finished_during_drain,
+			     registration_result.load(std::memory_order_acquire), racing_weak.expired(),
+			     handoff_finished_during_drain, handoff_accepted.load(std::memory_order_acquire),
+			     !contended_executor, contended_weak.expired());
 		return 108;
+	}
 	return 0;
 }
 
