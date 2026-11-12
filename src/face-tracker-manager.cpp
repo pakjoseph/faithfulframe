@@ -248,8 +248,11 @@ inline void face_tracker_manager::copy_detector_to_tracker()
 
 		tracker_inst_s additional{};
 		additional.tracker = take_idle_tracker();
-		if (!additional.tracker)
+		if (!additional.tracker &&
+		    faithfulframe_tracker_worker_budget_available(trackers.size(), trackers_idlepool.size()))
 			additional.tracker = new face_tracker_dlib();
+		if (!additional.tracker)
+			continue;
 		additional.observed_at_ms = 0;
 		additional.rect = rect_s{0, 0, 0, 0, 0.0f};
 		additional.crop_rect = rectf_s{0.0f, 0.0f, 0.0f, 0.0f};
@@ -332,32 +335,36 @@ inline void face_tracker_manager::stage_to_detector(std::shared_ptr<texture_obje
 		detector_in_progress = true;
 		detect_tick = tick_cnt;
 
-		auto t = tracker_inst_s{};
-		t.observed_at_ms = 0;
-		t.rect = rect_s{0, 0, 0, 0, 0.0f};
-		t.crop_rect = rectf_s{0.0f, 0.0f, 0.0f, 0.0f};
-		t.att = 0.0f;
-		t.score_first = 0.0f;
-		t.tracker = take_idle_tracker();
-		if (!t.tracker) {
+		face_tracker_base *candidate_worker = take_idle_tracker();
+		if (!candidate_worker &&
+		    faithfulframe_tracker_worker_budget_available(trackers.size(), trackers_idlepool.size())) {
 			debug_track_thread(
 				"%p No available idle tracker, creating new tracker thread. There are %d existing thread.",
 				this, trackers.size());
-			t.tracker = new face_tracker_dlib();
+			candidate_worker = new face_tracker_dlib();
 			for (size_t i = 0; i < trackers.size(); i++) {
 				debug_track_thread("%p existing tracker[%d]: state=%d", this, i,
 						   (int)trackers[i].state);
 			}
 		}
-		t.crop_tracker = crop_cur;
-		t.candidate_handle = allocate_candidate_handle();
-		t.continuity_token = t.candidate_handle;
-		t.state = tracker_inst_s::tracker_state_e::tracker_state_reset_texture;
-		t.tick_cnt = tick_cnt;
-		t.seed_texture = cvtex;
-		if (!landmark_detection_data)
-			t.landmark.clear();
-		trackers.push_back(t);
+		if (candidate_worker) {
+			auto t = tracker_inst_s{};
+			t.observed_at_ms = 0;
+			t.rect = rect_s{0, 0, 0, 0, 0.0f};
+			t.crop_rect = rectf_s{0.0f, 0.0f, 0.0f, 0.0f};
+			t.att = 0.0f;
+			t.score_first = 0.0f;
+			t.tracker = candidate_worker;
+			t.crop_tracker = crop_cur;
+			t.candidate_handle = allocate_candidate_handle();
+			t.continuity_token = t.candidate_handle;
+			t.state = tracker_inst_s::tracker_state_e::tracker_state_reset_texture;
+			t.tick_cnt = tick_cnt;
+			t.seed_texture = cvtex;
+			if (!landmark_detection_data)
+				t.landmark.clear();
+			trackers.push_back(std::move(t));
+		}
 	}
 
 	detect->unlock();
