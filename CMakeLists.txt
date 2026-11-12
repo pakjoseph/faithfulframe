@@ -308,7 +308,14 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_test(NAME faithfulframe-worker-log-gate-smoke COMMAND faithfulframe-worker-log-gate-smoke)
 	add_test(NAME faithfulframe-performance-log-smoke COMMAND faithfulframe-performance-log-smoke)
 	if (TARGET faithfulframe-performance-spool-smoke)
-		add_test(NAME faithfulframe-performance-spool-smoke COMMAND faithfulframe-performance-spool-smoke)
+		if (WIN32)
+			add_test(NAME faithfulframe-performance-spool-smoke
+				COMMAND ${CMAKE_COMMAND} -E env
+					"PATH=$<TARGET_FILE_DIR:Qt::Core>$<SEMICOLON>$ENV{PATH}"
+					"$<TARGET_FILE:faithfulframe-performance-spool-smoke>")
+		else()
+			add_test(NAME faithfulframe-performance-spool-smoke COMMAND faithfulframe-performance-spool-smoke)
+		endif()
 	endif()
 	add_test(NAME faithfulframe-texture-object-smoke COMMAND faithfulframe-texture-object-smoke)
 	add_test(NAME faithfulframe-tracker-association-smoke COMMAND faithfulframe-tracker-association-smoke)
