@@ -45,7 +45,6 @@ public:
 
 	bool updating_widget = false;
 	bool in_updateState = false;
-	bool frontend_shutdown_started = false;
 	bool design_tokens_ready = false;
 
 public:
@@ -64,9 +63,6 @@ private:
 	void stopPerformanceMetrics();
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
-
-	void frontendEvent(enum obs_frontend_event event);
-	static void frontendEvent_cb(enum obs_frontend_event event, void *private_data);
 
 	OBSSource get_source();
 	signal_handler_t *source_sh = NULL;

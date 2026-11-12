@@ -50,6 +50,9 @@ static std::vector<FTDock *> *docks;
 static QPointer<QAction> new_dock_action;
 static QPointer<QObject> dock_action_context;
 static bool dock_save_callback_registered = false;
+static bool dock_event_callback_registered = false;
+
+static void ft_docks_frontend_event_cb(enum obs_frontend_event event, void *private_data);
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
 struct faithfulframe_safe_preview
@@ -651,12 +654,6 @@ void FTDock::checkTargetSelector()
 	init_target_selector(targetSelector);
 }
 
-void FTDock::frontendEvent_cb(enum obs_frontend_event event, void *private_data)
-{
-	auto *dock = static_cast<FTDock *>(private_data);
-	dock->frontendEvent(event);
-}
-
 FTDock::FTDock(QWidget *parent) : QFrame(parent)
 {
 	data = face_tracker_dock_create();
@@ -778,8 +775,6 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	statusTimer->setInterval(250);
 	connect(statusTimer, &QTimer::timeout, this, &FTDock::updateState);
 	statusTimer->start();
-
-	obs_frontend_add_event_callback(frontendEvent_cb, this);
 }
 
 void FTDock::applyDesignTokens()
@@ -813,10 +808,6 @@ FTDock::~FTDock()
 	if (statusTimer)
 		statusTimer->stop();
 	stopPerformanceMetrics();
-	// OBS tears down the frontend callback registry as it dispatches EXIT.
-	if (!frontend_shutdown_started)
-		obs_frontend_remove_event_callback(frontendEvent_cb, this);
-
 	if (source_sh) {
 		signal_handler_disconnect(source_sh, "state_changed", onStateChanged, this);
 		source_sh = NULL;
@@ -842,11 +833,10 @@ void FTDock::hideEvent(QHideEvent *)
 	blog(LOG_INFO, "FTDock::hideEvent");
 }
 
-void FTDock::frontendEvent(enum obs_frontend_event event)
+// Keep frontend lifecycle handling module-scoped. Destroying docks from an
+// event callback must not mutate OBS's callback list while it is being iterated.
+static void ft_docks_frontend_event_cb(enum obs_frontend_event event, void *)
 {
-	if (event == OBS_FRONTEND_EVENT_EXIT)
-		frontend_shutdown_started = true;
-
 	if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP || event == OBS_FRONTEND_EVENT_EXIT) {
 		if (docks)
 			while (docks->size()) {
@@ -1457,6 +1447,8 @@ void ft_docks_init()
 	if (docks)
 		return;
 	docks = new std::vector<FTDock *>;
+	obs_frontend_add_event_callback(ft_docks_frontend_event_cb, NULL);
+	dock_event_callback_registered = true;
 	obs_frontend_add_save_callback(save_load_ft_docks, NULL);
 	dock_save_callback_registered = true;
 
@@ -1480,6 +1472,10 @@ void ft_docks_init()
 
 void ft_docks_release()
 {
+	if (dock_event_callback_registered) {
+		obs_frontend_remove_event_callback(ft_docks_frontend_event_cb, NULL);
+		dock_event_callback_registered = false;
+	}
 	if (dock_save_callback_registered) {
 		obs_frontend_remove_save_callback(save_load_ft_docks, NULL);
 		dock_save_callback_registered = false;
