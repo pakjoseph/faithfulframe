@@ -100,9 +100,10 @@ private:
 	void remove_duplicated_tracker();
 	void attenuate_tracker();
 	void copy_detector_to_tracker();
-	void stage_to_detector();
-	int stage_surface_to_tracker(struct tracker_inst_s &t);
-	void stage_to_trackers();
+	void stage_to_detector(std::shared_ptr<texture_object> &frame, bool &capture_attempted);
+	int stage_surface_to_tracker(struct tracker_inst_s &t, std::shared_ptr<texture_object> &frame,
+				     bool &capture_attempted);
+	void stage_to_trackers(std::shared_ptr<texture_object> &frame, bool &capture_attempted);
 	uint64_t allocate_candidate_handle();
 	class face_tracker_base *take_idle_tracker();
 };

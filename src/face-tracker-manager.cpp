@@ -276,7 +276,7 @@ inline void face_tracker_manager::copy_detector_to_tracker()
 		retire_tracker(static_cast<int>(i_tracker));
 }
 
-inline void face_tracker_manager::stage_to_detector()
+inline void face_tracker_manager::stage_to_detector(std::shared_ptr<texture_object> &frame, bool &capture_attempted)
 {
 	if (!detect || detect->trylock())
 		return;
@@ -310,7 +310,11 @@ inline void face_tracker_manager::stage_to_detector()
 		return;
 	}
 
-	if (auto cvtex = get_cvtex()) {
+	if (!capture_attempted) {
+		frame = get_cvtex();
+		capture_attempted = true;
+	}
+	if (auto cvtex = frame) {
 		if (!face_detector_result_epoch_is_current(cvtex->detection_epoch,
 							   detection_epoch.load(std::memory_order_acquire))) {
 			detect->unlock();
@@ -359,9 +363,15 @@ inline void face_tracker_manager::stage_to_detector()
 	detect->unlock();
 }
 
-inline int face_tracker_manager::stage_surface_to_tracker(struct tracker_inst_s &t)
+inline int face_tracker_manager::stage_surface_to_tracker(struct tracker_inst_s &t,
+							  std::shared_ptr<texture_object> &frame,
+							  bool &capture_attempted)
 {
-	if (auto cvtex = get_cvtex()) {
+	if (!capture_attempted) {
+		frame = get_cvtex();
+		capture_attempted = true;
+	}
+	if (auto cvtex = frame) {
 		t.tracker->set_texture(cvtex);
 		t.crop_tracker = crop_cur;
 		t.tracker->signal();
@@ -370,14 +380,14 @@ inline int face_tracker_manager::stage_surface_to_tracker(struct tracker_inst_s 
 	return 0;
 }
 
-inline void face_tracker_manager::stage_to_trackers()
+inline void face_tracker_manager::stage_to_trackers(std::shared_ptr<texture_object> &frame, bool &capture_attempted)
 {
 	bool have_new_tracker = false;
 	for (size_t i = 0; i < trackers.size(); i++) {
 		struct tracker_inst_s &t = trackers[i];
 		if (t.state == tracker_inst_s::tracker_state_constructing) {
 			if (!t.tracker->trylock()) {
-				if (!stage_surface_to_tracker(t)) {
+				if (!stage_surface_to_tracker(t, frame, capture_attempted)) {
 					t.crop_tracker = crop_cur;
 					t.state = tracker_inst_s::tracker_state_first_track;
 				}
@@ -394,7 +404,7 @@ inline void face_tracker_manager::stage_to_trackers()
 				t.score_first = t.rect.score;
 				if (!ret || !landmark_detection_data || !t.tracker->get_landmark(t.landmark))
 					t.landmark.resize(0);
-				stage_surface_to_tracker(t);
+				stage_surface_to_tracker(t, frame, capture_attempted);
 				t.tracker->signal();
 				t.tracker->unlock();
 				if (ret) {
@@ -411,7 +421,7 @@ inline void face_tracker_manager::stage_to_trackers()
 					    t.landmark.size());
 				if (!ret || !landmark_detection_data || !t.tracker->get_landmark(t.landmark))
 					t.landmark.resize(0);
-				stage_surface_to_tracker(t);
+				stage_surface_to_tracker(t, frame, capture_attempted);
 				t.tracker->signal();
 				t.tracker->unlock();
 			}
@@ -475,8 +485,13 @@ void face_tracker_manager::tick(float second)
 
 void face_tracker_manager::post_render()
 {
-	stage_to_detector();
-	stage_to_trackers();
+	// Reuse one immutable capture throughout this render cycle. Every candidate
+	// tracker and the detector consume the same source frame, avoiding repeated
+	// GPU readback and full-frame copies for each candidate.
+	std::shared_ptr<texture_object> frame;
+	bool capture_attempted = false;
+	stage_to_detector(frame, capture_attempted);
+	stage_to_trackers(frame, capture_attempted);
 }
 
 static void update_detector(face_tracker_manager *ftm, enum face_tracker_manager::detector_engine_e detector_engine)
