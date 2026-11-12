@@ -168,6 +168,94 @@ bool retirement_queue_handles_concurrent_handoffs(const ff_session_config &confi
 		std::this_thread::yield();
 	return duplicate_weak.expired();
 }
+
+bool snapshot_publication_is_consistent(const ff_session_config &config, const ff_generations &generations)
+{
+	const ff_identity identity{150, 250};
+	faithfulframe_session_executor executor(config, identity, generations);
+	ff_snapshot snapshot{};
+	if (!await_snapshot(executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, snapshot))
+		return false;
+
+	constexpr size_t reader_count = 4;
+	std::barrier start(static_cast<std::ptrdiff_t>(reader_count + 1));
+	std::atomic<bool> finished{false};
+	std::atomic<bool> inconsistent{false};
+	std::atomic<uint64_t> successful_reads{0};
+	std::array<std::thread, reader_count> readers;
+	for (auto &reader : readers) {
+		reader = std::thread([&] {
+			start.arrive_and_wait();
+			uint64_t previous_version = 0;
+			while (!finished.load(std::memory_order_acquire)) {
+				ff_snapshot observed{};
+				if (!executor.try_snapshot(observed)) {
+					std::this_thread::yield();
+					continue;
+				}
+				const bool state_reason_match =
+					(observed.reason == FF_REASON_STARTUP && observed.state == FF_STATE_MANUAL) ||
+					(observed.reason == FF_REASON_AWAITING_SELECTION &&
+					 (observed.state == FF_STATE_MANUAL || observed.state == FF_STATE_SEARCHING)) ||
+					(observed.reason == FF_REASON_OPERATOR_FREEZE &&
+					 observed.state == FF_STATE_FROZEN);
+				const bool crop_action_match =
+					(observed.state == FF_STATE_MANUAL && observed.crop_action == FF_CROP_NONE) ||
+					((observed.state == FF_STATE_SEARCHING || observed.state == FF_STATE_FROZEN) &&
+					 observed.crop_action == FF_CROP_HOLD);
+				const bool consistent =
+					observed.identity.source == identity.source &&
+					observed.identity.session == identity.session &&
+					observed.generations.source == generations.source &&
+					observed.generations.session == generations.session &&
+					observed.generations.stream == generations.stream &&
+					observed.generations.geometry == generations.geometry &&
+					observed.generations.tracker == generations.tracker &&
+					observed.status_version >= previous_version && !observed.closed &&
+					!observed.has_selected && state_reason_match && crop_action_match &&
+					observed.crop.x == 0.0f && observed.crop.y == 0.0f &&
+					observed.crop.width == 1.0f && observed.crop.height == 1.0f &&
+					observed.viewport.x == 0.0f && observed.viewport.y == 0.0f &&
+					observed.viewport.width == 1.0f && observed.viewport.height == 1.0f;
+				if (!consistent)
+					inconsistent.store(true, std::memory_order_release);
+				previous_version = observed.status_version;
+				successful_reads.fetch_add(1, std::memory_order_relaxed);
+			}
+		});
+	}
+	start.arrive_and_wait();
+
+	uint64_t at = 1;
+	for (size_t i = 0; i < 150; ++i) {
+		const uint32_t kinds[] = {FF_COMMAND_ENABLE_AUTO_FOLLOW, FF_COMMAND_FREEZE, FF_COMMAND_RESUME};
+		for (const uint32_t kind : kinds) {
+			const uint64_t previous_version = snapshot.status_version;
+			const ff_command command{
+				kind, snapshot.identity, snapshot.status_version, snapshot.generations, 0, 0};
+			if (!executor.enqueue_command(at++, command) ||
+			    !await_snapshot(
+				    executor,
+				    [previous_version](const ff_snapshot &value) {
+					    return value.status_version > previous_version &&
+						   value.command_result == FF_COMMAND_APPLIED;
+				    },
+				    snapshot)) {
+				finished.store(true, std::memory_order_release);
+				for (auto &reader : readers)
+					reader.join();
+				executor.shutdown();
+				return false;
+			}
+		}
+	}
+	finished.store(true, std::memory_order_release);
+	for (auto &reader : readers)
+		reader.join();
+	executor.shutdown();
+	return !inconsistent.load(std::memory_order_acquire) &&
+	       successful_reads.load(std::memory_order_relaxed) > reader_count;
+}
 } // namespace
 
 int run_smoke()
@@ -182,6 +270,8 @@ int run_smoke()
 		return 23;
 	const ff_session_config config{5000, 500,  8,     3840,  2160,  1920,  1080, 0.45f,
 				       1.0f, 4.0f, 0.25f, 0.08f, 0.08f, 0.05f, 0.25f};
+	if (!snapshot_publication_is_consistent(config, ff_generations{1, 1, 1, 1, 1}))
+		return 93;
 	if (!retirement_queue_handles_concurrent_handoffs(config, ff_generations{1, 1, 1, 1, 1}))
 		return 91;
 	const ff_identity identity{101, 201};
