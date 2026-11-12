@@ -531,7 +531,7 @@ jobs:
         id: obsdeps
         uses: norihiro/obs-studio-devel-action@v3
         with:
-          obs: 33
+          obs: 31
           verbose: true
 
       - name: Configure ThreadSanitizer build
