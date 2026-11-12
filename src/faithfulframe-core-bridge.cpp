@@ -430,6 +430,10 @@ private:
 std::mutex faithfulframe_reaper_owner_mutex;
 std::unique_ptr<faithfulframe_executor_reaper> faithfulframe_reaper;
 bool faithfulframe_reaper_closed = false;
+std::mutex faithfulframe_module_lifecycle_mutex;
+size_t faithfulframe_live_instances = 0;
+bool faithfulframe_module_unloading = false;
+bool faithfulframe_reaper_shutdown_started = false;
 } // namespace
 
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor)
@@ -457,26 +461,6 @@ bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session
 	return true;
 }
 
-bool faithfulframe_retire_cleanup(void (*cleanup)(void *), void *context)
-{
-	if (!cleanup || !context)
-		return false;
-	std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
-	if (faithfulframe_reaper_closed)
-		return false;
-	try {
-		if (!faithfulframe_reaper)
-			faithfulframe_reaper = std::make_unique<faithfulframe_executor_reaper>();
-	} catch (...) {
-		return false;
-	}
-	try {
-		return faithfulframe_reaper->enqueue([cleanup, context] { cleanup(context); });
-	} catch (...) {
-		return false;
-	}
-}
-
 extern "C" int faithfulframe_executor_reaper_start()
 {
 	std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
@@ -488,7 +472,15 @@ extern "C" int faithfulframe_executor_reaper_start()
 			return 0;
 		}
 	}
-	return faithfulframe_reaper && faithfulframe_reaper->available() ? 1 : 0;
+	if (!faithfulframe_reaper || !faithfulframe_reaper->available())
+		return 0;
+	{
+		std::lock_guard<std::mutex> lifecycle_lock(faithfulframe_module_lifecycle_mutex);
+		faithfulframe_live_instances = 0;
+		faithfulframe_module_unloading = false;
+		faithfulframe_reaper_shutdown_started = false;
+	}
+	return 1;
 }
 
 extern "C" void faithfulframe_executor_reaper_shutdown()
@@ -501,6 +493,49 @@ extern "C" void faithfulframe_executor_reaper_shutdown()
 	}
 	if (reaper)
 		reaper->shutdown();
+}
+
+extern "C" int faithfulframe_teardown_register_instance()
+{
+	std::lock_guard<std::mutex> lock(faithfulframe_module_lifecycle_mutex);
+	if (faithfulframe_module_unloading || faithfulframe_reaper_shutdown_started ||
+	    faithfulframe_live_instances == std::numeric_limits<size_t>::max())
+		return 0;
+	++faithfulframe_live_instances;
+	return 1;
+}
+
+extern "C" void faithfulframe_teardown_instance_destroyed()
+{
+	bool shutdown_reaper = false;
+	{
+		std::lock_guard<std::mutex> lock(faithfulframe_module_lifecycle_mutex);
+		if (faithfulframe_live_instances == 0)
+			return;
+		--faithfulframe_live_instances;
+		if (faithfulframe_module_unloading && faithfulframe_live_instances == 0 &&
+		    !faithfulframe_reaper_shutdown_started) {
+			faithfulframe_reaper_shutdown_started = true;
+			shutdown_reaper = true;
+		}
+	}
+	if (shutdown_reaper)
+		faithfulframe_executor_reaper_shutdown();
+}
+
+extern "C" void faithfulframe_teardown_begin_module_unload()
+{
+	bool shutdown_reaper = false;
+	{
+		std::lock_guard<std::mutex> lock(faithfulframe_module_lifecycle_mutex);
+		faithfulframe_module_unloading = true;
+		if (faithfulframe_live_instances == 0 && !faithfulframe_reaper_shutdown_started) {
+			faithfulframe_reaper_shutdown_started = true;
+			shutdown_reaper = true;
+		}
+	}
+	if (shutdown_reaper)
+		faithfulframe_executor_reaper_shutdown();
 }
 
 void faithfulframe_session_executor::snapshot_publisher::publish(const ff_snapshot &snapshot, uint64_t published_at)

@@ -102,6 +102,8 @@ int run_smoke()
 {
 	if (faithfulframe_executor_reaper_start() != 1)
 		return 1;
+	if (faithfulframe_teardown_register_instance() != 1 || faithfulframe_teardown_register_instance() != 1)
+		return 87;
 	if (!configuration_revision_guard_is_race_safe())
 		return 23;
 	const ff_session_config config{5000, 500,  8,     3840,  2160,  1920,  1080, 0.45f,
@@ -683,7 +685,6 @@ int run_smoke()
 					      terminal_initial.generations,
 					      0,
 					      0};
-	std::weak_ptr<faithfulframe_session_executor> terminal_weak = terminal_executor;
 	auto terminal_join = terminal_executor;
 	if (!faithfulframe_retire_session_executor(terminal_join) || terminal_join)
 		return 67;
@@ -700,35 +701,16 @@ int run_smoke()
 	    terminal_executor->enqueue_command(2, post_destroy_command))
 		return 68;
 	terminal_executor.reset();
-	struct cleanup_probe
-	{
-		std::atomic<bool> completed{false};
-		std::weak_ptr<faithfulframe_session_executor> prior_executor;
-		bool prior_executor_released = false;
-		std::thread::id thread_id{};
-	} cleanup{false, terminal_weak};
-	const std::thread::id destroy_thread = std::this_thread::get_id();
-	if (!faithfulframe_retire_cleanup(
-		    [](void *context) {
-			    auto *probe = static_cast<cleanup_probe *>(context);
-			    probe->prior_executor_released = probe->prior_executor.expired();
-			    probe->thread_id = std::this_thread::get_id();
-			    probe->completed.store(true, std::memory_order_release);
-		    },
-		    &cleanup))
-		return 70;
-	// OBS may destroy plugin sources after obs_module_unload returns. The reaper
-	// must finish queued work without relying on module unload as a shutdown
-	// barrier, and it must continue accepting source teardown afterward.
 	const auto unload_drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-	while ((!cleanup.completed.load(std::memory_order_acquire) || !unload_weak.expired()) &&
-	       std::chrono::steady_clock::now() < unload_drain_deadline)
+	while (!unload_weak.expired() && std::chrono::steady_clock::now() < unload_drain_deadline)
 		std::this_thread::yield();
-	if (!cleanup.completed.load(std::memory_order_acquire) || !cleanup.prior_executor_released ||
-	    cleanup.thread_id == destroy_thread)
-		return 71;
 	if (!unload_weak.expired())
 		return 63;
+	// OBS may destroy plugin sources after obs_module_unload returns. Unload
+	// keeps the reaper alive while registered source instances remain.
+	faithfulframe_teardown_begin_module_unload();
+	if (faithfulframe_teardown_register_instance() != 0)
+		return 88;
 	auto post_unload_executor =
 		std::make_shared<faithfulframe_session_executor>(config, ff_identity{111, 211}, generations);
 	ff_snapshot post_unload_snapshot{};
@@ -745,19 +727,6 @@ int run_smoke()
 		std::this_thread::yield();
 	if (!post_unload_weak.expired())
 		return 84;
-	std::atomic<bool> post_unload_cleanup_called{false};
-	if (!faithfulframe_retire_cleanup(
-		    [](void *context) {
-			    static_cast<std::atomic<bool> *>(context)->store(true, std::memory_order_release);
-		    },
-		    &post_unload_cleanup_called))
-		return 85;
-	const auto post_unload_cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-	while (!post_unload_cleanup_called.load(std::memory_order_acquire) &&
-	       std::chrono::steady_clock::now() < post_unload_cleanup_deadline)
-		std::this_thread::yield();
-	if (!post_unload_cleanup_called.load(std::memory_order_acquire))
-		return 86;
 	{
 		faithfulframe_session_executor preview_executor(config, ff_identity{110, 210}, generations);
 		ff_snapshot preview_snapshot{};
@@ -811,17 +780,22 @@ int run_smoke()
 		    preview_snapshot.selected_handle != preview_candidate.handle)
 			return 80;
 	}
-	// This explicit barrier represents final process teardown after all OBS
-	// source callbacks have completed. Only after it closes may later retirement
-	// attempts fall back to caller-owned cleanup.
-	faithfulframe_executor_reaper_shutdown();
-	std::atomic<bool> late_cleanup_called{false};
-	if (faithfulframe_retire_cleanup(
-		    [](void *context) {
-			    static_cast<std::atomic<bool> *>(context)->store(true, std::memory_order_release);
-		    },
-		    &late_cleanup_called) ||
-	    late_cleanup_called.load(std::memory_order_acquire))
+	// The first destroy callback leaves cleanup available for the second active
+	// source. The last callback drains and closes the reaper.
+	faithfulframe_teardown_instance_destroyed();
+	auto final_pending_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{112, 212}, generations);
+	ff_snapshot final_pending_snapshot{};
+	if (!await_snapshot(
+		    *final_pending_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    final_pending_snapshot))
+		return 89;
+	std::weak_ptr<faithfulframe_session_executor> final_pending_weak = final_pending_executor;
+	final_pending_executor->request_shutdown();
+	if (!faithfulframe_retire_session_executor(final_pending_executor) || final_pending_executor)
+		return 90;
+	faithfulframe_teardown_instance_destroyed();
+	if (!final_pending_weak.expired())
 		return 72;
 	auto late_executor =
 		std::make_shared<faithfulframe_session_executor>(config, ff_identity{108, 208}, generations);

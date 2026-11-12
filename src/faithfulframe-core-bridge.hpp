@@ -159,16 +159,14 @@ private:
 /// The caller retains ownership if the reaper cannot accept it.
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
 
-/// Defers destruction that may join tracker/detector workers to the shared reaper.
-/// The caller retains context ownership if the reaper cannot accept the callback.
-bool faithfulframe_retire_cleanup(void (*cleanup)(void *), void *context);
-
-/// Final process-teardown barrier. Do not call from obs_module_unload(): libobs
-/// may invoke remaining source destroy callbacks after module unload returns.
-/// The reaper remains available until process teardown so those callbacks can
-/// transfer blocking worker joins off the OBS callback thread.
-/// Starts the asynchronous teardown worker. Module loading must fail if it
-/// cannot be started, because source destruction must not fall back to joins
-/// on OBS callback threads.
+/// Starts the asynchronous session-join worker. Module loading must fail if it
+/// cannot be started, so nonblocking OBS callbacks can transfer joins safely.
 extern "C" int faithfulframe_executor_reaper_start();
+/// Drains and closes the worker after all registered source-instance cleanup
+/// has been handed off.
 extern "C" void faithfulframe_executor_reaper_shutdown();
+/// Instance accounting keeps the reaper alive across obs_module_unload until
+/// libobs has invoked every remaining source destroy callback.
+extern "C" int faithfulframe_teardown_register_instance();
+extern "C" void faithfulframe_teardown_instance_destroyed();
+extern "C" void faithfulframe_teardown_begin_module_unload();

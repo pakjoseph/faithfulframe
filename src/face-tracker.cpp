@@ -383,6 +383,8 @@ static void cb_set_state(void *data, calldata_t *cd);
 static void cb_get_faithfulframe_preview(void *data, calldata_t *cd);
 static void cb_faithfulframe_command(void *data, calldata_t *cd);
 static bool enqueue_safe_operator_command(struct face_tracker_filter *s, uint32_t kind);
+extern "C" int faithfulframe_teardown_register_instance();
+extern "C" void faithfulframe_teardown_instance_destroyed();
 #endif
 static const char *ftptz_signals[] = {"void state_changed()", NULL};
 static void emit_state_changed(struct face_tracker_filter *);
@@ -434,28 +436,38 @@ static void *ftf_create_internal(obs_data_t *settings, obs_source_t *context, bo
 
 static void *ftf_create(obs_data_t *settings, obs_source_t *context)
 {
-	return ftf_create_internal(settings, context, false);
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (!faithfulframe_teardown_register_instance())
+		return nullptr;
+#endif
+	void *instance = ftf_create_internal(settings, context, false);
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (!instance)
+		faithfulframe_teardown_instance_destroyed();
+#endif
+	return instance;
 }
 
 static void register_hotkeys(struct face_tracker_filter *s, obs_source_t *target);
 
 static void *fts_create(obs_data_t *settings, obs_source_t *context)
 {
-	auto *s = (struct face_tracker_filter *)ftf_create_internal(settings, context, true);
-	if (!s)
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (!faithfulframe_teardown_register_instance())
 		return nullptr;
+#endif
+	auto *s = (struct face_tracker_filter *)ftf_create_internal(settings, context, true);
+	if (!s) {
+#ifdef ENABLE_RUST_CORE_BRIDGE
+		faithfulframe_teardown_instance_destroyed();
+#endif
+		return nullptr;
+	}
 
 	register_hotkeys(s, context);
 
 	return s;
 }
-
-#ifdef ENABLE_RUST_CORE_BRIDGE
-static void destroy_face_tracker_manager(void *context)
-{
-	delete static_cast<face_tracker_manager *>(context);
-}
-#endif
 
 static void ftf_destroy(void *data)
 {
@@ -472,10 +484,9 @@ static void ftf_destroy(void *data)
 	}
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
-	// OBS defers source destroy callbacks until source-context callbacks have
-	// drained. Binding and manager destructors transfer policy, detector, and
-	// tracker cleanup to the reaper; if it cannot accept work, cleanup falls back
-	// to this callback so resources are not abandoned.
+	// OBS defers this callback until source-context callbacks have drained.
+	// Binding destructors transfer Rust session joins to the reaper; dlib
+	// detector/tracker teardown below stays inside this OBS destroy callback.
 	delete s->safe_runtime;
 	s->safe_runtime = nullptr;
 #endif
@@ -491,15 +502,10 @@ static void ftf_destroy(void *data)
 
 	face_tracker_manager *tracker_manager = s->ftm;
 	s->ftm = nullptr;
-#ifdef ENABLE_RUST_CORE_BRIDGE
-	if (tracker_manager && !faithfulframe_retire_cleanup(destroy_face_tracker_manager, tracker_manager)) {
-		blog(LOG_WARNING,
-		     "FaithfulFrame could not defer detector/tracker teardown; joining during source destroy");
-		delete tracker_manager;
-	}
-#else
+	// libobs runs this destroy callback on its destruction task thread after
+	// source-context callbacks have drained. Joining dlib workers here keeps
+	// their OBS-owned frame cleanup inside a valid callback and off render/UI.
 	delete tracker_manager;
-#endif
 
 	bfree(s->target_name);
 	obs_weak_source_release(s->target_ref);
@@ -514,6 +520,9 @@ static void ftf_destroy(void *data)
 	bfree(s->debug_data_control_last);
 
 	bfree(s);
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	faithfulframe_teardown_instance_destroyed();
+#endif
 }
 
 static bool ftf_reset_tracking(obs_properties_t *, obs_property_t *, void *data)

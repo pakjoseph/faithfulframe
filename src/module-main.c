@@ -16,6 +16,7 @@ void register_face_tracker_ptz(bool hide_ptz);
 void register_face_tracker_monitor(bool hide_monitor);
 #ifdef ENABLE_RUST_CORE_BRIDGE
 int faithfulframe_executor_reaper_start(void);
+void faithfulframe_teardown_begin_module_unload(void);
 #endif
 
 const char *obs_module_name(void)
@@ -71,8 +72,11 @@ bool obs_module_load(void)
 
 void obs_module_unload()
 {
-	// Keep the teardown reaper alive. libobs may call remaining source/filter
-	// destroy callbacks after this function returns.
+	// Keep teardown active until libobs destroys remaining source/filter
+	// instances after this function returns.
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	faithfulframe_teardown_begin_module_unload();
+#endif
 #ifdef WITH_DOCK
 	ft_docks_release();
 #endif // WITH_DOCK
