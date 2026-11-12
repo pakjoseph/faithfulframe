@@ -83,6 +83,9 @@ struct faithfulframe_source_binding
 	bool active_child_registered = false;
 	std::string target_name;
 	std::shared_ptr<faithfulframe_session_executor> executor;
+	// Set only after a successful reaper handoff, so a tick-side destructor
+	// never makes a second lock attempt and falls back to a blocking join.
+	std::atomic<bool> executor_handed_to_reaper{false};
 	// Non-owning render view. The runtime's active-slot lease pins this binding
 	// for every callback that reads the pointer.
 	std::atomic<faithfulframe_session_executor *> render_executor{nullptr};
@@ -143,6 +146,17 @@ struct faithfulframe_source_binding
 		return added;
 	}
 
+	bool handoff_executor_for_reclamation()
+	{
+		if (!closed.load(std::memory_order_acquire))
+			return false;
+		auto session = std::atomic_load_explicit(&executor, std::memory_order_acquire);
+		if (session && !faithfulframe_retire_session_executor(session))
+			return false;
+		executor_handed_to_reaper.store(true, std::memory_order_release);
+		return true;
+	}
+
 	~faithfulframe_source_binding()
 	{
 		closed.store(true, std::memory_order_release);
@@ -155,7 +169,7 @@ struct faithfulframe_source_binding
 		render_executor.store(nullptr, std::memory_order_release);
 		auto session = std::atomic_exchange_explicit(
 			&executor, std::shared_ptr<faithfulframe_session_executor>{}, std::memory_order_acq_rel);
-		if (session) {
+		if (session && !executor_handed_to_reaper.load(std::memory_order_acquire)) {
 			session->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
 			if (!faithfulframe_retire_session_executor(session))
 				session->shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
@@ -250,12 +264,9 @@ struct faithfulframe_source_runtime
 			// teardown. Never reach it from this video-tick reclamation path if
 			// the module reaper cannot accept the worker join. Keep the retired
 			// owner until a later tick can transfer responsibility safely.
-			auto executor = std::atomic_load_explicit(&(*it)->executor, std::memory_order_acquire);
-			if (executor) {
-				if (!faithfulframe_retire_session_executor(executor)) {
-					++it;
-					continue;
-				}
+			if (!(*it)->handoff_executor_for_reclamation()) {
+				++it;
+				continue;
 			}
 			it = bindings.erase(it);
 		}
