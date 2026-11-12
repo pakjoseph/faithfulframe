@@ -24,6 +24,15 @@ mkdir -p "${destination}/data/dlib_hog_model" \
 	"${destination}/data/dlib_cnn_model" \
 	"${destination}/data/dlib_face_landmark_model"
 
+# A previous opt-in download must not leave restricted assets in a later
+# default build, since packaging recursively includes the data directory.
+if ((!flg_nonfree)); then
+	rm -f \
+		"${destination}/data/dlib_face_landmark_model/shape_predictor_68_face_landmarks.dat" \
+		"${destination}/data/dlib_face_landmark_model/shape_predictor_68_face_landmarks_GTX.dat" \
+		"${destination}/data/LICENSE-shape_predictor_68_face_landmarks"
+fi
+
 model_tmp="$(mktemp -d)"
 trap 'rm -rf "$model_tmp"' EXIT
 
