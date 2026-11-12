@@ -845,21 +845,23 @@ impl TrackingEngine {
         generations: Generations,
         status_version: u64,
     ) -> Snapshot {
+        let before = self.session.snapshot();
         let rejected =
             self.session
                 .reject_invalid_command_at(at, identity, generations, status_version);
-        self.with_frame(rejected)
+        self.reconcile_rejected_frame(before, rejected)
     }
 
     /// Records an invalid lifecycle tag through the session event path.
     pub fn reject_invalid_lifecycle(&mut self, at: Millis, identity: Identity) -> Snapshot {
+        let before = self.session.snapshot();
         let reason = if identity == self.session.identity {
             Reason::InvalidLifecycle
         } else {
             Reason::StaleLifecycle
         };
         let rejected = self.session.reject_at(at, reason);
-        self.with_frame(rejected)
+        self.reconcile_rejected_frame(before, rejected)
     }
 
     pub fn apply(&mut self, event: Event) -> Snapshot {
@@ -888,7 +890,7 @@ impl TrackingEngine {
             } if identity == self.session.identity => {
                 if source_width == 0 || source_height == 0 {
                     let rejected = self.session.reject_at(at, Reason::InvalidLifecycle);
-                    return self.with_frame(rejected);
+                    return self.reconcile_rejected_frame(policy_before, rejected);
                 }
                 let mut config = self.framing_config;
                 config.source_aspect = source_width as f32 / source_height as f32;
@@ -896,7 +898,7 @@ impl TrackingEngine {
                     Ok(controller) => Some((config, controller)),
                     Err(_) => {
                         let rejected = self.session.reject_at(at, Reason::InvalidLifecycle);
-                        return self.with_frame(rejected);
+                        return self.reconcile_rejected_frame(policy_before, rejected);
                     }
                 }
             }
@@ -905,19 +907,7 @@ impl TrackingEngine {
 
         let policy = self.session.apply(event);
         if matches!(policy.command_result, CommandResult::Rejected(_)) {
-            // A deadline can advance independently of a rejected command. In
-            // that case retain the same crop but stop stale motion momentum.
-            if policy.state != policy_before.state || policy.reason != policy_before.reason {
-                match policy.crop_action {
-                    CropAction::Hold | CropAction::None => self.framing.hold(),
-                    CropAction::Wide => {
-                        self.framing.reset();
-                        self.frame_plan = self.framing.safe_wide();
-                    }
-                    CropAction::Track => {}
-                }
-            }
-            return self.with_frame(policy);
+            return self.reconcile_rejected_frame(policy_before, policy);
         }
 
         // Move the crop only when selection is applied or the selected tracker
@@ -971,6 +961,23 @@ impl TrackingEngine {
         snapshot.crop = self.frame_plan.source_crop;
         snapshot.viewport = self.frame_plan.output_viewport;
         snapshot
+    }
+
+    fn reconcile_rejected_frame(&mut self, before: Snapshot, rejected: Snapshot) -> Snapshot {
+        // A rejected event is a no-op. If a due safety timer independently
+        // advanced policy, apply that transition's crop action without
+        // accepting or otherwise mutating the rejected event.
+        if rejected.state != before.state || rejected.reason != before.reason {
+            match rejected.crop_action {
+                CropAction::Hold | CropAction::None => self.framing.hold(),
+                CropAction::Wide => {
+                    self.framing.reset();
+                    self.frame_plan = self.framing.safe_wide();
+                }
+                CropAction::Track => {}
+            }
+        }
+        self.with_frame(rejected)
     }
 
     fn snapshot_with_result(&self, result: CommandResult) -> Snapshot {
@@ -2687,6 +2694,71 @@ mod tests {
     }
 
     #[test]
+    fn malformed_command_entry_holds_framing_when_a_deadline_advances() {
+        let mut engine = TrackingEngine::new(
+            Config {
+                loss_grace_ms: 20,
+                max_evidence_age_ms: 10,
+                ..Config::default()
+            },
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        engine.apply(Event::Candidate {
+            at: 2,
+            candidate: candidate(10, 100, 1, 2),
+        });
+        let searching = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: searching.identity,
+                status_version: searching.status_version,
+                generations: searching.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: searching.observation_version,
+                },
+            },
+        });
+        let mut next = candidate(10, 100, 2, 4);
+        next.rect = Rect::normalized(0.7, 0.2, 0.2, 0.4).unwrap();
+        let moving = engine.apply(Event::Candidate {
+            at: 4,
+            candidate: next,
+        });
+        assert!(!engine.framing.motion_is_idle());
+
+        let rejected = engine.reject_invalid_command(
+            40,
+            moving.identity,
+            moving.generations,
+            moving.status_version,
+        );
+
+        assert_eq!(
+            rejected.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        assert_eq!(rejected.state, State::Lost);
+        assert_eq!(rejected.crop, moving.crop);
+        assert_eq!(rejected.viewport, moving.viewport);
+        assert!(engine.framing.motion_is_idle());
+    }
+
+    #[test]
     fn rejected_command_preserves_framing_plan() {
         let mut engine = TrackingEngine::new(
             Config::default(),
@@ -2925,6 +2997,10 @@ mod tests {
                 },
             },
         });
+        assert!(
+            !engine.framing.motion_is_idle(),
+            "selection should have active crop motion before the target-loss timer"
+        );
         let generations_before = locked.generations;
         let rejected = engine.apply(Event::Lifecycle {
             at: 5_503,
@@ -2947,5 +3023,6 @@ mod tests {
         assert_eq!(rejected.crop, locked.crop);
         assert_eq!(rejected.crop_action, CropAction::Hold);
         assert!(rejected.status_version > locked.status_version);
+        assert!(engine.framing.motion_is_idle());
     }
 }
