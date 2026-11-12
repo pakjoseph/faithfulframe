@@ -480,10 +480,8 @@ impl TrackingSession {
             Command::SelectCandidate {
                 handle,
                 observation_version,
-            } if matches!(
-                self.state,
-                State::Manual | State::Searching | State::Locked | State::Lost
-            ) && status_version == self.status_version
+            } if matches!(self.state, State::Manual | State::Searching | State::Lost)
+                && status_version == self.status_version
                 && observation_version == self.observation_version =>
             {
                 if let Some(candidate) = self.latest.get(&handle).copied()
@@ -1218,7 +1216,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_operator_selection_can_correct_a_locked_target() {
+    fn manual_override_allows_explicit_selection_of_a_replacement_target() {
         let mut session = session();
         let original = lock_test_target(&mut session);
         let mut replacement = candidate(11, 200, 2, 4);
@@ -1228,9 +1226,27 @@ mod tests {
         assert_eq!(observed.state, State::Locked);
         assert_eq!(observed.selected, Some(10));
 
-        let corrected = send(
+        let direct_switch = send(
             &mut session,
             5,
+            Command::SelectCandidate {
+                handle: 11,
+                observation_version: observed.observation_version,
+            },
+        );
+        assert_eq!(
+            direct_switch.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        assert_policy_no_op(direct_switch, observed);
+
+        let manual = send(&mut session, 6, Command::ManualOverride);
+        assert_eq!(manual.state, State::Manual);
+        assert_eq!(manual.selected, None);
+
+        let corrected = send(
+            &mut session,
+            7,
             Command::SelectCandidate {
                 handle: 11,
                 observation_version: observed.observation_version,
@@ -1247,15 +1263,16 @@ mod tests {
     #[test]
     fn stale_operator_correction_cannot_replace_a_locked_target() {
         let mut session = session();
-        let original = lock_test_target(&mut session);
-        let replacement = candidate(11, 200, 2, 4);
-        let observed = observe(&mut session, replacement, 4);
+        lock_test_target(&mut session);
+        let manual = send(&mut session, 4, Command::ManualOverride);
+        let replacement = candidate(11, 200, 2, 5);
+        let observed = observe(&mut session, replacement, 5);
 
         let stale = session.apply(Event::Command {
-            at: 5,
+            at: 6,
             envelope: CommandEnvelope {
                 identity: observed.identity,
-                status_version: original.status_version,
+                status_version: manual.status_version,
                 generations: observed.generations,
                 command: Command::SelectCandidate {
                     handle: 11,

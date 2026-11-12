@@ -377,7 +377,7 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 				.arg(preview.loss_remaining_ms / 1000.0, 0, 'f', 1);
 		return "Searching; holding the last framing";
 	case FF_STATE_LOCKED:
-		return "Following the selected speaker; choose another face to switch targets";
+		return "Following the selected speaker; use Manual Override to change targets";
 	case FF_STATE_LOST:
 		return "Target lost; select a face or reset wide";
 	default:
@@ -957,15 +957,12 @@ void FTDock::updateState()
 				candidateSelector->setCurrentIndex(static_cast<int>(restore_index + 1));
 		}
 		const bool has_explicit_candidate = !candidateSelector->currentData().toMap().isEmpty();
-		const bool correcting_target = safe_preview.state == FF_STATE_LOCKED;
-		selectCandidateButton->setText(correcting_target ? "Switch Speaker" : "Select Speaker");
-		selectCandidateButton->setAccessibleName(correcting_target
-								 ? "Switch automatic following to the highlighted face"
-								 : "Select the highlighted face as the speaker");
-		selectCandidateButton->setEnabled(
-			safe_preview.available && has_explicit_candidate &&
-			(safe_preview.state == FF_STATE_MANUAL || safe_preview.state == FF_STATE_SEARCHING ||
-			 safe_preview.state == FF_STATE_LOST || safe_preview.state == FF_STATE_LOCKED));
+		selectCandidateButton->setText("Select Speaker");
+		selectCandidateButton->setAccessibleName("Select the highlighted face as the speaker");
+		selectCandidateButton->setEnabled(safe_preview.available && has_explicit_candidate &&
+						  (safe_preview.state == FF_STATE_MANUAL ||
+						   safe_preview.state == FF_STATE_SEARCHING ||
+						   safe_preview.state == FF_STATE_LOST));
 	}
 #else
 	UNUSED_PARAMETER(safe_mode);
@@ -1140,8 +1137,11 @@ void FTDock::handlePreviewClick(const QPointF &position)
 	if (!read_safe_preview(target, preview) || !preview.enabled || !preview.available || !preview.output_width ||
 	    !preview.output_height || preview.candidates.isEmpty())
 		return;
-	if (preview.state != FF_STATE_MANUAL && preview.state != FF_STATE_SEARCHING && preview.state != FF_STATE_LOST &&
-	    preview.state != FF_STATE_LOCKED)
+	if (preview.state == FF_STATE_LOCKED) {
+		safeStatusLabel->setText("Use Manual Override before selecting a different speaker.");
+		return;
+	}
+	if (preview.state != FF_STATE_MANUAL && preview.state != FF_STATE_SEARCHING && preview.state != FF_STATE_LOST)
 		return;
 	if (notrackButton->isChecked())
 		use_full_source_preview_transform(preview);
