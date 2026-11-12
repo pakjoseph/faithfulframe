@@ -24,6 +24,9 @@ public:
 	ff_result snapshot(ff_snapshot &output) const;
 	ff_result tick(uint64_t monotonic_ms, ff_snapshot &output);
 	ff_result publish_candidate(uint64_t monotonic_ms, const ff_candidate &candidate, ff_snapshot &output);
+	ff_result clear_candidates(uint64_t monotonic_ms, const ff_identity &identity,
+				   const ff_generations &generations, uint64_t observation_version,
+				   ff_snapshot &output);
 	ff_result apply_command(uint64_t monotonic_ms, const ff_command &command, ff_snapshot &output);
 	ff_result lifecycle(uint64_t monotonic_ms, const ff_lifecycle &event, ff_snapshot &output);
 	const ff_identity &binding_identity() const { return bound_identity; }
@@ -68,6 +71,8 @@ public:
 
 	bool enqueue_tick(uint64_t monotonic_ms);
 	bool enqueue_candidates(uint64_t monotonic_ms, const ff_candidate *candidates, size_t count);
+	bool enqueue_candidate_clear(uint64_t monotonic_ms, const ff_identity &identity,
+				     const ff_generations &generations, uint64_t observation_version);
 	bool enqueue_command(uint64_t monotonic_ms, const ff_command &command);
 	bool enqueue_lifecycle(uint64_t monotonic_ms, const ff_lifecycle &lifecycle);
 	/// True while the worker can accept work; false after startup failure or shutdown.
@@ -99,6 +104,9 @@ private:
 		uint64_t monotonic_ms = 0;
 		std::chrono::steady_clock::time_point enqueued_at{};
 		size_t candidate_count = 0;
+		uint64_t observation_version = 0;
+		ff_identity candidate_identity{};
+		ff_generations candidate_generations{};
 		std::array<ff_candidate, max_candidates> candidates{};
 		ff_command command{};
 		ff_lifecycle lifecycle{};

@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-enum { FAITHFULFRAME_FFI_ABI_VERSION = 7 };
+enum { FAITHFULFRAME_FFI_ABI_VERSION = 8 };
 
 typedef enum ff_result { FF_OK = 0, FF_INVALID_ARGUMENT = 1, FF_PANIC = 2 } ff_result;
 
@@ -176,6 +176,9 @@ ff_result ff_session_snapshot(const ff_session *session, ff_snapshot *out_snapsh
 ff_result ff_session_tick(ff_session *session, uint64_t monotonic_ms, ff_snapshot *out_snapshot);
 ff_result ff_session_publish_candidate(ff_session *session, uint64_t monotonic_ms, const ff_candidate *candidate,
 				       ff_snapshot *out_snapshot);
+ff_result ff_session_clear_candidates(ff_session *session, uint64_t monotonic_ms, const ff_identity *identity,
+				      const ff_generations *generations, uint64_t observation_version,
+				      ff_snapshot *out_snapshot);
 ff_result ff_session_apply_command(ff_session *session, uint64_t monotonic_ms, const ff_command *command,
 				   ff_snapshot *out_snapshot);
 ff_result ff_session_lifecycle(ff_session *session, uint64_t monotonic_ms, const ff_lifecycle *lifecycle,

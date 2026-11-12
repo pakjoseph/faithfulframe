@@ -89,7 +89,9 @@ struct faithfulframe_source_binding
 	// Serialize generation changes and effective-active transitions together.
 	std::mutex lifecycle_mutex;
 	ff_generations generations{1, 1, 1, 1, 1};
+	// Protected by lifecycle_mutex; mirrors the session's observation version.
 	uint64_t observation_version = 0;
+	bool candidate_observation_active = false;
 	std::atomic<uint32_t> source_width{0};
 	std::atomic<uint32_t> source_height{0};
 	std::atomic<bool> source_settings_updated{false};
@@ -1010,6 +1012,9 @@ static bool enqueue_source_lifecycle_locked(faithfulframe_source_binding *bindin
 		return false;
 	}
 	binding->generations = event.generations;
+	if (binding->observation_version != std::numeric_limits<uint64_t>::max())
+		++binding->observation_version;
+	binding->candidate_observation_active = false;
 	if (kind == FF_LIFECYCLE_SOURCE_DESTROYED || kind == FF_LIFECYCLE_SOURCE_REBOUND ||
 	    kind == FF_LIFECYCLE_ADAPTER_DESTROYED || kind == FF_LIFECYCLE_OBS_SHUTDOWN) {
 		binding->closed.store(true, std::memory_order_release);
@@ -1324,17 +1329,22 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 	auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
 	if (!executor)
 		return;
-	if (binding->observation_version >= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-		return;
 	const uint32_t source_width = binding->source_width.load(std::memory_order_acquire);
 	const uint32_t source_height = binding->source_height.load(std::memory_order_acquire);
 	if (!source_width || !source_height)
 		return;
 	ff_generations generations{};
-	{
-		std::lock_guard<std::mutex> lock(binding->lifecycle_mutex);
-		generations = binding->generations;
-	}
+	std::lock_guard<std::mutex> lifecycle_lock(binding->lifecycle_mutex);
+	if (binding->closed.load(std::memory_order_acquire) ||
+	    binding->transition_pending.load(std::memory_order_acquire) ||
+	    binding->source_settings_updated.load(std::memory_order_acquire) ||
+	    !binding->signal_connected.load(std::memory_order_acquire) ||
+	    !binding->effective_active.load(std::memory_order_acquire))
+		return;
+	if (binding->observation_version >= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+		return;
+	generations = binding->generations;
+	const uint64_t version = binding->observation_version + 1;
 
 	std::array<ff_candidate, faithfulframe_session_executor::max_candidates> candidates{};
 	size_t count = 0;
@@ -1353,7 +1363,7 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		candidate.handle = tracker.candidate_handle;
 		candidate.continuity_token = tracker.continuity_token;
 		candidate.identity = binding->identity;
-		candidate.observation_version = binding->observation_version + 1;
+		candidate.observation_version = version;
 		candidate.generations = generations;
 		candidate.observed_at_ms = tracker.observed_at_ms;
 		candidate.expires_at_ms =
@@ -1363,9 +1373,9 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		candidate.rect = ff_rect{x0, y0, x1 - x0, y1 - y0};
 	}
 	if (count) {
-		const uint64_t version = binding->observation_version + 1;
 		if (executor->enqueue_candidates(now, candidates.data(), count)) {
 			binding->observation_version = version;
+			binding->candidate_observation_active = true;
 			std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
 			if (lock.owns_lock()) {
 				binding->preview.identity = binding->identity;
@@ -1377,13 +1387,28 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 			}
 		}
 	} else {
-		std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
-		if (lock.owns_lock()) {
-			binding->preview.identity = binding->identity;
-			binding->preview.generations = generations;
-			binding->preview.observation_version = binding->observation_version;
-			binding->preview.published_at_ms = now;
-			binding->preview.candidate_count = 0;
+		if (binding->candidate_observation_active) {
+			if (executor->enqueue_candidate_clear(now, binding->identity, generations, version)) {
+				binding->observation_version = version;
+				binding->candidate_observation_active = false;
+				std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
+				if (lock.owns_lock()) {
+					binding->preview.identity = binding->identity;
+					binding->preview.generations = generations;
+					binding->preview.observation_version = version;
+					binding->preview.published_at_ms = now;
+					binding->preview.candidate_count = 0;
+				}
+			}
+		} else {
+			std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
+			if (lock.owns_lock()) {
+				binding->preview.identity = binding->identity;
+				binding->preview.generations = generations;
+				binding->preview.observation_version = binding->observation_version;
+				binding->preview.published_at_ms = now;
+				binding->preview.candidate_count = 0;
+			}
 		}
 	}
 	executor->enqueue_tick(now);

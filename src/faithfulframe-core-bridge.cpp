@@ -66,6 +66,16 @@ ff_result faithfulframe_core_bridge::publish_candidate(uint64_t monotonic_ms, co
 	return ff_session_publish_candidate(session.get(), monotonic_ms, &candidate, &output);
 }
 
+ff_result faithfulframe_core_bridge::clear_candidates(uint64_t monotonic_ms, const ff_identity &identity,
+						      const ff_generations &generations, uint64_t observation_version,
+						      ff_snapshot &output)
+{
+	if (!session)
+		return FF_INVALID_ARGUMENT;
+	return ff_session_clear_candidates(session.get(), monotonic_ms, &identity, &generations, observation_version,
+					   &output);
+}
+
 ff_result faithfulframe_core_bridge::apply_command(uint64_t monotonic_ms, const ff_command &command,
 						   ff_snapshot &output)
 {
@@ -153,12 +163,56 @@ bool faithfulframe_session_executor::enqueue_candidates(uint64_t monotonic_ms, c
 		rejected_work.fetch_add(1, std::memory_order_relaxed);
 		return false;
 	}
+	if (!count) {
+		rejected_work.fetch_add(1, std::memory_order_relaxed);
+		return false;
+	}
+	const uint64_t batch_version = candidates[0].observation_version;
+	const ff_identity identity = candidates[0].identity;
+	const ff_generations generations = candidates[0].generations;
+	if (!batch_version || !identity.source || !identity.session) {
+		rejected_work.fetch_add(1, std::memory_order_relaxed);
+		return false;
+	}
+	for (size_t i = 1; i < count; ++i) {
+		const ff_candidate &candidate = candidates[i];
+		if (candidate.observation_version != batch_version || candidate.identity.source != identity.source ||
+		    candidate.identity.session != identity.session ||
+		    candidate.generations.source != generations.source ||
+		    candidate.generations.session != generations.session ||
+		    candidate.generations.stream != generations.stream ||
+		    candidate.generations.geometry != generations.geometry ||
+		    candidate.generations.tracker != generations.tracker) {
+			rejected_work.fetch_add(1, std::memory_order_relaxed);
+			return false;
+		}
+	}
 	work_item item;
 	item.kind = work_kind::candidates;
 	item.monotonic_ms = monotonic_ms;
 	item.candidate_count = count;
+	item.observation_version = batch_version;
+	item.candidate_identity = identity;
+	item.candidate_generations = generations;
 	for (size_t i = 0; i < count; ++i)
 		item.candidates[i] = candidates[i];
+	return enqueue(item, true);
+}
+
+bool faithfulframe_session_executor::enqueue_candidate_clear(uint64_t monotonic_ms, const ff_identity &identity,
+							     const ff_generations &generations,
+							     uint64_t observation_version)
+{
+	if (!identity.source || !identity.session || !observation_version) {
+		rejected_work.fetch_add(1, std::memory_order_relaxed);
+		return false;
+	}
+	work_item item;
+	item.kind = work_kind::candidates;
+	item.monotonic_ms = monotonic_ms;
+	item.observation_version = observation_version;
+	item.candidate_identity = identity;
+	item.candidate_generations = generations;
 	return enqueue(item, true);
 }
 
@@ -548,9 +602,16 @@ void faithfulframe_session_executor::run()
 				call_result = bridge.tick(item.monotonic_ms, snapshot);
 				break;
 			case work_kind::candidates:
-				for (size_t i = 0; i < item.candidate_count && call_result == FF_OK; ++i)
-					call_result = bridge.publish_candidate(item.monotonic_ms, item.candidates[i],
-									       snapshot);
+				if (!item.candidate_count) {
+					call_result = bridge.clear_candidates(item.monotonic_ms,
+									      item.candidate_identity,
+									      item.candidate_generations,
+									      item.observation_version, snapshot);
+				} else {
+					for (size_t i = 0; i < item.candidate_count && call_result == FF_OK; ++i)
+						call_result = bridge.publish_candidate(item.monotonic_ms,
+										       item.candidates[i], snapshot);
+				}
 				break;
 			case work_kind::command:
 				call_result = bridge.apply_command(item.monotonic_ms, item.command, snapshot);

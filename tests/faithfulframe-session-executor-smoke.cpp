@@ -715,6 +715,59 @@ int run_smoke()
 		return 71;
 	if (!unload_weak.expired())
 		return 63;
+	{
+		faithfulframe_session_executor preview_executor(config, ff_identity{110, 210}, generations);
+		ff_snapshot preview_snapshot{};
+		if (!await_snapshot(
+			    preview_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+			    preview_snapshot))
+			return 75;
+		const ff_command preview_enable{FF_COMMAND_ENABLE_AUTO_FOLLOW,
+						preview_snapshot.identity,
+						preview_snapshot.status_version,
+						generations,
+						0,
+						0};
+		if (!preview_executor.enqueue_command(1, preview_enable))
+			return 76;
+		const ff_candidate preview_candidate{41, 4001, preview_snapshot.identity, 1, generations,
+						     2,  502,  {0.4f, 0.2f, 0.1f, 0.2f}};
+		if (!preview_executor.enqueue_candidates(2, &preview_candidate, 1) ||
+		    !await_snapshot(
+			    preview_executor, [](const ff_snapshot &value) { return value.observation_version == 1; },
+			    preview_snapshot))
+			return 77;
+		const ff_command preview_select{FF_COMMAND_SELECT_CANDIDATE,     preview_snapshot.identity,
+						preview_snapshot.status_version, generations,
+						preview_candidate.handle,        preview_candidate.observation_version};
+		if (!preview_executor.enqueue_command(3, preview_select) ||
+		    !await_snapshot(
+			    preview_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_LOCKED; },
+			    preview_snapshot))
+			return 78;
+		if (!preview_executor.enqueue_candidate_clear(4, preview_snapshot.identity, generations, 2) ||
+		    !await_snapshot(
+			    preview_executor,
+			    [](const ff_snapshot &value) {
+				    return value.observation_version == 2 && value.state == FF_STATE_LOCKED;
+			    },
+			    preview_snapshot))
+			return 79;
+		const ff_command stale_preview_click{
+			FF_COMMAND_SELECT_CANDIDATE,  preview_snapshot.identity, preview_snapshot.status_version,
+			preview_snapshot.generations, preview_candidate.handle,  preview_snapshot.observation_version};
+		if (!preview_executor.enqueue_command(5, stale_preview_click) ||
+		    !await_snapshot(
+			    preview_executor,
+			    [](const ff_snapshot &value) {
+				    return value.command_result == FF_COMMAND_REJECTED &&
+					   value.rejection_reason == FF_REJECTION_STALE_COMMAND;
+			    },
+			    preview_snapshot) ||
+		    preview_snapshot.state != FF_STATE_LOCKED ||
+		    preview_snapshot.selected_handle != preview_candidate.handle)
+			return 80;
+	}
 	std::atomic<bool> late_cleanup_called{false};
 	if (faithfulframe_retire_cleanup(
 		    [](void *context) {

@@ -71,12 +71,33 @@ int main()
 	    snapshot.crop.y != locked.crop.y || snapshot.crop.width != locked.crop.width ||
 	    snapshot.crop.height != locked.crop.height)
 		return 6;
+	const auto before_empty_preview = snapshot;
+	if (bridge.clear_candidates(6, identity, generations, candidate.observation_version + 1, snapshot) != FF_OK ||
+	    snapshot.command_result != FF_COMMAND_NOT_APPLICABLE || snapshot.state != before_empty_preview.state ||
+	    snapshot.selected_handle != before_empty_preview.selected_handle ||
+	    snapshot.observation_version != candidate.observation_version + 1 ||
+	    snapshot.status_version != before_empty_preview.status_version + 1 ||
+	    snapshot.crop.x != before_empty_preview.crop.x || snapshot.crop.y != before_empty_preview.crop.y ||
+	    snapshot.crop.width != before_empty_preview.crop.width ||
+	    snapshot.crop.height != before_empty_preview.crop.height)
+		return 25;
+	const auto after_empty_preview = snapshot;
+	select.status_version = snapshot.status_version;
+	select.observation_version = snapshot.observation_version;
+	if (bridge.apply_command(6, select, snapshot) != FF_OK || snapshot.command_result != FF_COMMAND_REJECTED ||
+	    snapshot.rejection_reason != FF_REJECTION_STALE_COMMAND ||
+	    snapshot.status_version != after_empty_preview.status_version ||
+	    snapshot.selected_handle != after_empty_preview.selected_handle ||
+	    snapshot.state != after_empty_preview.state || snapshot.crop.x != after_empty_preview.crop.x ||
+	    snapshot.crop.y != after_empty_preview.crop.y || snapshot.crop.width != after_empty_preview.crop.width ||
+	    snapshot.crop.height != after_empty_preview.crop.height)
+		return 26;
 
 	++generations.stream;
 	++generations.geometry;
 	++generations.tracker;
 	const ff_lifecycle geometry_changed{FF_LIFECYCLE_GEOMETRY_CHANGED, snapshot.identity, generations, 1280, 960};
-	if (bridge.lifecycle(6, geometry_changed, snapshot) != FF_OK || snapshot.state != FF_STATE_MANUAL ||
+	if (bridge.lifecycle(7, geometry_changed, snapshot) != FF_OK || snapshot.state != FF_STATE_MANUAL ||
 	    snapshot.has_selected || snapshot.generations.geometry != generations.geometry ||
 	    snapshot.crop.width != 1.0f || snapshot.crop.height != 1.0f ||
 	    std::abs(snapshot.viewport.width - 0.75f) > 0.001f || std::abs(snapshot.viewport.x - 0.125f) > 0.001f)
@@ -87,7 +108,7 @@ int main()
 	++wrong_scene_generations.tracker;
 	const ff_lifecycle wrong_identity_scene{FF_LIFECYCLE_SCENE_ACTIVE, ff_identity{999, 999},
 						wrong_scene_generations};
-	if (bridge.lifecycle(7, wrong_identity_scene, snapshot) != FF_OK ||
+	if (bridge.lifecycle(8, wrong_identity_scene, snapshot) != FF_OK ||
 	    snapshot.command_result != FF_COMMAND_REJECTED ||
 	    snapshot.rejection_reason != FF_REJECTION_STALE_LIFECYCLE ||
 	    snapshot.status_version != after_geometry.status_version || snapshot.state != after_geometry.state ||
@@ -95,7 +116,7 @@ int main()
 	    snapshot.crop.width != after_geometry.crop.width || snapshot.crop.height != after_geometry.crop.height)
 		return 8;
 	const ff_lifecycle inexact_scene{FF_LIFECYCLE_SCENE_ACTIVE, snapshot.identity, snapshot.generations};
-	if (bridge.lifecycle(7, inexact_scene, snapshot) != FF_OK || snapshot.command_result != FF_COMMAND_REJECTED ||
+	if (bridge.lifecycle(8, inexact_scene, snapshot) != FF_OK || snapshot.command_result != FF_COMMAND_REJECTED ||
 	    snapshot.rejection_reason != FF_REJECTION_INVALID_LIFECYCLE ||
 	    snapshot.status_version != after_geometry.status_version || snapshot.state != after_geometry.state)
 		return 9;
@@ -107,7 +128,7 @@ int main()
 	++generations.geometry;
 	++generations.tracker;
 	const ff_lifecycle rebind{FF_LIFECYCLE_SOURCE_REBOUND, snapshot.identity, generations};
-	if (bridge.lifecycle(7, rebind, snapshot) != FF_OK || !snapshot.closed || snapshot.state != FF_STATE_MANUAL)
+	if (bridge.lifecycle(9, rebind, snapshot) != FF_OK || !snapshot.closed || snapshot.state != FF_STATE_MANUAL)
 		return 10;
 	const auto closed = snapshot;
 	if (bridge.apply_command(8, enable, snapshot) != FF_OK || snapshot.command_result != FF_COMMAND_REJECTED ||

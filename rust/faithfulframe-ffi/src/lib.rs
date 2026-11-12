@@ -292,7 +292,7 @@ fn lifecycle(value: FfLifecycle) -> Result<Lifecycle, i32> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn faithfulframe_ffi_abi_version() -> u32 {
-    7
+    8
 }
 
 #[unsafe(no_mangle)]
@@ -436,6 +436,39 @@ pub unsafe extern "C" fn ff_session_publish_candidate(
 #[unsafe(no_mangle)]
 /// # Safety
 /// Pointers must be valid. All access to one session must be serialized by its owner.
+pub unsafe extern "C" fn ff_session_clear_candidates(
+    session: *mut FfSession,
+    at: u64,
+    identity_in: *const FfIdentity,
+    generations_in: *const FfGenerations,
+    observation_version: u64,
+    output: *mut FfSnapshot,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        if session.is_null()
+            || identity_in.is_null()
+            || generations_in.is_null()
+            || output.is_null()
+        {
+            return INVALID_ARGUMENT;
+        }
+        write_snapshot(
+            (*session).inner.apply(Event::CandidatesCleared {
+                at,
+                identity: identity(*identity_in),
+                generations: generations(*generations_in),
+                observation_version,
+            }),
+            &mut *output,
+        );
+        OK
+    }))
+    .unwrap_or(PANIC)
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Pointers must be valid. All access to one session must be serialized by its owner.
 pub unsafe extern "C" fn ff_session_apply_command(
     session: *mut FfSession,
     at: u64,
@@ -522,7 +555,7 @@ mod tests {
 
     #[test]
     fn abi_version_is_stable() {
-        assert_eq!(faithfulframe_ffi_abi_version(), 7);
+        assert_eq!(faithfulframe_ffi_abi_version(), 8);
     }
 
     #[test]

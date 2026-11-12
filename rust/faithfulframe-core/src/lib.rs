@@ -212,6 +212,14 @@ pub enum Event {
         at: Millis,
         candidate: Candidate,
     },
+    /// Publishes a new preview observation that contains no selectable
+    /// candidates. The version invalidates clicks from the previous preview.
+    CandidatesCleared {
+        at: Millis,
+        identity: Identity,
+        generations: Generations,
+        observation_version: u64,
+    },
     Tick {
         at: Millis,
     },
@@ -384,6 +392,18 @@ impl TrackingSession {
                 }
             }
             Event::Candidate { at, candidate } => self.apply_candidate(candidate, at),
+            Event::CandidatesCleared {
+                identity,
+                generations,
+                observation_version,
+                ..
+            } => {
+                if identity != self.identity || generations != self.generations {
+                    self.reject_command(Reason::InvalidCandidate)
+                } else {
+                    self.clear_candidates(observation_version)
+                }
+            }
             Event::Tick { .. } => CommandResult::NotACommand,
             Event::Lifecycle {
                 identity, event, ..
@@ -465,6 +485,7 @@ impl TrackingSession {
                 && observation_version == self.observation_version =>
             {
                 if let Some(candidate) = self.latest.get(&handle).copied()
+                    && candidate.observation_version == observation_version
                     && candidate.expires_at >= at
                     && candidate.observed_at <= at
                     && at.saturating_sub(candidate.observed_at) <= self.config.max_evidence_age_ms
@@ -577,6 +598,17 @@ impl TrackingSession {
                 self.loss_deadline = None;
             }
         }
+        CommandResult::NotACommand
+    }
+
+    fn clear_candidates(&mut self, observation_version: u64) -> CommandResult {
+        if observation_version == 0 || observation_version <= self.observation_version {
+            return self.reject_command(Reason::InvalidCandidate);
+        }
+        // Keep the bounded handle records so an active tracker may publish
+        // the same never-recycled handle in its next observation. Their older
+        // versions cannot be selected after this version fence advances.
+        self.observation_version = observation_version;
         CommandResult::NotACommand
     }
 
@@ -900,8 +932,11 @@ impl TrackingEngine {
 
 fn event_time(event: Event) -> Millis {
     match event {
-        Event::Command { at, .. } | Event::Tick { at } | Event::Lifecycle { at, .. } => at,
-        Event::Candidate { at, .. } => at,
+        Event::Command { at, .. }
+        | Event::Tick { at }
+        | Event::Lifecycle { at, .. }
+        | Event::Candidate { at, .. }
+        | Event::CandidatesCleared { at, .. } => at,
     }
 }
 
@@ -1287,6 +1322,121 @@ mod tests {
             CommandResult::Rejected(Reason::StaleCommand)
         );
         assert_policy_no_op(after, before);
+    }
+
+    #[test]
+    fn candidate_click_must_match_the_version_that_produced_its_rectangle() {
+        let mut session = session();
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
+        observe(&mut session, candidate(11, 101, 2, 3), 3);
+        let before = session.snapshot();
+
+        // The command carries the newest preview version, but the requested
+        // handle only existed in the preceding observation.
+        let after = session.apply(Event::Command {
+            at: 4,
+            envelope: CommandEnvelope {
+                identity: before.identity,
+                status_version: before.status_version,
+                generations: before.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: before.observation_version,
+                },
+            },
+        });
+
+        assert_eq!(
+            after.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        assert_policy_no_op(after, before);
+    }
+
+    #[test]
+    fn empty_preview_invalidates_old_clicks_without_dropping_continuity() {
+        let mut session = session();
+        let locked = lock_test_target(&mut session);
+        let cleared = session.apply(Event::CandidatesCleared {
+            at: 4,
+            identity: locked.identity,
+            generations: locked.generations,
+            observation_version: locked.observation_version + 1,
+        });
+
+        assert_eq!(cleared.state, State::Locked);
+        assert_eq!(cleared.selected, locked.selected);
+        assert_eq!(cleared.selected_rect, locked.selected_rect);
+        assert_eq!(cleared.crop, locked.crop);
+        assert_eq!(cleared.loss_deadline, locked.loss_deadline);
+        assert_eq!(cleared.observation_version, locked.observation_version + 1);
+        assert_eq!(cleared.status_version, locked.status_version + 1);
+
+        let rejected = session.apply(Event::Command {
+            at: 5,
+            envelope: CommandEnvelope {
+                identity: cleared.identity,
+                status_version: cleared.status_version,
+                generations: cleared.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: cleared.observation_version,
+                },
+            },
+        });
+        assert_eq!(
+            rejected.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        let mut rejected_state = rejected;
+        rejected_state.command_result = cleared.command_result;
+        assert_eq!(rejected_state, cleared);
+
+        // The same non-recycled tracker handle may publish fresh evidence in
+        // a later observation and preserve selected-target continuity.
+        let refreshed = observe(
+            &mut session,
+            candidate(10, 100, cleared.observation_version + 1, 6),
+            6,
+        );
+        assert_eq!(refreshed.state, State::Locked);
+        assert_eq!(refreshed.selected, Some(10));
+        assert_eq!(refreshed.reason, Reason::SelectedByOperator);
+    }
+
+    #[test]
+    fn stale_empty_preview_version_is_a_strict_no_op() {
+        let mut session = session();
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
+        let before = session.snapshot();
+        let after = session.apply(Event::CandidatesCleared {
+            at: 3,
+            identity: before.identity,
+            generations: before.generations,
+            observation_version: before.observation_version,
+        });
+
+        assert_eq!(
+            after.command_result,
+            CommandResult::Rejected(Reason::InvalidCandidate)
+        );
+        assert_policy_no_op(after, before);
+
+        let mut stale_generations = before.generations;
+        stale_generations.stream -= 1;
+        let stale_generation_clear = session.apply(Event::CandidatesCleared {
+            at: 3,
+            identity: before.identity,
+            generations: stale_generations,
+            observation_version: before.observation_version + 1,
+        });
+        assert_eq!(
+            stale_generation_clear.command_result,
+            CommandResult::Rejected(Reason::InvalidCandidate)
+        );
+        assert_policy_no_op(stale_generation_clear, before);
     }
 
     #[test]
