@@ -294,6 +294,9 @@ pub struct TrackingSession {
     selected: Option<SelectedTarget>,
     latest: BTreeMap<CandidateHandle, Candidate>,
     highest_candidate_handle: CandidateHandle,
+    /// True only after a candidate opens this version's batch; a clear or
+    /// lifecycle fence closes it so same-version late results stay stale.
+    candidate_observation_open: bool,
     held_crop: Rect,
     crop_action: CropAction,
     loss_started_at: Option<Millis>,
@@ -338,6 +341,7 @@ impl TrackingSession {
             selected: None,
             latest: BTreeMap::new(),
             highest_candidate_handle: 0,
+            candidate_observation_open: false,
             held_crop: safe_wide,
             crop_action: CropAction::None,
             loss_started_at: None,
@@ -527,7 +531,10 @@ impl TrackingSession {
         {
             return self.reject_command(Reason::InvalidCandidate);
         }
-        if candidate.observation_version < self.observation_version {
+        if candidate.observation_version < self.observation_version
+            || (candidate.observation_version == self.observation_version
+                && !self.candidate_observation_open)
+        {
             return self.reject_command(Reason::InvalidCandidate);
         }
         if candidate.expires_at < candidate.observed_at {
@@ -566,7 +573,10 @@ impl TrackingSession {
                 self.latest.remove(&oldest);
             }
         }
-        self.observation_version = self.observation_version.max(candidate.observation_version);
+        if candidate.observation_version > self.observation_version {
+            self.observation_version = candidate.observation_version;
+            self.candidate_observation_open = true;
+        }
 
         if let Some(selected) = self.selected {
             if selected.continuity == candidate.continuity
@@ -617,6 +627,7 @@ impl TrackingSession {
         // the same never-recycled handle in its next observation. Their older
         // versions cannot be selected after this version fence advances.
         self.observation_version = observation_version;
+        self.candidate_observation_open = false;
         CommandResult::NotACommand
     }
 
@@ -724,6 +735,7 @@ impl TrackingSession {
         self.latest.clear();
         self.loss_started_at = None;
         self.loss_deadline = None;
+        self.candidate_observation_open = false;
         self.state = state;
         self.reason = reason;
         if crop_action == CropAction::Wide {
@@ -789,6 +801,7 @@ impl TrackingSession {
         self.latest.clear();
         self.loss_started_at = None;
         self.loss_deadline = None;
+        self.candidate_observation_open = false;
         self.held_crop = Rect::full_frame();
         self.crop_action = CropAction::Wide;
         self.status_version = self.status_version.saturating_add(1);
@@ -1533,6 +1546,49 @@ mod tests {
         assert_eq!(refreshed.state, State::Locked);
         assert_eq!(refreshed.selected, Some(10));
         assert_eq!(refreshed.reason, Reason::SelectedByOperator);
+    }
+
+    #[test]
+    fn late_candidate_for_cleared_preview_version_is_a_strict_no_op() {
+        let mut session = session();
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
+        let before_clear = session.snapshot();
+        let cleared = session.apply(Event::CandidatesCleared {
+            at: 3,
+            identity: before_clear.identity,
+            generations: before_clear.generations,
+            observation_version: before_clear.observation_version + 1,
+        });
+
+        let rejected = observe(&mut session, candidate(11, 200, 2, 4), 4);
+        assert_eq!(
+            rejected.command_result,
+            CommandResult::Rejected(Reason::InvalidCandidate)
+        );
+        assert_policy_no_op(rejected, cleared);
+
+        // The rejected late result must not reserve its handle or close the
+        // door to a genuinely newer observation. Multiple candidates in that
+        // new observation still share one version and remain selectable.
+        let first_fresh = observe(&mut session, candidate(11, 200, 3, 5), 5);
+        assert_eq!(first_fresh.command_result, CommandResult::NotACommand);
+        assert_eq!(first_fresh.observation_version, 3);
+        let second_fresh = observe(&mut session, candidate(12, 201, 3, 6), 6);
+        assert_eq!(second_fresh.command_result, CommandResult::NotACommand);
+        assert_eq!(second_fresh.observation_version, 3);
+
+        let selected = send(
+            &mut session,
+            7,
+            Command::SelectCandidate {
+                handle: 12,
+                observation_version: second_fresh.observation_version,
+            },
+        );
+        assert_eq!(selected.command_result, CommandResult::Applied);
+        assert_eq!(selected.state, State::Locked);
+        assert_eq!(selected.selected, Some(12));
     }
 
     #[test]
