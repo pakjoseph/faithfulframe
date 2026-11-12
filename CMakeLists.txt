@@ -230,6 +230,11 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		tests/faithfulframe-offline-detector-worker.cpp
 		src/face-detector-dlib-hog.cpp
 		src/texture-object.cpp)
+	add_executable(faithfulframe-dlib-tracker-lifetime-smoke
+		tests/faithfulframe-dlib-tracker-lifetime-smoke.cpp
+		src/face-tracker-base.cpp
+		src/face-tracker-dlib.cpp
+		src/texture-object.cpp)
 	add_dependencies(faithfulframe-rust-bridge-smoke faithfulframe-rust-ffi-build)
 	add_dependencies(faithfulframe-session-executor-smoke faithfulframe-rust-ffi-build)
 	target_include_directories(faithfulframe-rust-bridge-smoke PRIVATE src rust/faithfulframe-ffi/include)
@@ -245,6 +250,9 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	target_include_directories(faithfulframe-offline-replay PRIVATE
 		${CMAKE_CURRENT_BINARY_DIR} src tests
 		"$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
+	target_include_directories(faithfulframe-dlib-tracker-lifetime-smoke PRIVATE
+		${CMAKE_CURRENT_BINARY_DIR} src
+		"$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
 	target_link_libraries(faithfulframe-rust-bridge-smoke PRIVATE faithfulframe-rust-ffi)
 	target_link_libraries(faithfulframe-rust-bridge-smoke PRIVATE Threads::Threads)
 	target_link_libraries(faithfulframe-session-executor-smoke PRIVATE faithfulframe-rust-ffi Threads::Threads)
@@ -253,6 +261,15 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	target_link_libraries(faithfulframe-texture-object-smoke PRIVATE dlib Threads::Threads)
 	target_link_libraries(faithfulframe-offline-replay PRIVATE
 		faithfulframe-offline-frame-sequence dlib Threads::Threads)
+	target_link_libraries(faithfulframe-dlib-tracker-lifetime-smoke PRIVATE dlib Threads::Threads)
+	if (OS_WINDOWS)
+		target_link_libraries(faithfulframe-dlib-tracker-lifetime-smoke PRIVATE OBS::w32-pthreads)
+		add_custom_command(TARGET faithfulframe-dlib-tracker-lifetime-smoke POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different
+				"$<TARGET_FILE:OBS::w32-pthreads>"
+				"$<TARGET_FILE_DIR:faithfulframe-dlib-tracker-lifetime-smoke>"
+			VERBATIM)
+	endif()
 	enable_testing()
 	add_test(NAME faithfulframe-preview-geometry-smoke COMMAND faithfulframe-preview-geometry-smoke)
 	add_test(NAME faithfulframe-candidate-selection-smoke COMMAND faithfulframe-candidate-selection-smoke)
@@ -267,6 +284,8 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_test(NAME faithfulframe-offline-frame-sequence-smoke
 		COMMAND faithfulframe-offline-frame-sequence-smoke)
 	add_test(NAME faithfulframe-offline-replay-help COMMAND faithfulframe-offline-replay --help)
+	add_test(NAME faithfulframe-dlib-tracker-lifetime-smoke
+		COMMAND faithfulframe-dlib-tracker-lifetime-smoke)
 	set(FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL
 		"${CMAKE_CURRENT_SOURCE_DIR}/data/dlib_hog_model/frontal_face_detector.dat"
 		CACHE FILEPATH "Optional dlib HOG model used for the offline detector smoke test")
