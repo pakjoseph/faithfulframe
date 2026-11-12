@@ -171,7 +171,8 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_test(NAME faithfulframe-worker-log-gate-smoke COMMAND faithfulframe-worker-log-gate-smoke)
 	add_test(NAME faithfulframe-texture-object-smoke COMMAND faithfulframe-texture-object-smoke)
 	add_test(NAME faithfulframe-tracker-association-smoke COMMAND faithfulframe-tracker-association-smoke)
-	set_tests_properties(faithfulframe-detector-worker-smoke PROPERTIES TIMEOUT 10)
+	set_tests_properties(faithfulframe-detector-worker-smoke faithfulframe-worker-log-gate-smoke
+		faithfulframe-texture-object-smoke PROPERTIES TIMEOUT 10)
 endif()
 
 set(plugin_additional_libs)

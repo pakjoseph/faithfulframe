@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <vector>
 #include "plugin-macros.generated.h"
 #include "texture-object.h"
 #include "faithfulframe-worker-log.hpp"
