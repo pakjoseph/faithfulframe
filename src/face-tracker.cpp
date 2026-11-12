@@ -23,6 +23,7 @@
 #include "source_list.h"
 #ifdef ENABLE_RUST_CORE_BRIDGE
 #include "faithfulframe-core-bridge.hpp"
+#include "faithfulframe-active-slot.hpp"
 #include "faithfulframe-adapter-lease.hpp"
 #include "faithfulframe-config-guard.hpp"
 #include "faithfulframe-preview-geometry.hpp"
@@ -82,8 +83,8 @@ struct faithfulframe_source_binding
 	bool active_child_registered = false;
 	std::string target_name;
 	std::shared_ptr<faithfulframe_session_executor> executor;
-	// Non-owning render view. The runtime retains this binding and its owning
-	// shared_ptr until OBS finishes callbacks for the adapter source.
+	// Non-owning render view. The runtime's active-slot lease pins this binding
+	// for every callback that reads the pointer.
 	std::atomic<faithfulframe_session_executor *> render_executor{nullptr};
 	ff_identity identity{};
 	// Lifecycle producers include OBS activation callbacks and the video tick.
@@ -198,7 +199,9 @@ struct faithfulframe_source_runtime
 	obs_data_t *pending_settings = nullptr;
 	uint64_t processed_configuration_version = 0;
 	uint64_t processed_tracker_configuration_version = 0;
-	std::atomic<faithfulframe_source_binding *> active{nullptr};
+	faithfulframe_active_slot<faithfulframe_source_binding> active;
+	std::mutex bindings_mutex;
+	// Owns the active binding and retired bindings until lock-free readers drain.
 	std::vector<std::unique_ptr<faithfulframe_source_binding>> bindings;
 
 	~faithfulframe_source_runtime()
@@ -208,7 +211,9 @@ struct faithfulframe_source_runtime
 		// binding destructors transfer workers to the shared reaper.
 		enabled.store(false, std::memory_order_release);
 		reconfiguration_pending.store(true, std::memory_order_release);
-		active.exchange(nullptr, std::memory_order_acq_rel);
+		active.exchange(nullptr);
+		active.wait_until_drained();
+		std::lock_guard<std::mutex> bindings_lock(bindings_mutex);
 		for (const auto &owned_binding : bindings) {
 			if (!owned_binding)
 				continue;
@@ -221,9 +226,26 @@ struct faithfulframe_source_runtime
 			if (executor)
 				executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
 		}
+		bindings.clear();
 		if (pending_settings)
 			obs_data_release(pending_settings);
 		faithfulframe::single_adapter_lease::release(this);
+	}
+
+	void collect_retired_bindings()
+	{
+		if (active.reader_count() != 0)
+			return;
+		std::unique_lock<std::mutex> lock(bindings_mutex, std::try_to_lock);
+		if (!lock.owns_lock() || active.reader_count() != 0)
+			return;
+		faithfulframe_source_binding *const current = active.peek();
+		for (auto it = bindings.begin(); it != bindings.end();) {
+			if (it->get() != current)
+				it = bindings.erase(it);
+			else
+				++it;
+		}
 	}
 };
 
@@ -351,7 +373,8 @@ static void fts_update(void *data, obs_data_t *settings)
 					s->safe_runtime->reconfiguration_pending);
 			} else {
 				s->safe_runtime->tracker_configuration_version.fetch_add(1, std::memory_order_release);
-				if (auto *binding = s->safe_runtime->active.load(std::memory_order_acquire))
+				auto binding_lease = s->safe_runtime->active.read();
+				if (auto *binding = binding_lease.get())
 					binding->transition_pending.store(true, std::memory_order_release);
 			}
 			// Keep the source name, enabled flag, versions, and deferred detector
@@ -1100,7 +1123,8 @@ static void set_safe_adapter_activation(face_tracker_filter *s, bool active)
 		return;
 	auto *runtime = s->safe_runtime;
 	runtime->adapter_active.store(active, std::memory_order_release);
-	auto *binding = runtime->active.load(std::memory_order_acquire);
+	auto binding_lease = runtime->active.read();
+	auto *binding = binding_lease.get();
 	if (!binding)
 		return;
 	if (binding->closed.load(std::memory_order_acquire)) {
@@ -1227,16 +1251,20 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		target_name = runtime->requested_target_name;
 	}
 
-	faithfulframe_source_binding *previous = runtime->active.exchange(nullptr, std::memory_order_acq_rel);
-	if (previous) {
-		previous->set_active_child(false);
-		auto executor = std::atomic_load_explicit(&previous->executor, std::memory_order_acquire);
-		if (executor && !previous->closed.load(std::memory_order_acquire)) {
-			previous->transition_pending.store(true, std::memory_order_release);
-			executor->request_shutdown(enabled ? FF_LIFECYCLE_SOURCE_REBOUND
-							   : FF_LIFECYCLE_ADAPTER_DESTROYED);
-			previous->closed.store(true, std::memory_order_release);
-			defer_session_join(executor);
+	faithfulframe_source_binding *previous = nullptr;
+	{
+		std::lock_guard<std::mutex> bindings_lock(runtime->bindings_mutex);
+		previous = runtime->active.exchange(nullptr);
+		if (previous) {
+			previous->set_active_child(false);
+			auto executor = std::atomic_load_explicit(&previous->executor, std::memory_order_acquire);
+			if (executor && !previous->closed.load(std::memory_order_acquire)) {
+				previous->transition_pending.store(true, std::memory_order_release);
+				executor->request_shutdown(enabled ? FF_LIFECYCLE_SOURCE_REBOUND
+								   : FF_LIFECYCLE_ADAPTER_DESTROYED);
+				previous->closed.store(true, std::memory_order_release);
+				defer_session_join(executor);
+			}
 		}
 	}
 	s->ftm->reset_requested = true;
@@ -1292,6 +1320,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	// Grow the owning container before starting an executor. If allocation fails,
 	// no worker exists that the local binding destructor could join on this tick.
 	try {
+		std::lock_guard<std::mutex> bindings_lock(runtime->bindings_mutex);
 		runtime->bindings.reserve(runtime->bindings.size() + 1);
 	} catch (...) {
 		blog(LOG_ERROR, "FaithfulFrame could not reserve a source binding");
@@ -1339,14 +1368,15 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		blog(LOG_WARNING, "FaithfulFrame failed to create a safe tracking session");
 	faithfulframe_source_binding *published = binding.get();
 	try {
+		std::lock_guard<std::mutex> bindings_lock(runtime->bindings_mutex);
 		runtime->bindings.push_back(std::move(binding));
+		runtime->active.store(published);
 	} catch (...) {
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
 		clear_reconfiguration();
 		return;
 	}
-	runtime->active.store(published, std::memory_order_release);
 	// Activation can race configuration on OBS's frontend/video threads. Re-read
 	// the runtime state after publication so a just-completed activate/deactivate
 	// callback cannot leave the new binding with a stale child relationship.
@@ -1485,7 +1515,9 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 {
 	faithfulframe_source_runtime *runtime = s->safe_runtime;
 	apply_safe_source_configuration(s, runtime);
-	faithfulframe_source_binding *binding = runtime->active.load(std::memory_order_acquire);
+	runtime->collect_retired_bindings();
+	auto binding_lease = runtime->active.read();
+	faithfulframe_source_binding *binding = binding_lease.get();
 	if (!binding) {
 		s->target_valid = false;
 		return;
@@ -2312,12 +2344,12 @@ static void fts_render(void *data, gs_effect_t *)
 	auto *s = (struct face_tracker_filter *)data;
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+		auto binding_lease = s->safe_runtime->active.read();
+		faithfulframe_source_binding *binding = binding_lease.get();
 		if (s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire)) {
-			draw_safe_source_frame(s, s->safe_runtime->active.load(std::memory_order_acquire),
-					       s->safe_runtime, true);
+			draw_safe_source_frame(s, binding, s->safe_runtime, true);
 			return;
 		}
-		faithfulframe_source_binding *binding = s->safe_runtime->active.load(std::memory_order_acquire);
 		if (!binding)
 			return;
 		obs_source_t *safe_target = binding && binding->target ? obs_weak_source_get_source(binding->target)
@@ -2368,7 +2400,8 @@ static uint32_t ftf_width(void *data)
 	auto *s = (struct face_tracker_filter *)data;
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
-		auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+		auto binding_lease = s->safe_runtime->active.read();
+		auto *binding = binding_lease.get();
 		const uint32_t width = binding ? binding->output_width.load(std::memory_order_acquire)
 					       : s->safe_runtime->last_output_width.load(std::memory_order_acquire);
 		return width;
@@ -2383,7 +2416,8 @@ static uint32_t ftf_height(void *data)
 	auto *s = (struct face_tracker_filter *)data;
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
-		auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+		auto binding_lease = s->safe_runtime->active.read();
+		auto *binding = binding_lease.get();
 		const uint32_t height = binding ? binding->output_height.load(std::memory_order_acquire)
 						: s->safe_runtime->last_output_height.load(std::memory_order_acquire);
 		return height;
@@ -2401,8 +2435,9 @@ static void cb_render_frame(void *data, calldata_t *cd)
 	calldata_get_bool(cd, "notrack", &debug_notrack);
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
+		auto binding_lease = s->safe_runtime->active.read();
 		const bool reconfiguring = s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire);
-		auto *binding = reconfiguring ? nullptr : s->safe_runtime->active.load(std::memory_order_acquire);
+		auto *binding = reconfiguring ? nullptr : binding_lease.get();
 		draw_safe_source_frame(s, binding, s->safe_runtime, reconfiguring || !binding, debug_notrack, true);
 		return;
 	}
@@ -2438,7 +2473,8 @@ static void cb_get_target_size(void *data, calldata_t *cd)
 	bool safe_output = false;
 	calldata_get_bool(cd, "safe_output", &safe_output);
 	if (safe_enabled && safe_output) {
-		auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+		auto binding_lease = s->safe_runtime->active.read();
+		auto *binding = binding_lease.get();
 		if (binding) {
 			width = binding->output_width.load(std::memory_order_acquire);
 			height = binding->output_height.load(std::memory_order_acquire);
@@ -2458,7 +2494,8 @@ static void cb_get_state(void *data, calldata_t *cd)
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	if (s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire)) {
 		bool paused = false;
-		if (auto *binding = s->safe_runtime->active.load(std::memory_order_acquire)) {
+		auto binding_lease = s->safe_runtime->active.read();
+		if (auto *binding = binding_lease.get()) {
 			if (auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)) {
 				ff_snapshot snapshot{};
 				if (executor->try_snapshot(snapshot))
@@ -2528,7 +2565,8 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	if (s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire))
 		return;
 
-	auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+	auto binding_lease = s->safe_runtime->active.read();
+	auto *binding = binding_lease.get();
 	calldata_set_bool(cd, "session_closed", binding && binding->closed.load(std::memory_order_acquire));
 	auto executor = binding ? std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)
 				: std::shared_ptr<faithfulframe_session_executor>{};
@@ -2652,7 +2690,8 @@ static bool enqueue_safe_operator_command(face_tracker_filter *s, uint32_t kind)
 	if (!s || !s->safe_runtime || !s->safe_runtime->enabled.load(std::memory_order_acquire) ||
 	    s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire) || kind > FF_COMMAND_RESET_TO_WIDE)
 		return false;
-	auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+	auto binding_lease = s->safe_runtime->active.read();
+	auto *binding = binding_lease.get();
 	auto executor = binding ? std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)
 				: std::shared_ptr<faithfulframe_session_executor>{};
 	if (!binding || !executor || binding->closed.load(std::memory_order_acquire) ||
@@ -2682,7 +2721,8 @@ static void cb_faithfulframe_command(void *data, calldata_t *cd)
 	if (!s->safe_runtime || !s->safe_runtime->enabled.load(std::memory_order_acquire) ||
 	    s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire))
 		return;
-	auto *binding = s->safe_runtime->active.load(std::memory_order_acquire);
+	auto binding_lease = s->safe_runtime->active.read();
+	auto *binding = binding_lease.get();
 	auto executor = binding ? std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)
 				: std::shared_ptr<faithfulframe_session_executor>{};
 	if (!binding || !executor || binding->closed.load(std::memory_order_acquire) ||
