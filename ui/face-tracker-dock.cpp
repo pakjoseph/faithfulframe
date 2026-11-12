@@ -690,6 +690,8 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	updateState();
 
 	connect(this, &FTDock::dataChanged, this, &FTDock::updateWidget);
+	// Keep dock updates on the Qt thread without retaining a raw widget pointer
+	// in OBS source-signal callbacks that can race dock or source teardown.
 	statusTimer = new QTimer(this);
 	statusTimer->setInterval(250);
 	connect(statusTimer, &QTimer::timeout, this, &FTDock::updateState);
@@ -731,11 +733,6 @@ FTDock::~FTDock()
 	// OBS tears down the frontend callback registry as it dispatches EXIT.
 	if (!frontend_shutdown_started)
 		obs_frontend_remove_event_callback(frontendEvent_cb, this);
-
-	if (source_sh) {
-		signal_handler_disconnect(source_sh, "state_changed", onStateChanged, this);
-		source_sh = NULL;
-	}
 
 	face_tracker_dock_release(data);
 	if (docks)
@@ -840,12 +837,6 @@ static void set_pause_button(QPushButton *pauseButton, bool is_paused)
 		pauseButton->setText(obs_module_text("Pause"));
 }
 
-void FTDock::onStateChanged(void *data, calldata_t *)
-{
-	FTDock *dock = (FTDock *)data;
-	QMetaObject::invokeMethod(dock, "updateState", Qt::QueuedConnection);
-}
-
 void FTDock::updateState()
 {
 	OBSSource target = get_source();
@@ -858,10 +849,6 @@ void FTDock::updateState()
 		safeStatusLabel->hide();
 		performanceToggle->hide();
 		performanceLabel->hide();
-		if (source_sh) {
-			signal_handler_disconnect(source_sh, "state_changed", onStateChanged, this);
-			source_sh = NULL;
-		}
 		return;
 	}
 
@@ -1007,14 +994,6 @@ void FTDock::updateState()
 	}
 
 	set_enable_button(enableButton, !safe_mode && is_filter(targetSelector), obs_source_enabled(target));
-
-	signal_handler_t *sh = obs_source_get_signal_handler(target);
-	if (sh && sh != source_sh) {
-		if (source_sh)
-			signal_handler_disconnect(source_sh, "state_changed", onStateChanged, this);
-		source_sh = sh;
-		signal_handler_connect_ref(source_sh, "state_changed", onStateChanged, this);
-	}
 
 	in_updateState = false;
 
