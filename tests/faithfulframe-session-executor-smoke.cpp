@@ -1,9 +1,12 @@
 #include "faithfulframe-core-bridge.hpp"
+#include "faithfulframe-config-guard.hpp"
 
+#include <barrier>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <thread>
 
@@ -30,11 +33,75 @@ bool await_worker_unavailable(const faithfulframe_session_executor &executor)
 	} while (std::chrono::steady_clock::now() < deadline);
 	return false;
 }
+
+bool configuration_revision_guard_is_race_safe()
+{
+	std::mutex configuration_mutex;
+	std::atomic<uint64_t> version{0};
+	std::atomic<bool> pending{false};
+	uint64_t first_revision = 0;
+	{
+		std::lock_guard<std::mutex> lock(configuration_mutex);
+		first_revision = faithfulframe::advance_configuration_revision_locked(version, pending);
+	}
+	if (first_revision != 1 || !pending.load(std::memory_order_acquire))
+		return false;
+
+	uint64_t second_revision = 0;
+	{
+		std::lock_guard<std::mutex> lock(configuration_mutex);
+		second_revision = faithfulframe::advance_configuration_revision_locked(version, pending);
+	}
+	if (second_revision != 2 ||
+	    faithfulframe::clear_reconfiguration_if_current(configuration_mutex, version, pending, first_revision) ||
+	    !pending.load(std::memory_order_acquire))
+		return false;
+	if (!faithfulframe::clear_reconfiguration_if_current(configuration_mutex, version, pending, second_revision) ||
+	    pending.load(std::memory_order_acquire))
+		return false;
+
+	uint64_t raced_revision = 0;
+	{
+		std::lock_guard<std::mutex> lock(configuration_mutex);
+		raced_revision = faithfulframe::advance_configuration_revision_locked(version, pending);
+	}
+	std::barrier start(3);
+	uint64_t published_revision = 0;
+	std::thread clearer([&] {
+		start.arrive_and_wait();
+		faithfulframe::clear_reconfiguration_if_current(configuration_mutex, version, pending, raced_revision);
+	});
+	std::thread publisher([&] {
+		start.arrive_and_wait();
+		std::lock_guard<std::mutex> lock(configuration_mutex);
+		published_revision = faithfulframe::advance_configuration_revision_locked(version, pending);
+	});
+	start.arrive_and_wait();
+	clearer.join();
+	publisher.join();
+	if (raced_revision != 3 || published_revision != 4 || version.load(std::memory_order_acquire) != 4 ||
+	    !pending.load(std::memory_order_acquire))
+		return false;
+
+	version.store(std::numeric_limits<uint64_t>::max(), std::memory_order_release);
+	pending.store(false, std::memory_order_release);
+	uint64_t exhausted_revision = 0;
+	{
+		std::lock_guard<std::mutex> lock(configuration_mutex);
+		exhausted_revision = faithfulframe::advance_configuration_revision_locked(version, pending);
+	}
+	return exhausted_revision == std::numeric_limits<uint64_t>::max() &&
+	       !faithfulframe::clear_reconfiguration_if_current(configuration_mutex, version, pending,
+								std::numeric_limits<uint64_t>::max()) &&
+	       pending.load(std::memory_order_acquire);
+}
 } // namespace
 
 int run_smoke()
 {
 	faithfulframe_executor_reaper_start();
+	if (!configuration_revision_guard_is_race_safe())
+		return 23;
 	const ff_session_config config{5000, 500,  8,     3840,  2160,  1920,  1080, 0.45f,
 				       1.0f, 4.0f, 0.25f, 0.08f, 0.08f, 0.05f, 0.25f};
 	const ff_identity identity{101, 201};

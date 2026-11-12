@@ -23,6 +23,7 @@
 #include "source_list.h"
 #ifdef ENABLE_RUST_CORE_BRIDGE
 #include "faithfulframe-core-bridge.hpp"
+#include "faithfulframe-config-guard.hpp"
 #include "faithfulframe-preview-geometry.hpp"
 #endif
 
@@ -338,10 +339,10 @@ static void fts_update(void *data, obs_data_t *settings)
 							    pan_smoothing_changed || zoom_smoothing_changed ||
 							    loss_grace_changed;
 			if (binding_changed || was_enabled != enabled || (session_config_changed && enabled)) {
-				// Publish the blocking guard before the new generation. Both values
-				// share this lock with apply_safe_source_configuration's clear check.
-				s->safe_runtime->reconfiguration_pending.store(true, std::memory_order_release);
-				s->safe_runtime->configuration_version.fetch_add(1, std::memory_order_release);
+				// Both values share configuration_mutex with the matching clear check.
+				faithfulframe::advance_configuration_revision_locked(
+					s->safe_runtime->configuration_version,
+					s->safe_runtime->reconfiguration_pending);
 			} else {
 				s->safe_runtime->tracker_configuration_version.fetch_add(1, std::memory_order_release);
 				if (auto *binding = s->safe_runtime->active.load(std::memory_order_acquire))
@@ -1200,9 +1201,9 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 
 	runtime->processed_configuration_version = revision;
 	if (!enabled) {
-		std::lock_guard<std::mutex> lock(runtime->configuration_mutex);
-		if (runtime->configuration_version.load(std::memory_order_acquire) == revision)
-			runtime->reconfiguration_pending.store(false, std::memory_order_release);
+		faithfulframe::clear_reconfiguration_if_current(runtime->configuration_mutex,
+								runtime->configuration_version,
+								runtime->reconfiguration_pending, revision);
 		return;
 	}
 
@@ -1286,11 +1287,8 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	runtime->last_output_height.store(published->output_height.load(std::memory_order_acquire),
 					  std::memory_order_release);
 	runtime->processed_tracker_configuration_version = tracker_revision;
-	{
-		std::lock_guard<std::mutex> lock(runtime->configuration_mutex);
-		if (runtime->configuration_version.load(std::memory_order_acquire) == revision)
-			runtime->reconfiguration_pending.store(false, std::memory_order_release);
-	}
+	faithfulframe::clear_reconfiguration_if_current(runtime->configuration_mutex, runtime->configuration_version,
+							runtime->reconfiguration_pending, revision);
 	s->ftm->crop_cur = rectf_s{0.0f, 0.0f, (float)published->source_width.load(std::memory_order_acquire),
 				   (float)published->source_height.load(std::memory_order_acquire)};
 	if (target)
