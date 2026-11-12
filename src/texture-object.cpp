@@ -5,6 +5,7 @@
 #include <dlib/array2d/array2d_kernel.h>
 #include "plugin-macros.generated.h"
 #include "texture-object.h"
+#include "faithfulframe-worker-log.hpp"
 
 static uint32_t formats_found = 0;
 #define TEST_FORMAT(f) (0 <= (uint32_t)(f) && (uint32_t)(f) < 32 && !(formats_found & (1 << (uint32_t)(f))))
@@ -91,7 +92,7 @@ bool texture_object::get_dlib_rgb_image(dlib::matrix<dlib::rgb_pixel> &img) cons
 	const auto *frame = data->obs_frame;
 	const int scale = data->scale;
 	if (TEST_FORMAT(frame->format))
-		blog(LOG_INFO, "received frame format=%d", frame->format);
+		faithfulframe_worker_log(LOG_INFO, "received frame format=%d", frame->format);
 	img.set_size(frame->height / scale, frame->width / scale);
 	switch (frame->format) {
 	case VIDEO_FORMAT_BGRX:
@@ -106,7 +107,7 @@ bool texture_object::get_dlib_rgb_image(dlib::matrix<dlib::rgb_pixel> &img) cons
 		break;
 	default:
 		if (TEST_FORMAT(frame->format))
-			blog(LOG_ERROR, "Frame format %d has to be RGB", (int)frame->format);
+			faithfulframe_worker_log(LOG_ERROR, "Frame format %d has to be RGB", (int)frame->format);
 	}
 	SET_FORMAT(frame->format);
 

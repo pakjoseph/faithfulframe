@@ -5,6 +5,7 @@
 #include "plugin-macros.generated.h"
 #include "face-detector-dlib-cnn.h"
 #include "texture-object.h"
+#include "faithfulframe-worker-log.hpp"
 
 #include <dlib/dnn.h>
 #include <dlib/data_io.h>
@@ -82,8 +83,9 @@ void face_detector_dlib_cnn::detect_main()
 		int y1 = img.nr() - (int)(p->crop_b / tex->scale);
 		if (x1 - x0 < 80 || y1 - y0 < 80) {
 			if (p->n_error++ < MAX_ERROR)
-				blog(LOG_ERROR, "too small image: %dx%d cropped left=%d right=%d top=%d bottom=%d",
-				     (int)img.nc(), (int)img.nr(), p->crop_l, p->crop_r, p->crop_t, p->crop_b);
+				faithfulframe_worker_log(
+					LOG_ERROR, "too small image: %dx%d cropped left=%d right=%d top=%d bottom=%d",
+					(int)img.nc(), (int)img.nr(), p->crop_l, p->crop_r, p->crop_t, p->crop_b);
 			return;
 		} else if (p->n_error) {
 			p->n_error--;
@@ -98,7 +100,7 @@ void face_detector_dlib_cnn::detect_main()
 	}
 	if (img.nc() < 80 || img.nr() < 80) {
 		if (p->n_error++ < MAX_ERROR)
-			blog(LOG_ERROR, "too small image: %dx%d", (int)img.nc(), (int)img.nr());
+			faithfulframe_worker_log(LOG_ERROR, "too small image: %dx%d", (int)img.nc(), (int)img.nr());
 		return;
 	} else if (p->n_error) {
 		p->n_error--;
@@ -107,11 +109,11 @@ void face_detector_dlib_cnn::detect_main()
 	if (!p->net_loaded) {
 		p->net_loaded = true;
 		try {
-			blog(LOG_INFO, "loading file '%s'", p->model_filename.c_str());
+			faithfulframe_worker_log(LOG_INFO, "loading file '%s'", p->model_filename.c_str());
 			deserialize(p->model_filename.c_str()) >> p->net;
 			p->has_error = false;
 		} catch (...) {
-			blog(LOG_ERROR, "failed to load file '%s'", p->model_filename.c_str());
+			faithfulframe_worker_log(LOG_ERROR, "failed to load file '%s'", p->model_filename.c_str());
 			p->has_error = true;
 		}
 	}

@@ -2,6 +2,7 @@
 #include <util/platform.h>
 #include <util/threading.h>
 #include <util/bmem.h>
+#include "faithfulframe-worker-log.hpp"
 #include "plugin-macros.generated.h"
 #include "face-tracker-base.h"
 #ifndef _WIN32
@@ -43,9 +44,9 @@ void *face_tracker_base::thread_routine(void *p)
 			try {
 				base->track_main();
 			} catch (std::exception &e) {
-				blog(LOG_ERROR, "track_main: exception %s", e.what());
+				faithfulframe_worker_log(LOG_ERROR, "track_main: exception %s", e.what());
 			} catch (...) {
-				blog(LOG_ERROR, "track_main: unknown exception");
+				faithfulframe_worker_log(LOG_ERROR, "track_main: unknown exception");
 			}
 		}
 		pthread_cond_wait(&base->cond, &base->mutex);
@@ -61,12 +62,13 @@ bool face_tracker_base::start()
 	stopped.store(false, std::memory_order_relaxed);
 	if (!running) {
 		suspend_requested.store(false, std::memory_order_relaxed);
-		blog(LOG_INFO, "face_tracker_base: starting a new thread.");
+		faithfulframe_worker_log(LOG_INFO, "face_tracker_base: starting a new thread.");
 		const int result = pthread_create(&thread, NULL, thread_routine, (void *)this);
 		if (result != 0) {
 			stop_requested.store(true, std::memory_order_relaxed);
 			stopped.store(true, std::memory_order_relaxed);
-			blog(LOG_ERROR, "face_tracker_base: failed to start thread (error %d)", result);
+			faithfulframe_worker_log(LOG_ERROR, "face_tracker_base: failed to start thread (error %d)",
+						 result);
 			return false;
 		}
 		running = 1;
@@ -86,10 +88,10 @@ void face_tracker_base::stop()
 	signal();
 	unlock();
 	if (running) {
-		blog(LOG_INFO, "face_tracker_base: joining the thread...");
+		faithfulframe_worker_log(LOG_INFO, "face_tracker_base: joining the thread...");
 		pthread_join(thread, NULL);
 		running = 0;
-		blog(LOG_INFO, "face_tracker_base: joined the thread.");
+		faithfulframe_worker_log(LOG_INFO, "face_tracker_base: joined the thread.");
 	}
 }
 
@@ -105,7 +107,7 @@ bool face_tracker_base::is_stopped()
 {
 	if (stopped.load(std::memory_order_acquire)) {
 		if (running) {
-			blog(LOG_INFO, "face_tracker_base: joining the thread...");
+			faithfulframe_worker_log(LOG_INFO, "face_tracker_base: joining the thread...");
 			pthread_join(thread, NULL);
 			running = 0;
 		}

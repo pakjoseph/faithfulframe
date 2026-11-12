@@ -4,6 +4,7 @@
 #include "plugin-macros.generated.h"
 #include "texture-object.h"
 #include "face-tracker-dlib.h"
+#include "faithfulframe-worker-log.hpp"
 
 #include <dlib/image_processing/scan_fhog_pyramid.h>
 #include <dlib/image_processing/correlation_tracker.h>
@@ -64,8 +65,9 @@ void face_tracker_dlib::set_texture(std::shared_ptr<texture_object> &tex)
 void face_tracker_dlib::set_position(const rect_s &rect)
 {
 	if (!p->tex) {
-		blog(LOG_ERROR, "face_tracker_dlib::set_position: texture was not set. rect=(%d %d %d %d %f)", rect.x0,
-		     rect.y0, rect.x1, rect.y1, rect.score);
+		faithfulframe_worker_log(LOG_ERROR,
+					 "face_tracker_dlib::set_position: texture was not set. rect=(%d %d %d %d %f)",
+					 rect.x0, rect.y0, rect.x1, rect.y1, rect.score);
 		return;
 	}
 
@@ -138,9 +140,10 @@ void face_tracker_dlib::track_main()
 			return;
 
 		if (img.nc() != p->tracker_nc || img.nr() != p->tracker_nr) {
-			blog(LOG_ERROR,
-			     "face_tracker_dlib::track_main: cannot run correlation-tracker with different image size %dx%d, expected %dx%d",
-			     (int)img.nc(), (int)img.nr(), p->tracker_nc, p->tracker_nr);
+			faithfulframe_worker_log(
+				LOG_ERROR,
+				"face_tracker_dlib::track_main: cannot run correlation-tracker with different image size %dx%d, expected %dx%d",
+				(int)img.nc(), (int)img.nr(), p->tracker_nc, p->tracker_nr);
 			p->rect.score = 0;
 			p->n_track += 1; // to return score=0
 			return;
@@ -164,13 +167,14 @@ void face_tracker_dlib::track_main()
 		if (p->landmark_detection_data) {
 			if (p->landmark_detection_data_updated) {
 				p->landmark_detection_data_updated = false;
-				blog(LOG_INFO, "loading file %s", p->landmark_detection_data);
+				faithfulframe_worker_log(LOG_INFO, "loading file %s", p->landmark_detection_data);
 				try {
 					p->sp_available = false;
 					dlib::deserialize(p->landmark_detection_data) >> p->sp;
 					p->sp_available = true;
 				} catch (...) {
-					blog(LOG_ERROR, "Failed to load file %s", p->landmark_detection_data);
+					faithfulframe_worker_log(LOG_ERROR, "Failed to load file %s",
+								 p->landmark_detection_data);
 				}
 			}
 
