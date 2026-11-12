@@ -2040,13 +2040,6 @@ static inline void draw_sprite_crop_to_rect(float x0, float y0, float x1, float 
 }
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
-static bool valid_normalized_rect(const ff_rect &rect)
-{
-	return std::isfinite(rect.x) && std::isfinite(rect.y) && std::isfinite(rect.width) &&
-	       std::isfinite(rect.height) && rect.x >= 0.0f && rect.y >= 0.0f && rect.width > 0.0f &&
-	       rect.height > 0.0f && rect.x + rect.width <= 1.0f && rect.y + rect.height <= 1.0f;
-}
-
 static ff_rect full_source_viewport(uint32_t source_width, uint32_t source_height, uint32_t output_width,
 				    uint32_t output_height)
 {
@@ -2117,14 +2110,15 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 				displayed_snapshot.has_selected);
 			if (!force_wide && !binding->transition_pending.load(std::memory_order_acquire) &&
 			    !binding->source_settings_updated.load(std::memory_order_acquire) &&
-			    session_crop_is_authorized && valid_normalized_rect(displayed_snapshot.crop) &&
-			    valid_normalized_rect(displayed_snapshot.viewport)) {
+			    session_crop_is_authorized &&
+			    faithfulframe_valid_normalized_rect(displayed_snapshot.crop) &&
+			    faithfulframe_valid_normalized_rect(displayed_snapshot.viewport)) {
 				crop = displayed_snapshot.crop;
 				viewport = displayed_snapshot.viewport;
 			}
 		}
 	}
-	if (!valid_normalized_rect(crop) || !valid_normalized_rect(viewport)) {
+	if (!faithfulframe_valid_normalized_rect(crop) || !faithfulframe_valid_normalized_rect(viewport)) {
 		crop = ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
 		viewport = full_source_viewport(source_width, source_height, output_width, output_height);
 	}
@@ -2210,7 +2204,7 @@ static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, co
 
 	if (!output_width || !output_height)
 		return;
-	if (!valid_normalized_rect(crop) || !valid_normalized_rect(viewport))
+	if (!faithfulframe_valid_normalized_rect(crop) || !faithfulframe_valid_normalized_rect(viewport))
 		return;
 
 	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_SOLID);
@@ -2258,7 +2252,7 @@ static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, co
 			    candidate.generations.stream == preview.generations.stream &&
 			    candidate.generations.geometry == preview.generations.geometry &&
 			    candidate.generations.tracker == preview.generations.tracker &&
-			    valid_normalized_rect(candidate.rect))
+			    faithfulframe_valid_normalized_rect(candidate.rect))
 				draw_bounds(candidate.rect,
 					    candidate.handle == snapshot.selected_handle ? 0x3CFF72FF : 0x00D4FFFF);
 		}
@@ -2668,8 +2662,9 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	if (!has_snapshot || snapshot.closed || snapshot_at > now ||
 	    now - snapshot_at > safe_preview_max_snapshot_age_ms ||
 	    snapshot.identity.source != binding->identity.source ||
-	    snapshot.identity.session != binding->identity.session || !valid_normalized_rect(snapshot.crop) ||
-	    !valid_normalized_rect(snapshot.viewport))
+	    snapshot.identity.session != binding->identity.session ||
+	    !faithfulframe_valid_normalized_rect(snapshot.crop) ||
+	    !faithfulframe_valid_normalized_rect(snapshot.viewport))
 		return;
 
 	calldata_set_bool(cd, "available", true);
@@ -2732,7 +2727,7 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	for (size_t i = 0; i < count; ++i) {
 		const ff_candidate &candidate = preview.candidates[i];
 		if (!ff_preview_observation_is_fresh(candidate.observed_at_ms, now, safe_candidate_max_age_ms) ||
-		    candidate.expires_at_ms < now || !valid_normalized_rect(candidate.rect))
+		    candidate.expires_at_ms < now || !faithfulframe_valid_normalized_rect(candidate.rect))
 			continue;
 		const std::string suffix = std::to_string(i);
 		calldata_set_int(cd, ("candidate_handle_" + suffix).c_str(), ffi_integer(candidate.handle));

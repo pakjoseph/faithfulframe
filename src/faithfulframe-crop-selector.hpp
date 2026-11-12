@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 
 #include "faithfulframe_ffi.h"
@@ -8,6 +9,14 @@ enum class faithfulframe_crop_input : uint8_t {
 	legacy_aggregate,
 	safe_session,
 };
+
+/// Reject malformed normalized rectangles before they reach OBS rendering.
+inline bool faithfulframe_valid_normalized_rect(const ff_rect &rect) noexcept
+{
+	return std::isfinite(rect.x) && std::isfinite(rect.y) && std::isfinite(rect.width) &&
+	       std::isfinite(rect.height) && rect.x >= 0.0f && rect.y >= 0.0f && rect.width > 0.0f &&
+	       rect.height > 0.0f && rect.x + rect.width <= 1.0f && rect.y + rect.height <= 1.0f;
+}
 
 /// Selects the sole crop source before any OBS output is drawn. Once enabled,
 /// the safety policy owns the crop path for selected, held, and safe-wide frames.
