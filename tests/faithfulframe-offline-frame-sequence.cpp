@@ -2,6 +2,7 @@
 
 #include <charconv>
 #include <cctype>
+#include <exception>
 #include <limits>
 #include <sstream>
 #include <string_view>
@@ -128,9 +129,15 @@ bool read_manifest(std::istream &input, const std::filesystem::path &manifest_di
 				")";
 			return false;
 		}
-		std::filesystem::path frame_path = path_from_utf8(line.substr(path_start));
-		if (frame_path.is_relative())
-			frame_path = manifest_directory / frame_path;
+		std::filesystem::path frame_path;
+		try {
+			frame_path = path_from_utf8(line.substr(path_start));
+			if (frame_path.is_relative())
+				frame_path = manifest_directory / frame_path;
+		} catch (const std::exception &) {
+			error = "manifest line " + std::to_string(line_number) + " has an invalid UTF-8 frame path";
+			return false;
+		}
 		parsed_frames.push_back(frame_spec{timestamp, std::move(frame_path)});
 		previous_timestamp = timestamp;
 		have_timestamp = true;
@@ -172,7 +179,12 @@ bool read_ppm(std::istream &input, rgb_frame &frame, std::string &error)
 	rgb_frame parsed_frame;
 	parsed_frame.width = width;
 	parsed_frame.height = height;
-	parsed_frame.pixels.resize(static_cast<size_t>(byte_count));
+	try {
+		parsed_frame.pixels.resize(static_cast<size_t>(byte_count));
+	} catch (const std::exception &) {
+		error = "could not allocate memory for PPM pixel data";
+		return false;
+	}
 	if (!input.read(reinterpret_cast<char *>(parsed_frame.pixels.data()),
 			static_cast<std::streamsize>(parsed_frame.pixels.size()))) {
 		error = "PPM pixel data is truncated";

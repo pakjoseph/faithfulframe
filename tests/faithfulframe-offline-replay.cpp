@@ -37,7 +37,8 @@ void print_usage(std::ostream &output)
 	       << "Frames must be binary P6 PPM files with max value 255. One image per file.\n"
 	       << "This tool benchmarks the production dlib HOG detector only; it does not validate OBS capture, "
 		  "target selection, or tracking policy. Frames are processed serially as fast as detection completes; "
-		  "timestamps are recorded but do not pace replay. Completion latency includes up to 1 ms polling delay.\n";
+		  "timestamps are recorded but do not pace replay. Completion latency includes up to 1 ms polling delay. "
+		  "The HOG score is currently an upstream placeholder, not calibrated confidence.\n";
 }
 
 bool parse_arguments(int argc, char **argv, std::filesystem::path &model_path, std::filesystem::path &manifest_path,
