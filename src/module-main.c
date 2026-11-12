@@ -75,15 +75,22 @@ bool obs_module_load(void)
 
 void obs_module_unload()
 {
+	blog(LOG_INFO, "FaithfulFrame module unload started");
 	// Keep teardown active until libobs destroys remaining source/filter
 	// instances after this function returns.
 #ifdef ENABLE_RUST_CORE_BRIDGE
+	blog(LOG_INFO, "FaithfulFrame module unload: stopping session executor reaper");
 	faithfulframe_teardown_begin_module_unload();
+	blog(LOG_INFO, "FaithfulFrame module unload: session executor reaper stopped");
 #endif
 #ifdef WITH_DOCK
+	blog(LOG_INFO, "FaithfulFrame module unload: releasing Qt docks");
 	ft_docks_release();
+	blog(LOG_INFO, "FaithfulFrame module unload: Qt docks released");
 #endif
 	// Remaining source and filter destroy callbacks run after this function
 	// returns. Prevent their workers from calling OBS logging after module unload.
+	blog(LOG_INFO, "FaithfulFrame module unload: stopping detector log gate");
 	faithfulframe_worker_log_shutdown();
+	blog(LOG_INFO, "FaithfulFrame module unload complete");
 }
