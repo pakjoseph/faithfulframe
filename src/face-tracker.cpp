@@ -306,6 +306,7 @@ static void fts_update(void *data, obs_data_t *settings)
 	bool zoom_smoothing_changed = false;
 	bool loss_grace_changed = false;
 	if (s->safe_runtime) {
+		obs_data_t *previous = nullptr;
 		{
 			std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
 			binding_changed = s->safe_runtime->requested_target_name != requested_name;
@@ -330,31 +331,35 @@ static void fts_update(void *data, obs_data_t *settings)
 			loss_grace_changed = s->safe_runtime->requested_loss_grace_seconds !=
 					     requested_loss_grace_seconds;
 			s->safe_runtime->requested_loss_grace_seconds = requested_loss_grace_seconds;
-		}
-		const bool enabled = obs_data_get_bool(settings, "safe_tracking_enabled");
-		const bool was_enabled = s->safe_runtime->enabled.exchange(enabled, std::memory_order_acq_rel);
-		defer_tracker_update = enabled || was_enabled;
-		const bool session_config_changed = dead_zone_changed || max_zoom_changed || pan_smoothing_changed ||
-						    zoom_smoothing_changed || loss_grace_changed;
-		if (binding_changed || was_enabled != enabled || (session_config_changed && enabled)) {
-			s->safe_runtime->reconfiguration_pending.store(true, std::memory_order_release);
-			s->safe_runtime->configuration_version.fetch_add(1, std::memory_order_release);
-		} else {
-			s->safe_runtime->tracker_configuration_version.fetch_add(1, std::memory_order_release);
-			if (auto *binding = s->safe_runtime->active.load(std::memory_order_acquire))
-				binding->transition_pending.store(true, std::memory_order_release);
-		}
-		if (defer_tracker_update) {
-			obs_data_addref(settings);
-			obs_data_t *previous = nullptr;
-			{
-				std::lock_guard<std::mutex> lock(s->safe_runtime->pending_settings_mutex);
+			const bool enabled = obs_data_get_bool(settings, "safe_tracking_enabled");
+			const bool was_enabled = s->safe_runtime->enabled.load(std::memory_order_acquire);
+			defer_tracker_update = enabled || was_enabled;
+			const bool session_config_changed = dead_zone_changed || max_zoom_changed ||
+							    pan_smoothing_changed || zoom_smoothing_changed ||
+							    loss_grace_changed;
+			if (binding_changed || was_enabled != enabled || (session_config_changed && enabled)) {
+				// Publish the blocking guard before the new generation. Both values
+				// share this lock with apply_safe_source_configuration's clear check.
+				s->safe_runtime->reconfiguration_pending.store(true, std::memory_order_release);
+				s->safe_runtime->configuration_version.fetch_add(1, std::memory_order_release);
+			} else {
+				s->safe_runtime->tracker_configuration_version.fetch_add(1, std::memory_order_release);
+				if (auto *binding = s->safe_runtime->active.load(std::memory_order_acquire))
+					binding->transition_pending.store(true, std::memory_order_release);
+			}
+			// Keep the source name, enabled flag, versions, and deferred detector
+			// settings in one configuration publication. The tick path releases
+			// pending_settings_mutex before acquiring configuration_mutex.
+			s->safe_runtime->enabled.store(enabled, std::memory_order_release);
+			if (defer_tracker_update) {
+				obs_data_addref(settings);
+				std::lock_guard<std::mutex> pending_lock(s->safe_runtime->pending_settings_mutex);
 				previous = s->safe_runtime->pending_settings;
 				s->safe_runtime->pending_settings = settings;
 			}
-			if (previous)
-				obs_data_release(previous);
 		}
+		if (previous)
+			obs_data_release(previous);
 	}
 #endif
 	if (!defer_tracker_update)
@@ -1165,12 +1170,21 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 
 static void apply_safe_source_configuration(face_tracker_filter *s, faithfulframe_source_runtime *runtime)
 {
-	const uint64_t revision = runtime->configuration_version.load(std::memory_order_acquire);
-	if (revision == runtime->processed_configuration_version)
-		return;
+	uint64_t revision = 0;
+	uint64_t tracker_revision = 0;
+	bool enabled = false;
+	std::string target_name;
+	{
+		std::lock_guard<std::mutex> lock(runtime->configuration_mutex);
+		revision = runtime->configuration_version.load(std::memory_order_acquire);
+		if (revision == runtime->processed_configuration_version)
+			return;
+		tracker_revision = runtime->tracker_configuration_version.load(std::memory_order_acquire);
+		enabled = runtime->enabled.load(std::memory_order_acquire);
+		target_name = runtime->requested_target_name;
+	}
 
 	faithfulframe_source_binding *previous = runtime->active.exchange(nullptr, std::memory_order_acq_rel);
-	const bool enabled = runtime->enabled.load(std::memory_order_acquire);
 	if (previous) {
 		previous->set_active_child(false);
 		auto executor = std::atomic_load_explicit(&previous->executor, std::memory_order_acquire);
@@ -1186,15 +1200,12 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 
 	runtime->processed_configuration_version = revision;
 	if (!enabled) {
-		runtime->reconfiguration_pending.store(false, std::memory_order_release);
+		std::lock_guard<std::mutex> lock(runtime->configuration_mutex);
+		if (runtime->configuration_version.load(std::memory_order_acquire) == revision)
+			runtime->reconfiguration_pending.store(false, std::memory_order_release);
 		return;
 	}
 
-	std::string target_name;
-	{
-		std::lock_guard<std::mutex> lock(runtime->configuration_mutex);
-		target_name = runtime->requested_target_name;
-	}
 	if (target_name.empty()) {
 		blog(LOG_WARNING, "FaithfulFrame safe tracking has no bound video source");
 		return;
@@ -1274,9 +1285,12 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 					 std::memory_order_release);
 	runtime->last_output_height.store(published->output_height.load(std::memory_order_acquire),
 					  std::memory_order_release);
-	runtime->reconfiguration_pending.store(false, std::memory_order_release);
-	runtime->processed_tracker_configuration_version =
-		runtime->tracker_configuration_version.load(std::memory_order_acquire);
+	runtime->processed_tracker_configuration_version = tracker_revision;
+	{
+		std::lock_guard<std::mutex> lock(runtime->configuration_mutex);
+		if (runtime->configuration_version.load(std::memory_order_acquire) == revision)
+			runtime->reconfiguration_pending.store(false, std::memory_order_release);
+	}
 	s->ftm->crop_cur = rectf_s{0.0f, 0.0f, (float)published->source_width.load(std::memory_order_acquire),
 				   (float)published->source_height.load(std::memory_order_acquire)};
 	if (target)
