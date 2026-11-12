@@ -194,6 +194,8 @@ if (ENABLE_RUST_CORE_BRIDGE)
 			${CMAKE_CURRENT_SOURCE_DIR}/rust/faithfulframe-core/src/lib.rs
 			${CARGO_EXECUTABLE}
 		COMMENT "Building FaithfulFrame Rust C ABI library"
+		# Keep rustup's cargo shim in the directory containing rust-toolchain.toml.
+		WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 		VERBATIM)
 	add_custom_target(faithfulframe-rust-ffi-build DEPENDS ${FAITHFULFRAME_FFI_LIBRARY})
 	add_library(faithfulframe-rust-ffi STATIC IMPORTED GLOBAL)
