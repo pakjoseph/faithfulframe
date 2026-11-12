@@ -46,33 +46,46 @@ function(faithfulframe_verify_macos_link_targets)
 			endif()
 			list(APPEND _faithfulframe_checked_locations "${_location}")
 
-			execute_process(
-				COMMAND "${_faithfulframe_otool}" -l "${_location}"
-				RESULT_VARIABLE _otool_result
-				OUTPUT_VARIABLE _otool_output
-				ERROR_VARIABLE _otool_error)
-			if(NOT _otool_result EQUAL 0)
-				message(FATAL_ERROR
-					"Could not inspect macOS link dependency ${_target} at ${_location}: ${_otool_error}")
-			endif()
-
-			string(REGEX MATCHALL "minos[ \t]+[0-9]+(\\.[0-9]+)*" _minimum_versions "${_otool_output}")
-			if(NOT _minimum_versions)
-				message(FATAL_ERROR
-					"Could not find a macOS minimum-version load command in ${_target} at ${_location}")
-			endif()
-			foreach(_entry IN LISTS _minimum_versions)
-				string(REGEX REPLACE "^minos[ \t]+" "" _minimum_version "${_entry}")
-				if(_minimum_version VERSION_GREATER CMAKE_OSX_DEPLOYMENT_TARGET)
+			foreach(_architecture IN LISTS CMAKE_OSX_ARCHITECTURES)
+				execute_process(
+					COMMAND "${_faithfulframe_otool}" -arch "${_architecture}" -l "${_location}"
+					RESULT_VARIABLE _otool_result
+					OUTPUT_VARIABLE _otool_output
+					ERROR_VARIABLE _otool_error)
+				if(NOT _otool_result EQUAL 0)
 					message(FATAL_ERROR
-						"${_target} at ${_location} requires macOS ${_minimum_version}, but "
-						"FaithfulFrame is configured for macOS ${CMAKE_OSX_DEPLOYMENT_TARGET}. "
-						"Use a Qt/OBS SDK built for the desired deployment target, or reconfigure with "
-						"-DCMAKE_OSX_DEPLOYMENT_TARGET=${_minimum_version}.")
+						"Could not inspect ${_architecture} macOS slice of ${_target} at ${_location}: ${_otool_error}")
 				endif()
+
+				string(REGEX MATCHALL "minos[ \t]+[0-9]+(\\.[0-9]+)*" _minimum_versions "${_otool_output}")
+				string(REPLACE "\n" ";" _otool_lines "${_otool_output}")
+				set(_legacy_minimum_pending FALSE)
+				foreach(_line IN LISTS _otool_lines)
+					if(_line MATCHES "^[ \t]*cmd[ \t]+LC_VERSION_MIN_MACOSX[ \t]*$")
+						set(_legacy_minimum_pending TRUE)
+					elseif(_legacy_minimum_pending AND
+					       _line MATCHES "^[ \t]*version[ \t]+([0-9]+(\\.[0-9]+)*)[ \t]*$")
+						list(APPEND _minimum_versions "minos ${CMAKE_MATCH_1}")
+						set(_legacy_minimum_pending FALSE)
+					endif()
+				endforeach()
+				if(NOT _minimum_versions)
+					message(FATAL_ERROR
+						"Could not find a macOS minimum-version load command in ${_target} at ${_location} (${_architecture})")
+				endif()
+				foreach(_entry IN LISTS _minimum_versions)
+					string(REGEX REPLACE "^minos[ \t]+" "" _minimum_version "${_entry}")
+					if(_minimum_version VERSION_GREATER CMAKE_OSX_DEPLOYMENT_TARGET)
+						message(FATAL_ERROR
+							"${_target} at ${_location} (${_architecture}) requires macOS ${_minimum_version}, but "
+							"FaithfulFrame is configured for macOS ${CMAKE_OSX_DEPLOYMENT_TARGET}. "
+							"Use a Qt/OBS SDK built for the desired deployment target, or reconfigure with "
+							"-DCMAKE_OSX_DEPLOYMENT_TARGET=${_minimum_version}.")
+					endif()
+				endforeach()
+				message(STATUS
+					"Verified ${_target} (${_architecture}) minimum macOS version is compatible with ${CMAKE_OSX_DEPLOYMENT_TARGET}")
 			endforeach()
-			message(STATUS
-				"Verified ${_target} minimum macOS version is compatible with ${CMAKE_OSX_DEPLOYMENT_TARGET}")
 		endforeach()
 		if(NOT _inspected_location_count)
 			message(FATAL_ERROR "Could not find an inspectable imported macOS binary for ${_target}")
