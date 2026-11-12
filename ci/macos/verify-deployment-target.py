@@ -3,6 +3,7 @@
 
 import argparse
 import pathlib
+import plistlib
 import re
 import subprocess
 import sys
@@ -22,6 +23,25 @@ def configured_target(cache_path):
     if not re.fullmatch(r"\d+(?:\.\d+){0,2}", target):
         raise ValueError(f"Invalid macOS deployment target {target!r}")
     return target
+
+
+def bundle_minimum_version(root):
+    info_path = root / "Contents" / "Info.plist"
+    with info_path.open("rb") as info_file:
+        info = plistlib.load(info_file)
+    version = info.get("LSMinimumSystemVersion")
+    if not isinstance(version, str) or not re.fullmatch(r"\d+(?:\.\d+){0,2}", version):
+        raise ValueError(f"{info_path}: LSMinimumSystemVersion is missing or invalid")
+    return version
+
+
+def validate_bundle_minimum_version(root, target):
+    bundle_target = bundle_minimum_version(root)
+    if version_tuple(bundle_target) != version_tuple(target):
+        raise ValueError(
+            f"{root / 'Contents' / 'Info.plist'}: LSMinimumSystemVersion is {bundle_target}, "
+            f"but CMAKE_OSX_DEPLOYMENT_TARGET is {target}"
+        )
 
 
 def macho_minimum_versions(path):
@@ -61,6 +81,7 @@ def main():
         target_tuple = version_tuple(target)
         if not args.root.is_dir():
             raise ValueError(f"Plugin bundle does not exist: {args.root}")
+        validate_bundle_minimum_version(args.root, target)
 
         macho_count = 0
         failures = []

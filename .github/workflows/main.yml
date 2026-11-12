@@ -262,6 +262,7 @@ jobs:
             ${{ steps.obsdeps.outputs.PLUGIN_CMAKE_OPTIONS }}
           cmake --build build --config RelWithDebInfo
           ctest --test-dir build --output-on-failure
+          python3 -m unittest tests/test_verify_macos_deployment_target.py
 
       - name: Prepare package
         run: |
