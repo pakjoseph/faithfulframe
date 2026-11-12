@@ -4,12 +4,13 @@
 #include "faithfulframe-worker-log.hpp"
 #include "plugin-macros.generated.h"
 #include "face-tracker-base.h"
-#ifndef _WIN32
-#include <sys/time.h>
-#include <sys/resource.h>
-#else // _WIN32
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+#elif defined(_WIN32)
 #include <windows.h>
-#endif // _WIN32
+#else
+#include <sys/resource.h>
+#endif
 
 #ifdef FAITHFULFRAME_TEST_TRACKER_TEARDOWN_HOOK
 extern "C" void faithfulframe_test_tracker_stop_attempted(void);
@@ -34,11 +35,15 @@ face_tracker_base::~face_tracker_base()
 void *face_tracker_base::thread_routine(void *p)
 {
 	face_tracker_base *base = (face_tracker_base *)p;
-#ifndef _WIN32
+#if defined(__APPLE__)
+	// Darwin's PRIO_PROCESS changes the OBS process priority. Set only this
+	// worker's QoS so tracking cannot demote rendering, encoding, or the UI.
+	(void)pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+#elif !defined(_WIN32)
 	setpriority(PRIO_PROCESS, 0, 17);
-#else  // _WIN32
+#else
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
-#endif // _WIN32
+#endif
 	base->lock();
 	while (!base->stop_requested.load(std::memory_order_relaxed)) {
 		if (!base->suspend_requested.load(std::memory_order_relaxed)) {

@@ -10,11 +10,13 @@
 #include <obs-module.h>
 #include "plugin-macros.generated.h"
 #endif
-#ifndef _WIN32
-#include <sys/resource.h>
-#else // _WIN32
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+#elif defined(_WIN32)
 #include <windows.h>
-#endif // _WIN32
+#else
+#include <sys/resource.h>
+#endif
 
 #ifdef FAITHFULFRAME_DETECTOR_WORKER_STANDALONE
 #define detector_log(...) ((void)0)
@@ -60,11 +62,15 @@ face_detector_base::~face_detector_base()
 
 void face_detector_base::thread_routine(face_detector_base *base)
 {
-#ifndef _WIN32
+#if defined(__APPLE__)
+	// Keep CPU-bound detector work below OBS's interactive/rendering QoS.
+	// Darwin's PRIO_PROCESS would instead change the whole OBS process.
+	(void)pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+#elif !defined(_WIN32)
 	setpriority(PRIO_PROCESS, 0, 19);
-#else  // _WIN32
+#else
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
-#endif // _WIN32
+#endif
 	std::unique_lock<std::mutex> lock(base->mutex);
 	while (!base->request_stop) {
 		while (!base->request_stop && !base->work_pending)
