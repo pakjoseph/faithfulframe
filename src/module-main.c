@@ -68,9 +68,9 @@ bool obs_module_load(void)
 
 void obs_module_unload()
 {
+	// Keep the teardown reaper alive. libobs may call remaining source/filter
+	// destroy callbacks after this function returns.
 #ifdef WITH_DOCK
 	ft_docks_release();
 #endif // WITH_DOCK
-	// Keep the teardown reaper alive. libobs may call remaining source/filter
-	// destroy callbacks after this function returns.
 }
