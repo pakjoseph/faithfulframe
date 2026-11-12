@@ -440,6 +440,14 @@ bool faithfulframe_session_executor::snapshot_publisher::try_read(ff_snapshot &s
 void faithfulframe_session_executor::run()
 {
 	auto mark_stopped = [this] {
+		closing_requested.store(true, std::memory_order_release);
+		{
+			std::lock_guard<std::mutex> lock(queue_mutex);
+			closing = true;
+			queue_head = 0;
+			queue_size = 0;
+			queue_depth.store(0, std::memory_order_relaxed);
+		}
 		worker_started.store(false, std::memory_order_release);
 		queue_condition.notify_all();
 	};

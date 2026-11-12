@@ -117,8 +117,13 @@ int run_smoke()
 
 	ff_session_config invalid_config = config;
 	invalid_config.output_width = 0;
-	faithfulframe_session_executor failed_worker(invalid_config, ff_identity{102, 202}, generations);
-	if (!await_worker_unavailable(failed_worker) || failed_worker.worker_available())
+	const ff_identity failed_identity{102, 202};
+	faithfulframe_session_executor failed_worker(invalid_config, failed_identity, generations);
+	const ff_command command_after_worker_failure{
+		FF_COMMAND_ENABLE_AUTO_FOLLOW, failed_identity, 0, generations, 0, 0};
+	if (!await_worker_unavailable(failed_worker) || failed_worker.worker_available() ||
+	    failed_worker.enqueue_tick(1) || failed_worker.enqueue_command(1, command_after_worker_failure) ||
+	    failed_worker.diagnostics().queue_depth != 0)
 		return 16;
 	failed_worker.shutdown();
 
