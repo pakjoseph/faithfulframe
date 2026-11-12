@@ -366,13 +366,19 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 		return "Camera disconnected; restore the camera, then select the speaker again";
 	if (!preview.target_active)
 		return "Camera inactive; activate its scene, then select the speaker again";
+	if (preview.reason == FF_REASON_FRAMING_FAILURE)
+		return "Framing failed; wide view is active. Check camera/output geometry, then select the speaker again";
+	if (preview.reason == FF_REASON_LIFECYCLE_INVALIDATED)
+		return "Camera or tracking settings changed; select the speaker again before following";
+	if (preview.reason == FF_REASON_TRACKER_IDENTITY_EXPIRED)
+		return "Tracker identity changed; select the speaker again before following";
 	switch (preview.state) {
 	case FF_STATE_FROZEN:
-		if (preview.reason == 8)
+		if (preview.reason == FF_REASON_RESET_WIDE)
 			return "Frozen at wide framing; press Resume when ready";
 		return "Frozen; press Resume when ready";
 	case FF_STATE_MANUAL:
-		if (preview.reason == 8)
+		if (preview.reason == FF_REASON_RESET_WIDE)
 			return "Wide framing; select a face to follow again";
 		return "Manual; select a face before following";
 	case FF_STATE_SEARCHING:
