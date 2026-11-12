@@ -73,11 +73,16 @@ void face_detector_base::thread_routine(face_detector_base *base)
 			break;
 		base->work_pending = false;
 		const auto started = std::chrono::steady_clock::now();
+		bool work_failed = false;
 		try {
 			base->detect_main();
 		} catch (std::exception &e) {
+			base->failed.store(true, std::memory_order_release);
+			work_failed = true;
 			detector_log(LOG_ERROR, "detect_main: exception %s", e.what());
 		} catch (...) {
+			base->failed.store(true, std::memory_order_release);
+			work_failed = true;
 			detector_log(LOG_ERROR, "detect_main: unknown exception");
 		}
 		const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -91,11 +96,15 @@ void face_detector_base::thread_routine(face_detector_base *base)
 								std::memory_order_relaxed)) {
 		}
 		base->completed_work.fetch_add(1, std::memory_order_relaxed);
+		if (work_failed)
+			break;
 	}
 }
 
 bool face_detector_base::start()
 {
+	if (failed.load(std::memory_order_acquire))
+		return false;
 	std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
 	std::lock_guard<std::mutex> lock(mutex);
 	if (thread.joinable())

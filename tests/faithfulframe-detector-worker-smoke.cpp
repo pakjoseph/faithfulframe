@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 
@@ -19,6 +20,7 @@ class probe_detector final : public face_detector_base {
 	std::mutex detection_mutex;
 	std::condition_variable detection_condition;
 	std::atomic<uint64_t> queued_result_epoch{0};
+	std::atomic<int> throw_kind{0};
 	bool detecting = false;
 	bool hold_detection = false;
 	bool release_detection = false;
@@ -43,6 +45,11 @@ class probe_detector final : public face_detector_base {
 		} else {
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 		}
+		const int failure = throw_kind.exchange(0, std::memory_order_acq_rel);
+		if (failure == 1)
+			throw std::runtime_error("synthetic detector failure");
+		if (failure == 2)
+			throw 42;
 		if (!lifetime_state->resource_available.load(std::memory_order_acquire))
 			lifetime_state->accessed_after_release.store(true, std::memory_order_release);
 		{
@@ -74,6 +81,7 @@ public:
 		release_detection = false;
 	}
 	void queue_result_epoch(uint64_t epoch) { queued_result_epoch.store(epoch, std::memory_order_release); }
+	void throw_on_next_detection(int kind) { throw_kind.store(kind, std::memory_order_release); }
 	void release_held_detection()
 	{
 		// Preserve the existing minimum-duration timing assertion for this work.
@@ -108,6 +116,44 @@ static bool wait_until_idle(probe_detector &detector)
 	return false;
 }
 
+static void signal_work(probe_detector &detector);
+
+static bool wait_for_failed_work(const probe_detector &detector)
+{
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (std::chrono::steady_clock::now() < deadline) {
+		if (detector.has_failed() && detector.completed_work_count() == 1)
+			return true;
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	return false;
+}
+
+static int verify_fault_quarantine(int failure_kind)
+{
+	probe_detector detector(std::make_shared<probe_lifetime_state>());
+	if (!detector.start()) {
+		std::fprintf(stderr, "fault probe worker did not start\n");
+		return 1;
+	}
+	detector.throw_on_next_detection(failure_kind);
+	signal_work(detector);
+	if (!wait_for_failed_work(detector)) {
+		std::fprintf(stderr, "detector fault was not recorded exactly once\n");
+		detector.stop();
+		return 2;
+	}
+	// A result epoch from the failed operation is not safe for the manager to
+	// consume, and later work cannot run on the quarantined worker.
+	detector.stop();
+	if (detector.start()) {
+		std::fprintf(stderr, "failed detector worker restarted after quarantine\n");
+		detector.stop();
+		return 3;
+	}
+	return 0;
+}
+
 static void signal_work(probe_detector &detector)
 {
 	detector.lock();
@@ -126,6 +172,8 @@ int main()
 	if (!face_detector_result_epoch_is_current(4, 4) || face_detector_result_epoch_is_current(3, 4) ||
 	    face_detector_result_epoch_is_current(0, 0))
 		return 13;
+	if (verify_fault_quarantine(1) != 0 || verify_fault_quarantine(2) != 0)
+		return 14;
 
 	probe_detector detector(std::make_shared<probe_lifetime_state>());
 	report_stage("starting worker");

@@ -283,6 +283,16 @@ inline void face_tracker_manager::stage_to_detector(std::shared_ptr<texture_obje
 {
 	if (!detect || detect->trylock())
 		return;
+	if (detect->has_failed()) {
+		// An inference exception can leave a partially populated result vector.
+		// Drop the generation without seeding any candidates from it. The failed
+		// worker remains owned by the manager and is joined during controlled
+		// teardown or explicit detector reconfiguration.
+		detect_rects.clear();
+		detector_in_progress = false;
+		detect->unlock();
+		return;
+	}
 	if (!detect->is_idle_locked()) {
 		detect->unlock();
 		return;

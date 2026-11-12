@@ -22,6 +22,7 @@ class face_detector_base {
 	std::condition_variable cond;
 	bool request_stop;
 	bool work_pending;
+	std::atomic<bool> failed{false};
 	std::atomic<uint64_t> last_work_us{0};
 	std::atomic<uint64_t> max_work_us{0};
 	std::atomic<uint64_t> completed_work{0};
@@ -61,6 +62,7 @@ public:
 				 int crop_b) = 0;
 	virtual void get_faces(std::vector<struct rect_s> &) = 0;
 	uint64_t completed_result_epoch() const { return result_epoch; }
+	bool has_failed() const { return failed.load(std::memory_order_acquire); }
 
 	bool start();
 	void stop();
