@@ -38,13 +38,17 @@ trap 'rm -rf "$model_tmp"' EXIT
 
 hog_archive="$model_tmp/frontal_face_detector.dat.bz2"
 hog_license="$model_tmp/frontal_face_detector-LICENSE.txt"
+hog_license_normalized="$model_tmp/frontal_face_detector-LICENSE-normalized.txt"
+dlib_license_normalized="$model_tmp/dlib-LICENSE-normalized.txt"
 curl --fail --location --retry 3 --silent --show-error \
 	'https://github.com/norihiro/obs-face-tracker/releases/download/0.7.0-hogdata/frontal_face_detector.dat.bz2' \
 	--output "$hog_archive"
 curl --fail --location --retry 3 --silent --show-error \
 	'https://github.com/norihiro/obs-face-tracker/releases/download/0.7.0-hogdata/LICENSE.txt' \
 	--output "$hog_license"
-if ! cmp -s "$hog_license" dlib/LICENSE.txt; then
+tr -d '\r' < "$hog_license" > "$hog_license_normalized"
+tr -d '\r' < dlib/LICENSE.txt > "$dlib_license_normalized"
+if ! cmp -s "$hog_license_normalized" "$dlib_license_normalized"; then
 	echo "HOG detector license differs from the bundled dlib license" >&2
 	exit 1
 fi
