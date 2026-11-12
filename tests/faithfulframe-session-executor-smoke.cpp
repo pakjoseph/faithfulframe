@@ -12,6 +12,24 @@
 #include <thread>
 
 namespace {
+struct reaper_drain_test_gate
+{
+	std::mutex mutex;
+	std::condition_variable condition;
+	bool drain_paused = false;
+	bool release_drain = false;
+	bool unload_returned = false;
+};
+
+void pause_reaper_drain(void *context)
+{
+	auto *gate = static_cast<reaper_drain_test_gate *>(context);
+	std::unique_lock<std::mutex> lock(gate->mutex);
+	gate->drain_paused = true;
+	gate->condition.notify_all();
+	gate->condition.wait(lock, [gate] { return gate->release_drain; });
+}
+
 template<typename Predicate>
 bool await_snapshot(const faithfulframe_session_executor &executor, Predicate predicate, ff_snapshot &snapshot)
 {
@@ -1029,6 +1047,55 @@ int run_smoke()
 	faithfulframe_teardown_instance_destroyed();
 	if (!in_flight_weak.expired() || faithfulframe_teardown_register_instance() != 0)
 		return 104;
+
+	// Hold the last-source drain after all joins complete but before its final
+	// lifecycle check. Module unload must observe the drain barrier and return
+	// without attempting to join the reaper on its caller thread.
+	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
+		return 105;
+	faithfulframe_teardown_instance_created();
+	auto racing_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{114, 214}, generations);
+	ff_snapshot racing_snapshot{};
+	if (!await_snapshot(
+		    *racing_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    racing_snapshot))
+		return 106;
+	std::weak_ptr<faithfulframe_session_executor> racing_weak = racing_executor;
+	racing_executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+	if (!faithfulframe_retire_session_executor(racing_executor) || racing_executor)
+		return 107;
+	reaper_drain_test_gate gate;
+	faithfulframe_test_set_reaper_drain_hook(pause_reaper_drain, &gate);
+	std::thread destroy_thread([] { faithfulframe_teardown_instance_destroyed(); });
+	bool drain_paused = false;
+	{
+		std::unique_lock<std::mutex> lock(gate.mutex);
+		drain_paused =
+			gate.condition.wait_for(lock, std::chrono::seconds(2), [&gate] { return gate.drain_paused; });
+	}
+	std::thread unload_thread([&gate] {
+		faithfulframe_teardown_begin_module_unload();
+		{
+			std::lock_guard<std::mutex> lock(gate.mutex);
+			gate.unload_returned = true;
+		}
+		gate.condition.notify_all();
+	});
+	bool unload_returned_before_drain_release = false;
+	{
+		std::unique_lock<std::mutex> lock(gate.mutex);
+		unload_returned_before_drain_release = gate.condition.wait_for(lock, std::chrono::seconds(2), [&gate] {
+			return gate.unload_returned;
+		});
+		gate.release_drain = true;
+	}
+	gate.condition.notify_all();
+	destroy_thread.join();
+	unload_thread.join();
+	faithfulframe_test_set_reaper_drain_hook(nullptr, nullptr);
+	if (!drain_paused || !unload_returned_before_drain_release || !racing_weak.expired())
+		return 108;
 	return 0;
 }
 

@@ -185,3 +185,6 @@ extern "C" void faithfulframe_teardown_instance_created();
 extern "C" void faithfulframe_teardown_instance_destroyed();
 extern "C" void faithfulframe_teardown_instance_creation_failed();
 extern "C" void faithfulframe_teardown_begin_module_unload();
+#ifdef FAITHFULFRAME_TEST_REAPER_DRAIN_HOOK
+extern "C" void faithfulframe_test_set_reaper_drain_hook(void (*hook)(void *), void *context);
+#endif

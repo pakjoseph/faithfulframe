@@ -486,6 +486,11 @@ size_t faithfulframe_live_instances = 0;
 bool faithfulframe_module_unloading = false;
 bool faithfulframe_reaper_shutdown_started = false;
 bool faithfulframe_final_drain_in_progress = false;
+#ifdef FAITHFULFRAME_TEST_REAPER_DRAIN_HOOK
+std::mutex faithfulframe_test_drain_hook_mutex;
+void (*faithfulframe_test_drain_hook)(void *) = nullptr;
+void *faithfulframe_test_drain_hook_context = nullptr;
+#endif
 } // namespace
 
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor)
@@ -562,6 +567,15 @@ extern "C" int faithfulframe_teardown_register_instance()
 	return 1;
 }
 
+#ifdef FAITHFULFRAME_TEST_REAPER_DRAIN_HOOK
+extern "C" void faithfulframe_test_set_reaper_drain_hook(void (*hook)(void *), void *context)
+{
+	std::lock_guard<std::mutex> lock(faithfulframe_test_drain_hook_mutex);
+	faithfulframe_test_drain_hook = hook;
+	faithfulframe_test_drain_hook_context = context;
+}
+#endif
+
 extern "C" void faithfulframe_teardown_instance_created()
 {
 	std::lock_guard<std::mutex> lock(faithfulframe_module_lifecycle_mutex);
@@ -602,6 +616,17 @@ extern "C" void faithfulframe_teardown_instance_destroyed()
 		std::unique_lock<std::mutex> owner_lock(faithfulframe_reaper_owner_mutex);
 		if (!faithfulframe_reaper_closed && faithfulframe_reaper)
 			faithfulframe_reaper->drain();
+#ifdef FAITHFULFRAME_TEST_REAPER_DRAIN_HOOK
+		void (*test_hook)(void *) = nullptr;
+		void *test_hook_context = nullptr;
+		{
+			std::lock_guard<std::mutex> hook_lock(faithfulframe_test_drain_hook_mutex);
+			test_hook = faithfulframe_test_drain_hook;
+			test_hook_context = faithfulframe_test_drain_hook_context;
+		}
+		if (test_hook)
+			test_hook(test_hook_context);
+#endif
 
 		{
 			std::lock_guard<std::mutex> lifecycle_lock(faithfulframe_module_lifecycle_mutex);
