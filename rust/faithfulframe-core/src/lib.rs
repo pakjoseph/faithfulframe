@@ -480,33 +480,35 @@ impl TrackingSession {
             Command::SelectCandidate {
                 handle,
                 observation_version,
-            } if matches!(self.state, State::Manual | State::Searching | State::Lost)
-                && status_version == self.status_version
-                && observation_version == self.observation_version =>
-            {
-                if let Some(candidate) = self.latest.get(&handle).copied()
+            } => {
+                if status_version == self.status_version
+                    && observation_version == self.observation_version
+                    && let Some(candidate) = self.latest.get(&handle).copied()
                     && candidate.observation_version == observation_version
                     && candidate.expires_at >= at
                     && candidate.observed_at <= at
                     && at.saturating_sub(candidate.observed_at) <= self.config.max_evidence_age_ms
                 {
-                    self.selected = Some(SelectedTarget {
-                        handle,
-                        continuity: candidate.continuity,
-                        last_seen: candidate.observed_at,
-                        rect: candidate.rect,
-                    });
-                    self.state = State::Locked;
-                    self.reason = Reason::SelectedByOperator;
-                    self.crop_action = CropAction::Track;
-                    self.loss_started_at = None;
-                    self.loss_deadline = None;
-                    CommandResult::Applied
+                    if matches!(self.state, State::Manual | State::Searching | State::Lost) {
+                        self.selected = Some(SelectedTarget {
+                            handle,
+                            continuity: candidate.continuity,
+                            last_seen: candidate.observed_at,
+                            rect: candidate.rect,
+                        });
+                        self.state = State::Locked;
+                        self.reason = Reason::SelectedByOperator;
+                        self.crop_action = CropAction::Track;
+                        self.loss_started_at = None;
+                        self.loss_deadline = None;
+                        CommandResult::Applied
+                    } else {
+                        self.reject_command(Reason::InvalidCommand)
+                    }
                 } else {
                     self.reject_command(Reason::StaleCommand)
                 }
             }
-            Command::SelectCandidate { .. } => self.reject_command(Reason::StaleCommand),
             _ => self.reject_command(Reason::InvalidCommand),
         }
     }
@@ -1236,7 +1238,7 @@ mod tests {
         );
         assert_eq!(
             direct_switch.command_result,
-            CommandResult::Rejected(Reason::StaleCommand)
+            CommandResult::Rejected(Reason::InvalidCommand)
         );
         assert_policy_no_op(direct_switch, observed);
 

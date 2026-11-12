@@ -65,8 +65,9 @@ int main()
 		return 17;
 
 	const auto locked = snapshot;
+	select.status_version = snapshot.status_version;
 	if (bridge.apply_command(5, select, snapshot) != FF_OK || snapshot.command_result != FF_COMMAND_REJECTED ||
-	    snapshot.rejection_reason != FF_REJECTION_STALE_COMMAND || snapshot.state != locked.state ||
+	    snapshot.rejection_reason != FF_REJECTION_INVALID_COMMAND || snapshot.state != locked.state ||
 	    snapshot.status_version != locked.status_version || snapshot.crop.x != locked.crop.x ||
 	    snapshot.crop.y != locked.crop.y || snapshot.crop.width != locked.crop.width ||
 	    snapshot.crop.height != locked.crop.height)
