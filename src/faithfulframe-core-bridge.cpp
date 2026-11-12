@@ -502,6 +502,12 @@ extern "C" void faithfulframe_executor_reaper_shutdown()
 
 extern "C" int faithfulframe_teardown_register_instance()
 {
+	// Source instances are only allowed after module load has established the
+	// nonblocking join worker. This guarantees every later binding teardown can
+	// transfer its executor without creating threads or joining inline.
+	std::lock_guard<std::mutex> reaper_lock(faithfulframe_reaper_owner_mutex);
+	if (faithfulframe_reaper_closed || !faithfulframe_reaper || !faithfulframe_reaper->available())
+		return 0;
 	std::lock_guard<std::mutex> lock(faithfulframe_module_lifecycle_mutex);
 	if (faithfulframe_module_unloading || faithfulframe_reaper_shutdown_started ||
 	    faithfulframe_live_instances == std::numeric_limits<size_t>::max())

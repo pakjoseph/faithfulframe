@@ -172,6 +172,8 @@ bool retirement_queue_handles_concurrent_handoffs(const ff_session_config &confi
 
 int run_smoke()
 {
+	if (faithfulframe_teardown_register_instance() != 0)
+		return 92;
 	if (faithfulframe_executor_reaper_start() != 1)
 		return 1;
 	if (faithfulframe_teardown_register_instance() != 1 || faithfulframe_teardown_register_instance() != 1)
