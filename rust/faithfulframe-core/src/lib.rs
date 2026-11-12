@@ -278,6 +278,7 @@ impl Default for Config {
 struct SelectedTarget {
     handle: CandidateHandle,
     continuity: ContinuityToken,
+    observation_version: u64,
     last_seen: Millis,
     rect: Rect,
 }
@@ -493,6 +494,7 @@ impl TrackingSession {
                         self.selected = Some(SelectedTarget {
                             handle,
                             continuity: candidate.continuity,
+                            observation_version: candidate.observation_version,
                             last_seen: candidate.observed_at,
                             rect: candidate.rect,
                         });
@@ -569,10 +571,12 @@ impl TrackingSession {
         if let Some(selected) = self.selected {
             if selected.continuity == candidate.continuity
                 && self.state == State::Locked
+                && candidate.observation_version > selected.observation_version
                 && candidate.observed_at >= selected.last_seen
             {
                 self.selected = Some(SelectedTarget {
                     handle: candidate.handle,
+                    observation_version: candidate.observation_version,
                     last_seen: candidate.observed_at,
                     rect: candidate.rect,
                     ..selected
@@ -580,6 +584,7 @@ impl TrackingSession {
                 self.crop_action = CropAction::Track;
             } else if selected.continuity == candidate.continuity
                 && self.state == State::Searching
+                && candidate.observation_version > selected.observation_version
                 && self
                     .loss_started_at
                     .is_some_and(|started_at| candidate.observed_at >= started_at)
@@ -589,6 +594,7 @@ impl TrackingSession {
             {
                 self.selected = Some(SelectedTarget {
                     handle: candidate.handle,
+                    observation_version: candidate.observation_version,
                     last_seen: candidate.observed_at,
                     rect: candidate.rect,
                     ..selected
@@ -858,16 +864,7 @@ impl TrackingEngine {
 
     pub fn apply(&mut self, event: Event) -> Snapshot {
         let at = event_time(event);
-        let authorized_target_update = match event {
-            Event::Command { envelope, .. } => {
-                matches!(envelope.command, Command::SelectCandidate { .. })
-            }
-            Event::Candidate { candidate, .. } => self
-                .session
-                .selected
-                .is_some_and(|selected| selected.continuity == candidate.continuity),
-            _ => false,
-        };
+        let selected_before = self.session.selected;
         let geometry_update = match event {
             Event::Lifecycle {
                 identity,
@@ -900,6 +897,21 @@ impl TrackingEngine {
         if matches!(policy.command_result, CommandResult::Rejected(_)) {
             return self.with_frame(policy);
         }
+
+        // Move the crop only when selection is applied or the selected tracker
+        // publishes a genuinely newer observation. Replayed detector output
+        // must not repeatedly ease the crop despite carrying old evidence.
+        let authorized_target_update = match event {
+            Event::Command { envelope, .. } => {
+                matches!(envelope.command, Command::SelectCandidate { .. })
+            }
+            Event::Candidate { candidate, .. } => selected_before.is_some_and(|selected| {
+                selected.continuity == candidate.continuity
+                    && candidate.observation_version > selected.observation_version
+                    && candidate.observed_at >= selected.last_seen
+            }),
+            _ => false,
+        };
 
         if let Some((config, framing)) = geometry_update {
             self.framing_config = config;
@@ -2349,6 +2361,57 @@ mod tests {
         assert!(locked.crop.x + locked.crop.width <= 1.0);
         assert!(locked.crop.y + locked.crop.height <= 1.0);
         assert_eq!(locked.viewport, Rect::full_frame());
+    }
+
+    #[test]
+    fn repeated_selected_observation_does_not_advance_framing() {
+        let mut engine = TrackingEngine::new(
+            Config::default(),
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        let first_observation = candidate(10, 100, 1, 2);
+        engine.apply(Event::Candidate {
+            at: 2,
+            candidate: first_observation,
+        });
+        let searching = engine.snapshot();
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: searching.identity,
+                status_version: searching.status_version,
+                generations: searching.generations,
+                command: Command::SelectCandidate {
+                    handle: first_observation.handle,
+                    observation_version: first_observation.observation_version,
+                },
+            },
+        });
+
+        let duplicate = engine.apply(Event::Candidate {
+            at: 4,
+            candidate: first_observation,
+        });
+
+        assert_eq!(duplicate.command_result, CommandResult::NotACommand);
+        assert_eq!(duplicate.state, State::Locked);
+        assert_eq!(duplicate.selected, locked.selected);
+        assert_eq!(duplicate.selected_rect, locked.selected_rect);
+        assert_eq!(duplicate.crop, locked.crop);
+        assert_eq!(duplicate.viewport, locked.viewport);
     }
 
     #[test]
