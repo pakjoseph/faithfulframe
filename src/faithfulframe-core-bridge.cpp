@@ -367,6 +367,8 @@ public:
 
 	~faithfulframe_executor_reaper() { shutdown(); }
 
+	bool available() const { return worker.joinable(); }
+
 	bool enqueue(std::function<void()> task)
 	{
 		if (!task || !worker.joinable())
@@ -475,7 +477,7 @@ bool faithfulframe_retire_cleanup(void (*cleanup)(void *), void *context)
 	}
 }
 
-extern "C" void faithfulframe_executor_reaper_start()
+extern "C" int faithfulframe_executor_reaper_start()
 {
 	std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
 	faithfulframe_reaper_closed = false;
@@ -483,10 +485,10 @@ extern "C" void faithfulframe_executor_reaper_start()
 		try {
 			faithfulframe_reaper = std::make_unique<faithfulframe_executor_reaper>();
 		} catch (...) {
-			// Keep plugin load alive; enqueue will fail and callers retain their
-			// synchronous teardown fallback if the process cannot create a worker.
+			return 0;
 		}
 	}
+	return faithfulframe_reaper && faithfulframe_reaper->available() ? 1 : 0;
 }
 
 extern "C" void faithfulframe_executor_reaper_shutdown()

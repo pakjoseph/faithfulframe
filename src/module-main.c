@@ -15,7 +15,7 @@ void register_face_tracker_filter(bool hide_filter, bool hide_source);
 void register_face_tracker_ptz(bool hide_ptz);
 void register_face_tracker_monitor(bool hide_monitor);
 #ifdef ENABLE_RUST_CORE_BRIDGE
-void faithfulframe_executor_reaper_start(void);
+int faithfulframe_executor_reaper_start(void);
 #endif
 
 const char *obs_module_name(void)
@@ -26,7 +26,10 @@ const char *obs_module_name(void)
 bool obs_module_load(void)
 {
 #ifdef ENABLE_RUST_CORE_BRIDGE
-	faithfulframe_executor_reaper_start();
+	if (!faithfulframe_executor_reaper_start()) {
+		blog(LOG_ERROR, "could not start FaithfulFrame teardown worker; refusing to load safely");
+		return false;
+	}
 #endif
 	blog(LOG_INFO, "registering face_tracker_filter_info (version %s)", PLUGIN_VERSION);
 

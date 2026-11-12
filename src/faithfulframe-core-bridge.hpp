@@ -167,5 +167,8 @@ bool faithfulframe_retire_cleanup(void (*cleanup)(void *), void *context);
 /// may invoke remaining source destroy callbacks after module unload returns.
 /// The reaper remains available until process teardown so those callbacks can
 /// transfer blocking worker joins off the OBS callback thread.
-extern "C" void faithfulframe_executor_reaper_start();
+/// Starts the asynchronous teardown worker. Module loading must fail if it
+/// cannot be started, because source destruction must not fall back to joins
+/// on OBS callback threads.
+extern "C" int faithfulframe_executor_reaper_start();
 extern "C" void faithfulframe_executor_reaper_shutdown();

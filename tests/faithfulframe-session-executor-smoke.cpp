@@ -100,7 +100,8 @@ bool configuration_revision_guard_is_race_safe()
 
 int run_smoke()
 {
-	faithfulframe_executor_reaper_start();
+	if (faithfulframe_executor_reaper_start() != 1)
+		return 1;
 	if (!configuration_revision_guard_is_race_safe())
 		return 23;
 	const ff_session_config config{5000, 500,  8,     3840,  2160,  1920,  1080, 0.45f,
