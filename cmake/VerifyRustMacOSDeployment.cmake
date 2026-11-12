@@ -15,7 +15,7 @@ if(NOT DEFINED FF_LIPO OR NOT EXISTS "${FF_LIPO}")
 endif()
 
 execute_process(
-	COMMAND "${FF_LIPO}" -verify_arch "${FF_ARCHITECTURE}" "${FF_ARCHIVE}"
+	COMMAND "${FF_LIPO}" "${FF_ARCHIVE}" -verify_arch "${FF_ARCHITECTURE}"
 	RESULT_VARIABLE _lipo_result
 	ERROR_VARIABLE _lipo_error)
 if(NOT _lipo_result EQUAL 0)
