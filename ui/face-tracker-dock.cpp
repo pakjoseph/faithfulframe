@@ -1313,8 +1313,8 @@ void FTDock::selectCandidateButtonClicked()
 		return;
 	}
 	std::array<uint64_t, 8> current_handles{};
-	for (size_t i = 0; i < preview.candidates.size(); ++i)
-		current_handles[i] = preview.candidates.at(static_cast<qsizetype>(i)).value("handle").toULongLong();
+	for (qsizetype i = 0; i < preview.candidates.size(); ++i)
+		current_handles[static_cast<size_t>(i)] = preview.candidates.at(i).value("handle").toULongLong();
 	const ff_identity previous_identity{selected_candidate.value("source_id").toULongLong(),
 					    selected_candidate.value("session_id").toULongLong()};
 	const ff_generations previous_generations{selected_candidate.value("source_generation").toULongLong(),
