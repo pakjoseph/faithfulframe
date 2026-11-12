@@ -225,6 +225,11 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		"$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
 	if (OS_WINDOWS)
 		target_link_libraries(faithfulframe-tracker-worker-smoke PRIVATE OBS::w32-pthreads)
+		add_custom_command(TARGET faithfulframe-tracker-worker-smoke POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different
+				"$<TARGET_FILE:OBS::w32-pthreads>"
+				"$<TARGET_FILE_DIR:faithfulframe-tracker-worker-smoke>"
+			VERBATIM)
 	endif()
 endif()
 
