@@ -51,7 +51,7 @@ void FTDock::closeEvent(QCloseEvent *event)
 		prompt.setWindowTitle("FaithfulFrame performance data");
 		prompt.setText("This dock has performance data that has not been exported.");
 		prompt.setInformativeText(
-			"The CSV contains aggregate system and tracking metrics plus your hardware/workload notes; it does not contain preview images or face data.");
+			"The CSV contains aggregate system and tracking metrics plus your hardware/workload note as entered. It does not contain preview images or face data; do not include camera/source or speaker names in the note.");
 		QPushButton *save = prompt.addButton("Export CSV", QMessageBox::AcceptRole);
 		QPushButton *discard = prompt.addButton("Discard data", QMessageBox::DestructiveRole);
 		prompt.addButton(QMessageBox::Cancel);
@@ -825,10 +825,10 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	mainLayout->addWidget(performanceLabel);
 	performanceRunNotes = new QLineEdit(this);
 	performanceRunNotes->setPlaceholderText(
-		"Hardware + workload (e.g., church PC model; 4K input → 1080p output; multi-person stage)");
+		"Hardware + workload (e.g., PC model; 4K → 1080p; multiple faces). No source or speaker names.");
 	performanceRunNotes->setAccessibleName("Hardware and workload notes for reproducible performance measurements");
 	performanceRunNotes->setToolTip(
-		"Describe the machine and test workload. OS version, CPU architecture, OBS and FaithfulFrame versions, and video dimensions are recorded automatically.");
+		"Describe the machine and test workload. This note is exported as entered, so omit camera/source names, speaker names, and personal details. OS version, CPU architecture, OBS and FaithfulFrame versions, and video dimensions are recorded automatically.");
 	performanceRunNotes->setMaxLength(512);
 	performanceRunNotes->hide();
 	mainLayout->addWidget(performanceRunNotes);
@@ -1503,7 +1503,7 @@ bool FTDock::exportPerformanceRecording()
 	if (!performanceToggle->isChecked())
 		stopPerformanceMetrics();
 	showOperatorNotice(
-		QString("Exported %1 aggregate samples with system/workload metadata. No preview images or face data were saved.")
+		QString("Exported %1 aggregate samples with system/workload metadata. Your note was exported as entered; no preview images or face data were saved.")
 			.arg(static_cast<qulonglong>(exported_samples)));
 	return true;
 }
@@ -1552,7 +1552,7 @@ void FTDock::performanceRecordButtonClicked()
 	processMetricsTimer.start();
 	performanceRecordButton->setText("Stop & Export CSV");
 	showOperatorNotice(
-		"Recording aggregate performance metrics once per second. Your hardware/workload notes are included; preview images and face data are not collected.");
+		"Recording aggregate performance metrics once per second. Your note is exported as entered, so omit camera/source and speaker names. Preview images and face data are not collected.");
 #else
 	showOperatorNotice("Performance recording requires the FaithfulFrame safety tracking bridge.");
 #endif
