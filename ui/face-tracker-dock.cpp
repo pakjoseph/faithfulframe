@@ -685,6 +685,12 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	connect(performanceToggle, &QToolButton::toggled, this, [this](bool expanded) {
 		performanceToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
 		performanceLabel->setVisible(expanded && performanceToggle->isVisible());
+		if (expanded) {
+			processCpuUsageInfo = os_cpu_usage_info_start();
+			processMetricsTimer.start();
+		} else {
+			stopPerformanceMetrics();
+		}
 	});
 #ifndef ENABLE_RUST_CORE_BRIDGE
 	autoFollowButton->hide();
@@ -767,6 +773,7 @@ FTDock::~FTDock()
 {
 	if (statusTimer)
 		statusTimer->stop();
+	stopPerformanceMetrics();
 	// OBS tears down the frontend callback registry as it dispatches EXIT.
 	if (!frontend_shutdown_started)
 		obs_frontend_remove_event_callback(frontendEvent_cb, this);
@@ -895,6 +902,8 @@ void FTDock::updateState()
 	OBSSource target = get_source();
 	proc_handler_t *ph = obs_source_get_proc_handler(target);
 	if (!ph) {
+		if (performanceToggle->isChecked())
+			performanceToggle->setChecked(false);
 		operatorNotice.clear();
 		operatorNoticeTimer.invalidate();
 		autoFollowButton->hide();
@@ -957,14 +966,34 @@ void FTDock::updateState()
 		}
 		safeStatusLabel->setText(status_text);
 		if (performanceToggle->isChecked()) {
+			if (processMetricsTimer.isValid() && processMetricsTimer.elapsed() >= 1000) {
+				if (processCpuUsageInfo) {
+					const double cpu_percent = os_cpu_usage_info_query(processCpuUsageInfo);
+					processCpuPercent =
+						std::isfinite(cpu_percent) && cpu_percent >= 0.0 ? cpu_percent : -1.0;
+				}
+				processMemoryAvailable = os_get_proc_memory_usage(&processMemoryUsage);
+				processMetricsTimer.restart();
+			}
+			const QString process_cpu = processCpuPercent < 0.0
+							    ? QString("sampling")
+							    : QString("%1%").arg(processCpuPercent, 0, 'f', 1);
+			const QString process_memory =
+				processMemoryAvailable ? QString("%1 MiB resident / %2 MiB virtual")
+								 .arg(processMemoryUsage.resident_size / (1024 * 1024))
+								 .arg(processMemoryUsage.virtual_size / (1024 * 1024))
+						       : QString("unavailable");
 			const QString snapshot_age =
 				safe_preview.status_snapshot_age_ms < 0
 					? QString("unavailable")
 					: QString("%1 ms").arg(safe_preview.status_snapshot_age_ms);
 			performanceLabel->setText(
-				QString("Snapshot: %1 | queue: %2 / %3, oldest pending %4 µs | wait: %5 / %6 µs | "
-					"policy: %7 / %8 µs | dlib: %9 runs, %10 / %11 µs | accepted %12 · "
-					"rejected %13 · coalesced %14\n%15")
+				QString("OBS process: CPU %1, memory %2\nSnapshot: %3 | queue: %4 / %5, oldest pending %6 µs | "
+					"wait: %7 / %8 µs | "
+					"policy: %9 / %10 µs | dlib: %11 runs, %12 / %13 µs | accepted %14 · "
+					"rejected %15 · coalesced %16\n%17")
+					.arg(process_cpu)
+					.arg(process_memory)
 					.arg(snapshot_age)
 					.arg(static_cast<qulonglong>(safe_preview.executor_queue_depth))
 					.arg(static_cast<qulonglong>(safe_preview.executor_queue_high_water))
@@ -1050,6 +1079,8 @@ void FTDock::updateState()
 	UNUSED_PARAMETER(safe_mode);
 #endif
 	if (!safe_mode) {
+		if (performanceToggle->isChecked())
+			performanceToggle->setChecked(false);
 		operatorNotice.clear();
 		operatorNoticeTimer.invalidate();
 		resetButton->setText(obs_module_text("Reset"));
@@ -1127,6 +1158,17 @@ void FTDock::showOperatorNotice(const QString &message)
 	operatorNotice = message;
 	operatorNoticeTimer.start();
 	updateState();
+}
+
+void FTDock::stopPerformanceMetrics()
+{
+	if (processCpuUsageInfo)
+		os_cpu_usage_info_destroy(processCpuUsageInfo);
+	processCpuUsageInfo = nullptr;
+	processMetricsTimer.invalidate();
+	processCpuPercent = -1.0;
+	processMemoryUsage = {};
+	processMemoryAvailable = false;
 }
 
 void FTDock::pauseButtonClicked(bool checked)

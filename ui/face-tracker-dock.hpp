@@ -9,6 +9,7 @@
 #include <obs.h>
 #include <obs.hpp>
 #include <obs-frontend-api.h>
+#include <util/platform.h>
 
 class FTDock : public QFrame {
 	Q_OBJECT
@@ -34,6 +35,11 @@ public:
 	class QPushButton *manualOverrideButton;
 	class QPushButton *selectCandidateButton;
 	class QTimer *statusTimer;
+	os_cpu_usage_info_t *processCpuUsageInfo = nullptr;
+	QElapsedTimer processMetricsTimer;
+	double processCpuPercent = -1.0;
+	os_proc_memory_usage_t processMemoryUsage{};
+	bool processMemoryAvailable = false;
 	QString operatorNotice;
 	QElapsedTimer operatorNoticeTimer;
 
@@ -55,6 +61,7 @@ public:
 private:
 	void applyDesignTokens();
 	void showOperatorNotice(const QString &message);
+	void stopPerformanceMetrics();
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
 
