@@ -204,24 +204,6 @@ jobs:
           obs: ${{ matrix.obs }}
           verbose: true
 
-      - name: Prepare dlib dependency
-        run: |
-          brew install openblas
-          for d in '/usr/local/opt/openblas/' '/opt/homebrew/opt/openblas/'; do
-            if test -d "$d"; then
-              OPENBLAS_HOME="$d"
-              break
-            fi
-          done
-          echo "OPENBLAS_HOME=$OPENBLAS_HOME" >> $GITHUB_ENV
-          cp $OPENBLAS_HOME/LICENSE data/LICENSE-openblas
-          GCC_HOME="$(brew --prefix gcc)"
-          LIBOMP_HOME="$(brew --prefix libomp)"
-          cp "$GCC_HOME/COPYING" data/LICENSE-gcc
-          cp "$GCC_HOME/COPYING.LIB" data/LICENSE-gcc-lgpl
-          cp "$GCC_HOME/COPYING.RUNTIME" data/LICENSE-gcc-runtime
-          cp "$LIBOMP_HOME/LICENSE.TXT" data/LICENSE-libomp
-
       - name: Download dlib-models
         run: |
           set -ex
@@ -232,15 +214,22 @@ jobs:
           arch=${{ matrix.arch }}
           GIT_TAG=$(git describe --tags --always)
           PKG_SUFFIX=-${GIT_TAG}-obs${{ matrix.obs }}-macos-${{ matrix.arch }}
-          export OPENBLAS_HOME=${{ env.OPENBLAS_HOME }}
+          set -e
           # Exercise the repository's pre-project macOS 13 default.
           unset MACOSX_DEPLOYMENT_TARGET
-          set -e
+          unset OPENBLAS_HOME
+          SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          test -f "$SDKROOT/usr/lib/libcblas.tbd"
+          test -f "$SDKROOT/usr/lib/liblapack.tbd"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DENABLE_RUST_CORE_BRIDGE=ON \
             -DCMAKE_PREFIX_PATH="$PWD/release/" \
             -DCMAKE_OSX_ARCHITECTURES=$arch \
+            -D DLIB_USE_BLAS=ON \
+            -D DLIB_USE_LAPACK=ON \
+            -D cblas_lib="$SDKROOT/usr/lib/libcblas.tbd" \
+            -D lapack_lib="$SDKROOT/usr/lib/liblapack.tbd" \
             -D PKG_SUFFIX=$PKG_SUFFIX \
             -D OBS_BUNDLE_CODESIGN_IDENTITY='${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}' \
             ${{ steps.obsdeps.outputs.PLUGIN_CMAKE_OPTIONS }}
@@ -265,6 +254,9 @@ jobs:
             --check \
             release/${PLUGIN_NAME}.plugin/Contents/MacOS/${PLUGIN_NAME} \
             release/${PLUGIN_NAME}.plugin/Contents/lib/*
+          python3 ci/macos/verify-deployment-target.py \
+            --root release/${PLUGIN_NAME}.plugin \
+            --cmake-cache build/CMakeCache.txt
 
       - name: Codesign
         if: ${{ github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' }}
