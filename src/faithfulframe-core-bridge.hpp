@@ -167,8 +167,9 @@ private:
 };
 
 /// Nonblocking handoff of an executor with pending shutdown/terminal work to
-/// the shared join reaper. Returns false on lock contention or if the reaper
-/// cannot accept the executor; the caller retains ownership and may retry.
+/// the shared join reaper. Returns false on either queue lock contention or if
+/// the reaper cannot accept the executor; the caller retains ownership and may
+/// retry. No OBS callback waits for a reaper mutex or worker join.
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
 
 /// Starts the asynchronous session-join worker. Module loading must fail if it
@@ -187,4 +188,7 @@ extern "C" void faithfulframe_teardown_instance_creation_failed();
 extern "C" void faithfulframe_teardown_begin_module_unload();
 #ifdef FAITHFULFRAME_TEST_REAPER_DRAIN_HOOK
 extern "C" void faithfulframe_test_set_reaper_drain_hook(void (*hook)(void *), void *context);
+#endif
+#ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
+extern "C" void faithfulframe_test_set_reaper_enqueue_hook(void (*hook)(void *), void *context);
 #endif

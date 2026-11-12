@@ -5,6 +5,27 @@
 #include <cstring>
 #include <limits>
 
+#ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
+namespace {
+std::mutex faithfulframe_test_enqueue_hook_mutex;
+void (*faithfulframe_test_enqueue_hook)(void *) = nullptr;
+void *faithfulframe_test_enqueue_hook_context = nullptr;
+
+void faithfulframe_test_run_reaper_enqueue_hook()
+{
+	void (*hook)(void *) = nullptr;
+	void *context = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(faithfulframe_test_enqueue_hook_mutex);
+		hook = faithfulframe_test_enqueue_hook;
+		context = faithfulframe_test_enqueue_hook_context;
+	}
+	if (hook)
+		hook(context);
+}
+} // namespace
+#endif
+
 static void update_max(std::atomic<uint64_t> &maximum, uint64_t value)
 {
 	uint64_t current = maximum.load(std::memory_order_relaxed);
@@ -383,23 +404,29 @@ public:
 	{
 		try {
 			worker = std::thread(&faithfulframe_executor_reaper::run, this);
+			accepting.store(true, std::memory_order_release);
 		} catch (...) {
 		}
 	}
 
 	~faithfulframe_executor_reaper() { shutdown(); }
 
-	bool available() const { return worker.joinable(); }
+	bool available() const { return accepting.load(std::memory_order_acquire); }
 
 	bool enqueue(const std::shared_ptr<faithfulframe_session_executor> &executor)
 	{
 		if (!executor)
 			return false;
-		std::lock_guard<std::mutex> lock(mutex);
+		std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
+		if (!lock.owns_lock())
+			return false;
 		if (executor->retirement_queued)
 			return true;
-		if (stopping || !worker.joinable())
+		if (stopping || !accepting.load(std::memory_order_acquire))
 			return false;
+#ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
+		faithfulframe_test_run_reaper_enqueue_hook();
+#endif
 
 		// The executor owns itself until the worker moves this reference into a
 		// local variable. No std::function/deque allocation can fail here.
@@ -417,9 +444,11 @@ public:
 
 	void shutdown()
 	{
+		std::lock_guard<std::mutex> shutdown_lock(shutdown_mutex);
 		{
 			std::lock_guard<std::mutex> lock(mutex);
 			stopping = true;
+			accepting.store(false, std::memory_order_release);
 		}
 		condition.notify_one();
 		if (worker.joinable() && worker.get_id() != std::this_thread::get_id())
@@ -469,10 +498,12 @@ private:
 	std::mutex mutex;
 	std::condition_variable condition;
 	std::condition_variable idle_condition;
+	std::mutex shutdown_mutex;
 	faithfulframe_session_executor *head = nullptr;
 	faithfulframe_session_executor *tail = nullptr;
 	size_t active_joins = 0;
 	bool stopping = false;
+	std::atomic<bool> accepting{false};
 	std::thread worker;
 };
 
@@ -497,17 +528,19 @@ bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session
 {
 	if (!executor)
 		return true;
-	std::unique_lock<std::mutex> lock(faithfulframe_reaper_owner_mutex, std::try_to_lock);
-	if (!lock.owns_lock())
-		return false;
-	// The reaper is created during module load. Creating threads or allocating
-	// queue nodes or waiting on the lifecycle owner lock from an OBS callback
-	// would reintroduce a blocking teardown path. Contention, a missing reaper, or a
-	// closed reaper leaves ownership with the caller for a later retry or its
-	// controlled teardown fallback.
-	if (faithfulframe_reaper_closed || !faithfulframe_reaper)
-		return false;
-	if (!faithfulframe_reaper->enqueue(executor))
+	std::shared_ptr<faithfulframe_executor_reaper> reaper;
+	{
+		std::unique_lock<std::mutex> lock(faithfulframe_reaper_owner_mutex, std::try_to_lock);
+		if (!lock.owns_lock())
+			return false;
+		// Copy under the owner lock, then release it before touching the queue.
+		// This keeps module lifetime safe without serializing all callback-side
+		// handoffs behind a producer paused in the reaper.
+		if (faithfulframe_reaper_closed || !faithfulframe_reaper)
+			return false;
+		reaper = faithfulframe_reaper;
+	}
+	if (!reaper->enqueue(executor))
 		return false;
 	executor.reset();
 	return true;
@@ -576,6 +609,15 @@ extern "C" void faithfulframe_test_set_reaper_drain_hook(void (*hook)(void *), v
 	std::lock_guard<std::mutex> lock(faithfulframe_test_drain_hook_mutex);
 	faithfulframe_test_drain_hook = hook;
 	faithfulframe_test_drain_hook_context = context;
+}
+#endif
+
+#ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
+extern "C" void faithfulframe_test_set_reaper_enqueue_hook(void (*hook)(void *), void *context)
+{
+	std::lock_guard<std::mutex> lock(faithfulframe_test_enqueue_hook_mutex);
+	faithfulframe_test_enqueue_hook = hook;
+	faithfulframe_test_enqueue_hook_context = context;
 }
 #endif
 

@@ -21,6 +21,14 @@ struct reaper_drain_test_gate
 	bool unload_returned = false;
 };
 
+struct reaper_enqueue_test_gate
+{
+	std::mutex mutex;
+	std::condition_variable condition;
+	bool enqueue_paused = false;
+	bool release_enqueue = false;
+};
+
 void pause_reaper_drain(void *context)
 {
 	auto *gate = static_cast<reaper_drain_test_gate *>(context);
@@ -28,6 +36,15 @@ void pause_reaper_drain(void *context)
 	gate->drain_paused = true;
 	gate->condition.notify_all();
 	gate->condition.wait(lock, [gate] { return gate->release_drain; });
+}
+
+void pause_reaper_enqueue(void *context)
+{
+	auto *gate = static_cast<reaper_enqueue_test_gate *>(context);
+	std::unique_lock<std::mutex> lock(gate->mutex);
+	gate->enqueue_paused = true;
+	gate->condition.notify_all();
+	gate->condition.wait(lock, [gate] { return gate->release_enqueue; });
 }
 
 template<typename Predicate>
@@ -292,6 +309,79 @@ bool snapshot_publication_is_consistent(const ff_session_config &config, const f
 	return !inconsistent.load(std::memory_order_acquire) &&
 	       successful_reads.load(std::memory_order_relaxed) > reader_count;
 }
+
+bool retirement_queue_contention_is_nonblocking(const ff_session_config &config, const ff_generations &generations)
+{
+	auto paused_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{150, 250}, generations);
+	auto contended_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{151, 251}, generations);
+	ff_snapshot paused_snapshot{};
+	ff_snapshot contended_snapshot{};
+	if (!await_snapshot(
+		    *paused_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    paused_snapshot) ||
+	    !await_snapshot(
+		    *contended_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    contended_snapshot))
+		return false;
+	paused_executor->request_shutdown();
+	contended_executor->request_shutdown();
+	std::weak_ptr<faithfulframe_session_executor> paused_weak = paused_executor;
+	std::weak_ptr<faithfulframe_session_executor> contended_weak = contended_executor;
+	reaper_enqueue_test_gate gate;
+	faithfulframe_test_set_reaper_enqueue_hook(pause_reaper_enqueue, &gate);
+	std::atomic<bool> paused_accepted{false};
+	std::thread paused_handoff([&] {
+		paused_accepted.store(faithfulframe_retire_session_executor(paused_executor),
+				      std::memory_order_release);
+	});
+	bool paused_inside_enqueue = false;
+	{
+		std::unique_lock<std::mutex> lock(gate.mutex);
+		paused_inside_enqueue =
+			gate.condition.wait_for(lock, std::chrono::seconds(2), [&] { return gate.enqueue_paused; });
+	}
+	std::mutex completion_mutex;
+	std::condition_variable completion_condition;
+	std::atomic<bool> contended_finished{false};
+	std::atomic<bool> contended_accepted{true};
+	std::thread contended_handoff([&] {
+		contended_accepted.store(faithfulframe_retire_session_executor(contended_executor),
+					 std::memory_order_release);
+		{
+			std::lock_guard<std::mutex> lock(completion_mutex);
+			contended_finished.store(true, std::memory_order_release);
+		}
+		completion_condition.notify_all();
+	});
+	bool contended_returned_while_locked = false;
+	{
+		std::unique_lock<std::mutex> lock(completion_mutex);
+		contended_returned_while_locked =
+			completion_condition.wait_for(lock, std::chrono::milliseconds(250), [&] {
+				return contended_finished.load(std::memory_order_acquire);
+			});
+	}
+	{
+		std::lock_guard<std::mutex> lock(gate.mutex);
+		gate.release_enqueue = true;
+	}
+	gate.condition.notify_all();
+	paused_handoff.join();
+	contended_handoff.join();
+	faithfulframe_test_set_reaper_enqueue_hook(nullptr, nullptr);
+	if (!paused_inside_enqueue || !contended_returned_while_locked ||
+	    !paused_accepted.load(std::memory_order_acquire) || paused_executor ||
+	    contended_accepted.load(std::memory_order_acquire) || !contended_executor)
+		return false;
+	if (!faithfulframe_retire_session_executor(contended_executor) || contended_executor)
+		return false;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while ((!paused_weak.expired() || !contended_weak.expired()) && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::yield();
+	return paused_weak.expired() && contended_weak.expired();
+}
 } // namespace
 
 int run_smoke()
@@ -302,6 +392,8 @@ int run_smoke()
 		return 1;
 	const ff_session_config config{5000, 500,  8,     3840,  2160,  1920,  1080, 0.45f,
 				       1.0f, 4.0f, 0.25f, 0.08f, 0.08f, 0.05f, 0.25f};
+	if (!retirement_queue_contention_is_nonblocking(config, ff_generations{1, 1, 1, 1, 1}))
+		return 110;
 	if (faithfulframe_teardown_register_instance() != 1)
 		return 94;
 	faithfulframe_teardown_instance_created();

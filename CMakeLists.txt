@@ -209,7 +209,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_executable(faithfulframe-session-executor-smoke
 		tests/faithfulframe-session-executor-smoke.cpp src/faithfulframe-core-bridge.cpp)
 	target_compile_definitions(faithfulframe-session-executor-smoke PRIVATE
-		FAITHFULFRAME_TEST_REAPER_DRAIN_HOOK=1)
+		FAITHFULFRAME_TEST_REAPER_DRAIN_HOOK=1 FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK=1)
 	add_executable(faithfulframe-detector-worker-smoke
 		tests/faithfulframe-detector-worker-smoke.cpp src/face-detector-base.cpp)
 	add_executable(faithfulframe-tracker-worker-smoke
