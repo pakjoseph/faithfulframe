@@ -750,6 +750,8 @@ static obs_properties_t *ftf_properties(void *data)
 	auto *s = (struct face_tracker_filter *)data;
 	obs_properties_t *props;
 	props = obs_properties_create();
+	if (!s || !s->context)
+		return props;
 
 	obs_properties_add_button(props, "ftf_reset_tracking", obs_module_text("Reset tracking"), ftf_reset_tracking);
 
@@ -845,6 +847,8 @@ static obs_properties_t *fts_properties(void *data)
 	auto *s = (struct face_tracker_filter *)data;
 
 	obs_properties_t *props = ftf_properties(data);
+	if (!s || !s->context)
+		return props;
 
 	obs_properties_t *pp = obs_properties_create();
 	obs_property_t *p = obs_properties_add_list(pp, "target_name", obs_module_text("Source"), OBS_COMBO_TYPE_LIST,
