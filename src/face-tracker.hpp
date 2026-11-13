@@ -7,6 +7,7 @@
 #ifdef ENABLE_RUST_CORE_BRIDGE
 struct faithfulframe_source_runtime;
 #endif
+struct faithfulframe_tracker_settings_queue;
 
 struct face_tracker_filter
 {
@@ -26,6 +27,7 @@ struct face_tracker_filter
 	f3 range_min, range_max, range_min_out;
 
 	class ft_manager_for_ftf *ftm;
+	faithfulframe_tracker_settings_queue *pending_tracker_settings;
 
 	float track_z, track_x, track_y;
 	float scale_max;

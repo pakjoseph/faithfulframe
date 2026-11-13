@@ -86,7 +86,7 @@ public:
 	face_tracker_manager();
 	virtual ~face_tracker_manager();
 	void tick(float second);
-	void post_render();
+	void post_render(bool allow_detector_work = true);
 	void update(obs_data_t *settings);
 	static void get_properties(obs_properties_t *);
 	static void get_defaults(obs_data_t *settings);

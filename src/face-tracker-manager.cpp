@@ -502,14 +502,17 @@ void face_tracker_manager::tick(float second)
 	make_tracker_rects(tracker_rects, trackers);
 }
 
-void face_tracker_manager::post_render()
+void face_tracker_manager::post_render(bool allow_detector_work)
 {
 	// Reuse one immutable capture throughout this render cycle. Every candidate
 	// tracker and the detector consume the same source frame, avoiding repeated
 	// GPU readback and full-frame copies for each candidate.
 	std::shared_ptr<texture_object> frame;
 	bool capture_attempted = false;
-	stage_to_detector(frame, capture_attempted);
+	// Keep tracker refresh moving while a deferred detector replacement waits
+	// for the current inference to finish.
+	if (allow_detector_work)
+		stage_to_detector(frame, capture_attempted);
 	stage_to_trackers(frame, capture_attempted);
 }
 
@@ -549,8 +552,14 @@ void face_tracker_manager::update(obs_data_t *settings)
 	upsize_b = obs_data_get_double(settings, "upsize_b");
 	scale.store(static_cast<float>(obs_data_get_double(settings, "scale")), std::memory_order_relaxed);
 	auto _detector_engine = (enum detector_engine_e)obs_data_get_int(settings, "detector_engine");
-	if (_detector_engine != detector_engine)
+	if (_detector_engine != detector_engine) {
 		update_detector(this, _detector_engine);
+		// Results and candidate trackers produced by the previous detector
+		// configuration cannot establish continuity for the replacement.
+		detector_in_progress = false;
+		detect_rects.clear();
+		reset_requested.store(true, std::memory_order_release);
+	}
 	detector_dlib_hog_model = obs_data_get_string(settings, "detector_dlib_hog_model");
 	detector_dlib_cnn_model = obs_data_get_string(settings, "detector_dlib_cnn_model");
 	detector_crop_l = obs_data_get_int(settings, "detector_crop_l");

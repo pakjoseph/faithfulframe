@@ -59,6 +59,19 @@ public:
 	};
 };
 
+struct faithfulframe_tracker_settings_queue
+{
+	std::mutex mutex;
+	obs_data_t *pending = nullptr;
+	std::atomic<bool> pending_available{false};
+
+	~faithfulframe_tracker_settings_queue()
+	{
+		if (pending)
+			obs_data_release(pending);
+	}
+};
+
 #ifdef ENABLE_RUST_CORE_BRIDGE
 static constexpr uint64_t safe_preview_max_snapshot_age_ms = 500;
 static constexpr uint64_t safe_candidate_max_age_ms = 500;
@@ -265,6 +278,7 @@ struct faithfulframe_source_runtime
 	std::atomic<uint32_t> last_output_height{0};
 	std::mutex pending_settings_mutex;
 	obs_data_t *pending_settings = nullptr;
+	std::atomic<bool> pending_settings_available{false};
 	uint64_t processed_configuration_version = 0;
 	uint64_t processed_tracker_configuration_version = 0;
 	faithfulframe_active_slot<faithfulframe_source_binding> active;
@@ -432,7 +446,7 @@ static inline void get_aspect_from_str(struct face_tracker_filter *s, const char
 	s->aspect_y = 0;
 }
 
-static void ftf_update(void *data, obs_data_t *settings)
+static void apply_ftf_update(void *data, obs_data_t *settings)
 {
 	auto *s = (struct face_tracker_filter *)data;
 
@@ -470,6 +484,89 @@ static void ftf_update(void *data, obs_data_t *settings)
 	debug_data_open(&s->debug_data_tracker, &s->debug_data_tracker_last, settings, "debug_data_tracker");
 	debug_data_open(&s->debug_data_error, &s->debug_data_error_last, settings, "debug_data_error");
 	debug_data_open(&s->debug_data_control, &s->debug_data_control_last, settings, "debug_data_control");
+}
+
+static void ftf_update(void *data, obs_data_t *settings)
+{
+	auto *s = (struct face_tracker_filter *)data;
+	if (!s || !s->pending_tracker_settings || !settings)
+		return;
+
+	// Replacing a detector stops and joins its worker. Keep OBS's video update
+	// callback nonblocking and apply the latest settings from ftf_tick instead.
+	obs_data_addref(settings);
+	obs_data_t *superseded = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(s->pending_tracker_settings->mutex);
+		superseded = s->pending_tracker_settings->pending;
+		s->pending_tracker_settings->pending = settings;
+		s->pending_tracker_settings->pending_available.store(true, std::memory_order_release);
+	}
+	if (superseded)
+		obs_data_release(superseded);
+}
+
+static bool has_pending_tracker_settings(const struct face_tracker_filter *s)
+{
+	if (!s || !s->pending_tracker_settings)
+		return false;
+	return s->pending_tracker_settings->pending_available.load(std::memory_order_acquire);
+}
+
+static void restore_tracker_settings_if_empty(struct faithfulframe_tracker_settings_queue *queue, obs_data_t *settings)
+{
+	obs_data_t *superseded = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(queue->mutex);
+		if (!queue->pending)
+			queue->pending = settings;
+		else
+			superseded = settings;
+		if (queue->pending)
+			queue->pending_available.store(true, std::memory_order_release);
+	}
+	if (superseded)
+		obs_data_release(superseded);
+}
+
+static void apply_pending_tracker_settings(struct face_tracker_filter *s)
+{
+	if (!s || !s->pending_tracker_settings)
+		return;
+
+	obs_data_t *settings = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(s->pending_tracker_settings->mutex);
+		settings = s->pending_tracker_settings->pending;
+		s->pending_tracker_settings->pending = nullptr;
+		s->pending_tracker_settings->pending_available.store(false, std::memory_order_release);
+	}
+	if (!settings)
+		return;
+
+	// Detector replacement stops and joins its worker. The producer for this
+	// manager is video_render/post_render on the same libobs graphics thread, so
+	// once the current work completes we can apply the latest settings at tick
+	// and keep post_render from queuing another detector frame in the meantime.
+	if (s->ftm && s->ftm->detect && !s->ftm->detect->try_idle()) {
+		restore_tracker_settings_if_empty(s->pending_tracker_settings, settings);
+		return;
+	}
+
+	apply_ftf_update(s, settings);
+	obs_data_release(settings);
+}
+
+static bool tracker_settings_pending(const struct face_tracker_filter *s)
+{
+	if (has_pending_tracker_settings(s))
+		return true;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s && s->safe_runtime) {
+		return s->safe_runtime->pending_settings_available.load(std::memory_order_acquire);
+	}
+#endif
+	return false;
 }
 
 static void fts_update(void *data, obs_data_t *settings)
@@ -563,6 +660,7 @@ static void fts_update(void *data, obs_data_t *settings)
 				std::lock_guard<std::mutex> pending_lock(s->safe_runtime->pending_settings_mutex);
 				previous = s->safe_runtime->pending_settings;
 				s->safe_runtime->pending_settings = settings;
+				s->safe_runtime->pending_settings_available.store(true, std::memory_order_release);
 			}
 		}
 		if (previous)
@@ -624,12 +722,21 @@ static void *ftf_create_internal(obs_data_t *settings, obs_source_t *context, bo
 #else
 		UNUSED_PARAMETER(source_adapter);
 #endif
+		s->pending_tracker_settings = new (std::nothrow) faithfulframe_tracker_settings_queue();
+		if (!s->pending_tracker_settings) {
+#ifdef ENABLE_RUST_CORE_BRIDGE
+			delete s->safe_runtime;
+#endif
+			bfree(s);
+			return nullptr;
+		}
 		s->ftm = new ft_manager_for_ftf(s);
 	} catch (const std::exception &error) {
 		blog(LOG_ERROR, "FaithfulFrame could not construct a tracking instance: %s", error.what());
 #ifdef ENABLE_RUST_CORE_BRIDGE
 		delete s->safe_runtime;
 #endif
+		delete s->pending_tracker_settings;
 		bfree(s);
 		return nullptr;
 	} catch (...) {
@@ -637,6 +744,7 @@ static void *ftf_create_internal(obs_data_t *settings, obs_source_t *context, bo
 #ifdef ENABLE_RUST_CORE_BRIDGE
 		delete s->safe_runtime;
 #endif
+		delete s->pending_tracker_settings;
 		bfree(s);
 		return nullptr;
 	}
@@ -731,6 +839,8 @@ static void ftf_destroy(void *data)
 	delete s->safe_runtime;
 	s->safe_runtime = nullptr;
 #endif
+	delete s->pending_tracker_settings;
+	s->pending_tracker_settings = nullptr;
 
 	obs_enter_graphics();
 	gs_texrender_destroy(s->texrender);
@@ -1203,6 +1313,7 @@ static void ftf_tick(void *data, float second)
 	s->rendered = false;
 	s->target_valid = false;
 
+	apply_pending_tracker_settings(s);
 	s->ftm->tick(second);
 
 	obs_source_t *target = obs_filter_get_target(s->context);
@@ -2006,6 +2117,7 @@ static void fts_tick(void *data, float second)
 			std::lock_guard<std::mutex> lock(s->safe_runtime->pending_settings_mutex);
 			settings = s->safe_runtime->pending_settings;
 			s->safe_runtime->pending_settings = nullptr;
+			s->safe_runtime->pending_settings_available.store(false, std::memory_order_release);
 		}
 		if (settings) {
 			// Updating the detector engine stops and joins its worker. Only apply
@@ -2019,16 +2131,19 @@ static void fts_tick(void *data, float second)
 			if (s->ftm->detect)
 				detector_idle = s->ftm->detect->try_idle();
 			if (detector_idle) {
-				ftf_update(s, settings);
+				apply_ftf_update(s, settings);
 				obs_data_release(settings);
 			} else {
 				obs_data_t *superseded = nullptr;
 				{
 					std::lock_guard<std::mutex> lock(s->safe_runtime->pending_settings_mutex);
-					if (!s->safe_runtime->pending_settings)
+					if (!s->safe_runtime->pending_settings) {
 						s->safe_runtime->pending_settings = settings;
-					else
+						s->safe_runtime->pending_settings_available.store(
+							true, std::memory_order_release);
+					} else {
 						superseded = settings;
+					}
 				}
 				if (superseded)
 					obs_data_release(superseded);
@@ -2046,6 +2161,7 @@ static void fts_tick(void *data, float second)
 	}
 #endif
 
+	apply_pending_tracker_settings(s);
 	s->ftm->tick(second);
 
 	std::string configured_target_name;
@@ -2668,7 +2784,7 @@ static void ftf_render(void *data, gs_effect_t *)
 	if (!s->rendered) {
 		render_target(s, target, parent);
 		if (is_running(s))
-			s->ftm->post_render();
+			s->ftm->post_render(!tracker_settings_pending(s));
 		s->rendered = true;
 	}
 
@@ -2712,7 +2828,7 @@ static void fts_render(void *data, gs_effect_t *)
 			    binding->source_active.load(std::memory_order_acquire)) {
 				const uint64_t tracker_work_started_at_ns = os_gettime_ns();
 				render_target(s, safe_target, NULL);
-				s->ftm->post_render();
+				s->ftm->post_render(!tracker_settings_pending(s));
 				record_render_thread_tracker_work(binding, tracker_work_started_at_ns);
 			}
 		}
@@ -2733,7 +2849,7 @@ static void fts_render(void *data, gs_effect_t *)
 		s->rendered = true;
 		render_target(s, target, NULL);
 		if (is_running(s))
-			s->ftm->post_render();
+			s->ftm->post_render(!tracker_settings_pending(s));
 	}
 
 	draw_frame(s);
