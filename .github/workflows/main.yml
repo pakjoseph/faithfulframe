@@ -503,8 +503,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Test performance recording analysis
-        run: python -m unittest discover -s tests -p 'test_analyze_performance_logs.py'
+      - name: Test performance recording tools
+        run: |
+          python -m unittest discover -s tests -p 'test_analyze_performance_logs.py'
+          python -m unittest discover -s tests -p 'test_collect_obs_baseline.py'
 
       - name: Verify Rust production dependency allowlist
         run: |

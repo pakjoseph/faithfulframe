@@ -96,6 +96,44 @@ def fixture_row(elapsed_ms, cpu, resident, render_frames, render_lag, plugin_ver
     return row
 
 
+def baseline_row(elapsed_ms, cpu, memory, render_frames, render_skipped, stream_frames, stream_skipped):
+    row = {column: "" for column in analyzer.BASELINE_COLUMNS}
+    timestamp = datetime(2026, 11, 12, 12, tzinfo=timezone.utc) + timedelta(milliseconds=elapsed_ms)
+    row.update({
+        "baseline_schema_version": str(analyzer.BASELINE_SCHEMA_VERSION),
+        "run_metadata_present": "0",
+        "utc_timestamp": timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "elapsed_milliseconds": str(elapsed_ms),
+        "input_width": "3840",
+        "input_height": "2160",
+        "output_width": "1280",
+        "output_height": "720",
+        "stream_active": "1",
+        "record_active": "0",
+        "fps_numerator": "30",
+        "fps_denominator": "1",
+        "base_width": "1920",
+        "base_height": "1080",
+        "cpu_usage_percent": str(cpu),
+        "memory_usage_bytes": str(memory),
+        "active_fps": "59.9",
+        "render_total_frames": str(render_frames),
+        "render_skipped_frames": str(render_skipped),
+        "stream_total_frames": str(stream_frames),
+        "stream_skipped_frames": str(stream_skipped),
+    })
+    if elapsed_ms == 0:
+        row.update({
+            "run_metadata_present": "1",
+            "operating_system": "Windows 11 (10.0)",
+            "cpu_architecture": "x86_64",
+            "obs_version": "33.0.1",
+            "plugin_version": "upstream@abc123",
+            "hardware_and_workload_notes": "Church PC A; fixed 4K camera to 720p; one moving speaker",
+        })
+    return row
+
+
 class PerformanceLogAnalysisTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -341,6 +379,77 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         self.assertEqual(report["counter_deltas"]["stagesurface_map_count"], 1)
         self.assertEqual(report["counter_deltas"]["stagesurface_map_failure_count"], 2)
         self.assertIsNone(report["diagnostic_rates_percent"]["stagesurface_map_failure_percent"])
+
+    def test_compares_upstream_baseline_csv_with_faithfulframe_common_metrics(self):
+        baseline_path = self.root / "upstream-baseline.csv"
+        with baseline_path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=analyzer.BASELINE_COLUMNS)
+            writer.writeheader()
+            writer.writerows([
+                baseline_row(0, 10.0, 2_000_000_000, 1000, 5, 990, 4),
+                baseline_row(60_000, 12.0, 2_100_000_000, 2000, 15, 1980, 14),
+            ])
+
+        first = fixture_row(0, 11.0, 2_050_000_000, 1000, 5, "faithfulframe")
+        second = fixture_row(60_000, 13.0, 2_150_000_000, 2000, 15, "faithfulframe")
+        for row in (first, second):
+            row["source_width"] = "3840"
+            row["source_height"] = "2160"
+            row["hardware_and_workload_notes"] = "Church PC A; fixed 4K camera to 720p; one moving speaker"
+        second["run_metadata_present"] = "0"
+        for column in analyzer.METADATA_COLUMNS:
+            second[column] = ""
+        candidate_path = self.write_log("faithfulframe.csv", [first, second])
+
+        baseline = analyzer.load_log(baseline_path)
+        candidate = analyzer.load_log(candidate_path)
+        comparison = analyzer.compare_logs(baseline, candidate)
+
+        self.assertEqual(baseline["log_kind"], "obs_baseline")
+        self.assertEqual(baseline["input_resolution_basis"], "operator_declared")
+        self.assertEqual(candidate["input_resolution_basis"], "source_snapshot")
+        self.assertEqual(baseline["sample_count"], 2)
+        self.assertEqual(baseline["resolutions"], candidate["resolutions"])
+        self.assertEqual(len(candidate["crop_resolutions"]), 1)
+        self.assertNotEqual(baseline["resolutions"], candidate["crop_resolutions"])
+        self.assertTrue(comparison["matched_context"])
+        self.assertEqual(comparison["reference_log_kind"], "obs_baseline")
+        self.assertAlmostEqual(
+            comparison["measurements"]["process_cpu_percent"]["change_percent"],
+            8.333333333333332,
+        )
+        self.assertAlmostEqual(comparison["measurements"]["render_lag_percent"]["difference"], 0.0)
+        self.assertIn("virtual_bytes", comparison["not_compared_metrics"])
+        self.assertNotIn("stagesurface_map_failure_percent", comparison["measurements"])
+        self.assertIn("queue_depth", comparison["not_compared_metrics"])
+        self.assertIn("gpu_conversion", comparison["not_compared_video_settings"])
+
+    def test_rejects_baseline_when_output_mode_changes(self):
+        first = baseline_row(0, 10.0, 2_000_000_000, 1000, 5, 990, 4)
+        second = baseline_row(60_000, 12.0, 2_100_000_000, 2000, 15, 1980, 14)
+        second["stream_active"] = "0"
+        second["record_active"] = "1"
+        second["stream_total_frames"] = ""
+        second["stream_skipped_frames"] = ""
+        path = self.root / "output-mode-change.csv"
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=analyzer.BASELINE_COLUMNS)
+            writer.writeheader()
+            writer.writerows([first, second])
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "output mode changed"):
+            analyzer.load_log(path)
+
+    def test_rejects_resolution_change_in_a_baseline_recording(self):
+        first = baseline_row(0, 10.0, 2_000_000_000, 1000, 5, 990, 4)
+        second = baseline_row(60_000, 12.0, 2_100_000_000, 2000, 15, 1980, 14)
+        second["input_width"] = "1920"
+        path = self.root / "resolution-change.csv"
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=analyzer.BASELINE_COLUMNS)
+            writer.writeheader()
+            writer.writerows([first, second])
+        report = analyzer.load_log(path)
+        self.assertFalse(report["comparison_resolution_stable"])
 
 
 if __name__ == "__main__":

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Summarize and compare FaithfulFrame performance CSV recordings.
+"""Summarize FaithfulFrame and read-only OBS baseline performance recordings.
 
 This tool reports measurements only. It deliberately applies no universal
-performance thresholds; calibrate limits from matched baseline evidence.
+performance thresholds; calibrate limits from matched baseline evidence. The
+unmodified-plugin baseline format contains aggregate OBS data only, so
+FaithfulFrame-only policy, queue, detector, and staging diagnostics are omitted
+from comparisons and are listed in `not_compared_metrics`.
 """
 
 from __future__ import annotations
@@ -91,6 +94,35 @@ SUPPORTED_SCHEMAS = {
     3: EXPECTED_COLUMNS[:-4],
     SCHEMA_VERSION: EXPECTED_COLUMNS,
 }
+BASELINE_SCHEMA_VERSION = 1
+BASELINE_COLUMNS = [
+    "baseline_schema_version",
+    "run_metadata_present",
+    "utc_timestamp",
+    "elapsed_milliseconds",
+    "operating_system",
+    "cpu_architecture",
+    "obs_version",
+    "plugin_version",
+    "hardware_and_workload_notes",
+    "input_width",
+    "input_height",
+    "output_width",
+    "output_height",
+    "stream_active",
+    "record_active",
+    "fps_numerator",
+    "fps_denominator",
+    "base_width",
+    "base_height",
+    "cpu_usage_percent",
+    "memory_usage_bytes",
+    "active_fps",
+    "render_total_frames",
+    "render_skipped_frames",
+    "stream_total_frames",
+    "stream_skipped_frames",
+]
 
 METRIC_COLUMNS = {
     "process_cpu_percent": "percent",
@@ -187,6 +219,188 @@ class PerformanceLogError(ValueError):
     """Raised when a CSV does not satisfy the versioned recording contract."""
 
 
+def _utc_timestamp(raw: str, path: Path, row_number: int) -> None:
+    if not raw:
+        raise PerformanceLogError(f"{path}: row {row_number} has no UTC timestamp")
+    try:
+        utc_time = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise PerformanceLogError(f"{path}: row {row_number} has an invalid UTC timestamp") from error
+    if utc_time.utcoffset() is None or utc_time.utcoffset().total_seconds() != 0:
+        raise PerformanceLogError(f"{path}: row {row_number} timestamp is not UTC")
+
+
+def _empty_metric_summary() -> dict:
+    return {column: {"unit": unit, **_series_summary([])} for column, unit in METRIC_COLUMNS.items()}
+
+
+def _load_baseline_rows(path: Path, raw_rows: list[dict]) -> dict:
+    if not raw_rows:
+        raise PerformanceLogError(f"{path}: recording has no samples")
+    metadata = None
+    samples = []
+    previous_elapsed = -1
+    video_configurations = []
+    resolution_pairs = set()
+    for row_number, raw in enumerate(raw_rows, start=2):
+        if None in raw or any(value is None for value in raw.values()):
+            raise PerformanceLogError(f"{path}: row {row_number} has missing columns")
+        if _number(raw["baseline_schema_version"], "baseline_schema_version", row_number, integer=True) != BASELINE_SCHEMA_VERSION:
+            raise PerformanceLogError(f"{path}: row {row_number} has an unsupported baseline schema version")
+        metadata_flag = _number(raw["run_metadata_present"], "run_metadata_present", row_number, integer=True)
+        if metadata_flag != (1 if row_number == 2 else 0):
+            raise PerformanceLogError(f"{path}: run metadata must appear exactly once on the first sample")
+        if row_number == 2:
+            metadata = {column: raw[column] for column in METADATA_COLUMNS}
+            empty = [column for column, value in metadata.items() if not value.strip()]
+            if empty:
+                raise PerformanceLogError(f"{path}: first sample lacks metadata: {', '.join(empty)}")
+        elif any(raw[column] for column in METADATA_COLUMNS):
+            raise PerformanceLogError(f"{path}: run metadata is repeated after the first sample")
+
+        elapsed = _number(raw["elapsed_milliseconds"], "elapsed_milliseconds", row_number, integer=True)
+        if elapsed is None or elapsed < 0 or elapsed <= previous_elapsed:
+            raise PerformanceLogError(f"{path}: elapsed timestamps must increase monotonically")
+        previous_elapsed = elapsed
+        _utc_timestamp(raw["utc_timestamp"], path, row_number)
+        sample = {"elapsed_milliseconds": elapsed, "utc_timestamp": raw["utc_timestamp"]}
+
+        integer_columns = (
+            "input_width", "input_height", "output_width", "output_height",
+            "fps_numerator", "fps_denominator", "base_width", "base_height",
+            "render_total_frames", "render_skipped_frames",
+        )
+        for column in integer_columns:
+            sample[column] = _number(raw[column], column, row_number, integer=True)
+            if sample[column] is None or sample[column] <= 0 and column not in ("render_total_frames", "render_skipped_frames"):
+                raise PerformanceLogError(f"{path}: row {row_number} has an invalid {column}")
+            if sample[column] < 0:
+                raise PerformanceLogError(f"{path}: row {row_number} has a negative {column}")
+        for column in ("stream_total_frames", "stream_skipped_frames"):
+            sample[column] = _number(raw[column], column, row_number, integer=True)
+            if sample[column] is not None and sample[column] < 0:
+                raise PerformanceLogError(f"{path}: row {row_number} has a negative {column}")
+        for column in ("cpu_usage_percent", "memory_usage_bytes", "active_fps"):
+            sample[column] = _number(raw[column], column, row_number)
+            if sample[column] is None or sample[column] < 0:
+                raise PerformanceLogError(f"{path}: row {row_number} has an invalid {column}")
+
+        for column in ("stream_active", "record_active"):
+            flag = _number(raw[column], column, row_number, integer=True)
+            if flag not in (0, 1):
+                raise PerformanceLogError(f"{path}: row {row_number} has an invalid {column}")
+            sample[column] = bool(flag)
+        if not sample["stream_active"] and not sample["record_active"]:
+            raise PerformanceLogError(f"{path}: row {row_number} has no active recording or stream output")
+        if sample["stream_active"] and any(
+            sample[column] is None for column in ("stream_total_frames", "stream_skipped_frames")
+        ):
+            raise PerformanceLogError(f"{path}: row {row_number} lacks active stream frame counters")
+        if not sample["stream_active"] and any(
+            sample[column] is not None for column in ("stream_total_frames", "stream_skipped_frames")
+        ):
+            raise PerformanceLogError(f"{path}: row {row_number} has stream counters while stream is inactive")
+        if samples and (sample["stream_active"], sample["record_active"]) != (
+            samples[0]["stream_active"], samples[0]["record_active"]
+        ):
+            raise PerformanceLogError(f"{path}: recording/streaming output mode changed during the run")
+
+        sample["process_cpu_percent"] = sample["cpu_usage_percent"]
+        sample["resident_bytes"] = sample["memory_usage_bytes"]
+        sample["virtual_bytes"] = None
+        sample["render_frames"] = sample["render_total_frames"]
+        sample["render_lagged_frames"] = sample["render_skipped_frames"]
+        sample["stream_frames"] = sample["stream_total_frames"]
+        sample["stream_dropped_frames"] = sample["stream_skipped_frames"]
+        for column in METRIC_COLUMNS:
+            if column not in sample:
+                sample[column] = None
+        for column in COUNTER_COLUMNS:
+            if column not in sample:
+                sample[column] = None
+        sample.update({
+            "input_resolution": [sample["input_width"], sample["input_height"]],
+            "output_resolution": [sample["output_width"], sample["output_height"]],
+            "comparison_video_configuration": {
+                "fps_num": sample["fps_numerator"],
+                "fps_den": sample["fps_denominator"],
+                "base_width": sample["base_width"],
+                "base_height": sample["base_height"],
+                "output_width": sample["output_width"],
+                "output_height": sample["output_height"],
+            },
+        })
+        video_configurations.append(sample["comparison_video_configuration"])
+        resolution_pairs.add((sample["input_width"], sample["input_height"], sample["output_width"], sample["output_height"]))
+        samples.append(sample)
+
+    if metadata is None:
+        raise PerformanceLogError(f"{path}: run metadata was not found")
+    unique_video_configurations = []
+    for configuration in video_configurations:
+        if configuration not in unique_video_configurations:
+            unique_video_configurations.append(configuration)
+    elapsed_hours = (samples[-1]["elapsed_milliseconds"] - samples[0]["elapsed_milliseconds"]) / 3_600_000.0
+    metric_summary = _empty_metric_summary()
+    for column in ("process_cpu_percent", "resident_bytes", "active_fps"):
+        values = [float(row[column]) for row in samples]
+        metric_summary[column] = {"unit": METRIC_COLUMNS[column], **_series_summary(values)}
+    memory_growth = {
+        "resident": _linear_growth_per_hour(samples, "resident_bytes"),
+        "virtual": None,
+    }
+    counter_deltas = {column: _counter_delta(samples, column) for column in COUNTER_COLUMNS}
+    frame_drop_rates = {
+        "render_lag_percent": (
+            100.0 * counter_deltas["render_lagged_frames"] / counter_deltas["render_frames"]
+            if counter_deltas["render_frames"] and counter_deltas["render_lagged_frames"] is not None
+            else None
+        ),
+        "encode_skip_percent": None,
+        "stream_drop_percent": (
+            100.0 * counter_deltas["stream_dropped_frames"] / counter_deltas["stream_frames"]
+            if counter_deltas["stream_frames"] and counter_deltas["stream_dropped_frames"] is not None
+            else None
+        ),
+    }
+    return {
+        "path": str(path),
+        "log_kind": "obs_baseline",
+        "schema_version": BASELINE_SCHEMA_VERSION,
+        "metadata": metadata,
+        "obs_video_configuration_complete": False,
+        "obs_video_configuration_stable": len(unique_video_configurations) == 1,
+        "comparison_video_configuration_stable": len(unique_video_configurations) == 1,
+        "comparison_resolution_stable": len(resolution_pairs) == 1,
+        "input_resolution_basis": "operator_declared",
+        "comparison_video_configurations": unique_video_configurations,
+        "obs_video_configurations": unique_video_configurations,
+        "sample_count": len(samples),
+        "duration_hours": elapsed_hours,
+        "sample_interval_milliseconds": _series_summary([
+            float(b["elapsed_milliseconds"] - a["elapsed_milliseconds"])
+            for a, b in zip(samples, samples[1:])
+        ]),
+        "resolutions": [
+            {"input": [iw, ih], "output": [ow, oh]}
+            for iw, ih, ow, oh in sorted(resolution_pairs)
+        ],
+        "crop_resolutions": [],
+        "metrics": metric_summary,
+        "memory_growth_bytes_per_hour": memory_growth,
+        "counter_deltas": counter_deltas,
+        "frame_drop_rates_percent": frame_drop_rates,
+        "diagnostic_rates_percent": {"stagesurface_map_failure_percent": None},
+        "state_sample_counts": {},
+        "reason_sample_counts": {},
+        "comparable_metrics": (
+            "process_cpu_percent", "resident_bytes", "active_fps",
+            "render_lag_percent", "stream_drop_percent",
+            "resident_growth_bytes_per_hour",
+        ),
+    }
+
+
 def _number(value: str | None, field: str, row_number: int, *, integer: bool = False):
     if value is None or value == "":
         return None
@@ -249,6 +463,9 @@ def load_log(path: str | Path) -> dict:
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as stream:
             reader = csv.DictReader(stream)
+            if reader.fieldnames == BASELINE_COLUMNS:
+                baseline_rows = list(reader)
+                return _load_baseline_rows(path, baseline_rows)
             schema_version = next(
                 (version for version, columns in SUPPORTED_SCHEMAS.items() if reader.fieldnames == columns),
                 None,
@@ -267,6 +484,8 @@ def load_log(path: str | Path) -> dict:
     metadata = None
     recording_identity = None
     obs_video_configurations = []
+    comparison_resolution_pairs = set()
+    comparison_resolution_sample_count = 0
     previous_elapsed = -1
     for row_number, raw in enumerate(raw_rows, start=2):
         if None in raw or any(value is None for value in raw.values()):
@@ -298,12 +517,7 @@ def load_log(path: str | Path) -> dict:
         }
         if not sample["utc_timestamp"]:
             raise PerformanceLogError(f"{path}: row {row_number} has no UTC timestamp")
-        try:
-            utc_time = datetime.fromisoformat(sample["utc_timestamp"].replace("Z", "+00:00"))
-        except ValueError as error:
-            raise PerformanceLogError(f"{path}: row {row_number} has an invalid UTC timestamp") from error
-        if utc_time.utcoffset() is None or utc_time.utcoffset().total_seconds() != 0:
-            raise PerformanceLogError(f"{path}: row {row_number} timestamp is not UTC")
+        _utc_timestamp(sample["utc_timestamp"], path, row_number)
         for column in (
             "source_id",
             "session_id",
@@ -399,6 +613,15 @@ def load_log(path: str | Path) -> dict:
                     **{column: sample[column] for column in OBS_VIDEO_INTEGER_COLUMNS},
                 }
             )
+            comparison_resolution_pairs.add(
+                (
+                    sample["source_width"],
+                    sample["source_height"],
+                    sample["obs_canvas_output_width"],
+                    sample["obs_canvas_output_height"],
+                )
+            )
+            comparison_resolution_sample_count += 1
         else:
             if sample["obs_graphics_module"] or any(
                 sample[column] is not None for column in OBS_VIDEO_INTEGER_COLUMNS
@@ -481,14 +704,36 @@ def load_log(path: str | Path) -> dict:
         reason = f"{reason_code}_{REASON_NAMES.get(reason_code, 'unknown')}"
         reasons[reason] = reasons.get(reason, 0) + 1
 
+    comparison_video_configurations = []
+    for configuration in obs_video_configurations:
+        if configuration is None:
+            continue
+        common_configuration = {
+            "fps_num": configuration["obs_fps_num"],
+            "fps_den": configuration["obs_fps_den"],
+            "base_width": configuration["obs_base_width"],
+            "base_height": configuration["obs_base_height"],
+            "output_width": configuration["obs_canvas_output_width"],
+            "output_height": configuration["obs_canvas_output_height"],
+        }
+        if common_configuration not in comparison_video_configurations:
+            comparison_video_configurations.append(common_configuration)
     return {
         "path": str(path),
+        "log_kind": "faithfulframe",
         "schema_version": schema_version,
         "metadata": metadata,
         "obs_video_configuration_complete": all(
             configuration is not None for configuration in obs_video_configurations
         ),
         "obs_video_configuration_stable": obs_video_configuration_stable,
+        "comparison_video_configuration_stable": obs_video_configuration_stable,
+        "comparison_resolution_stable": (
+            len(comparison_resolution_pairs) == 1
+            and comparison_resolution_sample_count == len(samples)
+        ),
+        "input_resolution_basis": "source_snapshot",
+        "comparison_video_configurations": comparison_video_configurations,
         "obs_video_configurations": known_obs_video_configurations,
         "sample_count": len(samples),
         "duration_hours": elapsed_hours,
@@ -497,6 +742,10 @@ def load_log(path: str | Path) -> dict:
              for a, b in zip(samples, samples[1:])]
         ),
         "resolutions": [
+            {"input": [source_width, source_height], "output": [output_width, output_height]}
+            for source_width, source_height, output_width, output_height in sorted(comparison_resolution_pairs)
+        ],
+        "crop_resolutions": [
             {
                 "input": [source_width, source_height],
                 "output": [output_width, output_height],
@@ -513,6 +762,13 @@ def load_log(path: str | Path) -> dict:
         "diagnostic_rates_percent": diagnostic_rates,
         "state_sample_counts": states,
         "reason_sample_counts": reasons,
+        "comparable_metrics": (
+            "process_cpu_percent", "resident_bytes", "active_fps",
+            "render_lag_percent", "stream_drop_percent",
+            "resident_growth_bytes_per_hour",
+            "virtual_bytes", "virtual_growth_bytes_per_hour",
+            "encode_skip_percent", "stagesurface_map_failure_percent",
+        ),
     }
 
 
@@ -523,11 +779,19 @@ def compare_logs(reference: dict, candidate: dict) -> dict:
     for field in ("operating_system", "cpu_architecture", "obs_version", "hardware_and_workload_notes"):
         if reference["metadata"][field] != candidate["metadata"][field]:
             context_mismatches.append(field)
-    if not reference["obs_video_configuration_stable"] or not candidate["obs_video_configuration_stable"]:
+    if not reference["comparison_video_configuration_stable"] or not candidate["comparison_video_configuration_stable"]:
         raise PerformanceLogError(
-            "runs are not comparable; OBS video configuration must be available and stable for every sample"
+            "runs are not comparable; shared OBS video configuration must be available and stable for every sample"
         )
-    if reference["obs_video_configurations"] != candidate["obs_video_configurations"]:
+    if not reference["comparison_resolution_stable"] or not candidate["comparison_resolution_stable"]:
+        raise PerformanceLogError("runs are not comparable; source and OBS output resolutions must be stable")
+    if reference["comparison_video_configurations"] != candidate["comparison_video_configurations"]:
+        context_mismatches.append("obs_video_configuration")
+    elif (
+        reference["obs_video_configuration_complete"]
+        and candidate["obs_video_configuration_complete"]
+        and reference["obs_video_configurations"] != candidate["obs_video_configurations"]
+    ):
         context_mismatches.append("obs_video_configuration")
     if reference_resolution != candidate_resolution:
         context_mismatches.append("video_resolutions")
@@ -537,7 +801,12 @@ def compare_logs(reference: dict, candidate: dict) -> dict:
         )
 
     comparisons = {}
+    shared_metrics = set(reference.get("comparable_metrics", ())) & set(candidate.get("comparable_metrics", ()))
+    not_compared = []
     for metric in ("process_cpu_percent", "resident_bytes", "virtual_bytes", "active_fps"):
+        if metric not in shared_metrics:
+            not_compared.append(metric)
+            continue
         before = reference["metrics"][metric]
         after = candidate["metrics"][metric]
         reference_value = before["p95"] if metric != "resident_bytes" and metric != "virtual_bytes" else before["max"]
@@ -559,6 +828,10 @@ def compare_logs(reference: dict, candidate: dict) -> dict:
             "change_percent": change_percent,
         }
     for metric in ("resident", "virtual"):
+        metric_name = f"{metric}_growth_bytes_per_hour"
+        if metric_name not in shared_metrics:
+            not_compared.append(metric_name)
+            continue
         before = reference["memory_growth_bytes_per_hour"][metric]
         after = candidate["memory_growth_bytes_per_hour"][metric]
         comparisons[f"{metric}_growth_bytes_per_hour"] = {
@@ -567,6 +840,9 @@ def compare_logs(reference: dict, candidate: dict) -> dict:
             "difference": after - before if before is not None and after is not None else None,
         }
     for metric in ("render_lag_percent", "encode_skip_percent", "stream_drop_percent"):
+        if metric not in shared_metrics:
+            not_compared.append(metric)
+            continue
         before = reference["frame_drop_rates_percent"][metric]
         after = candidate["frame_drop_rates_percent"][metric]
         comparisons[metric] = {
@@ -575,6 +851,9 @@ def compare_logs(reference: dict, candidate: dict) -> dict:
             "difference": after - before if before is not None and after is not None else None,
         }
     for metric in ("stagesurface_map_failure_percent",):
+        if metric not in shared_metrics:
+            not_compared.append(metric)
+            continue
         before = reference["diagnostic_rates_percent"][metric]
         after = candidate["diagnostic_rates_percent"][metric]
         comparisons[metric] = {
@@ -583,13 +862,32 @@ def compare_logs(reference: dict, candidate: dict) -> dict:
             "difference": after - before if before is not None and after is not None else None,
         }
 
+    known_metrics = set(METRIC_COLUMNS) | {
+        "resident_growth_bytes_per_hour", "virtual_growth_bytes_per_hour",
+        "render_lag_percent", "encode_skip_percent", "stream_drop_percent",
+        "stagesurface_map_failure_percent",
+    }
+    not_compared.extend(known_metrics - shared_metrics)
+    not_compared_video_settings = []
+    if not reference["obs_video_configuration_complete"] or not candidate["obs_video_configuration_complete"]:
+        not_compared_video_settings = [
+            "graphics_module", "output_format", "colorspace", "range",
+            "scale_type", "gpu_conversion",
+        ]
+
     return {
+        "reference_log_kind": reference.get("log_kind", "faithfulframe"),
+        "candidate_log_kind": candidate.get("log_kind", "faithfulframe"),
+        "reference_input_resolution_basis": reference["input_resolution_basis"],
+        "candidate_input_resolution_basis": candidate["input_resolution_basis"],
         "reference_plugin_version": reference["metadata"]["plugin_version"],
         "candidate_plugin_version": candidate["metadata"]["plugin_version"],
         "matched_context": True,
         "reference_duration_hours": reference["duration_hours"],
         "candidate_duration_hours": candidate["duration_hours"],
         "measurements": comparisons,
+        "not_compared_metrics": sorted(set(not_compared)),
+        "not_compared_video_settings": not_compared_video_settings,
         "thresholds_applied": False,
     }
 

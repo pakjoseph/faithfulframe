@@ -1385,12 +1385,9 @@ void FTDock::updateState()
 					// Keep run metadata on the first row only to bound the spool size.
 					if (performanceSampleCount == 0) {
 						sample.run_metadata_present = true;
-						const QString product_version = QSysInfo::productVersion();
-						const QString operating_system =
-							product_version.isEmpty()
-								? QSysInfo::prettyProductName()
-								: QString("%1 (%2)").arg(QSysInfo::prettyProductName(),
-											 product_version);
+						// Match OBS WebSocket GetVersion.platformDescription so a read-only
+						// upstream baseline can be compared without OS-label translation.
+						const QString operating_system = QSysInfo::prettyProductName();
 						sample.operating_system = operating_system.toStdString();
 						sample.cpu_architecture =
 							QSysInfo::currentCpuArchitecture().toStdString();
