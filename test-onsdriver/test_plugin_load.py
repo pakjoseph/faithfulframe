@@ -365,6 +365,10 @@ class PluginLoadTest(obstest.OBSTest):
                 other_camera_image,
                 'A competing safe adapter must not acquire the other camera',
             )
+            retained_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image == bound_image
+            )
+            self.assertEqual(retained_image, bound_image)
 
             client.send('RemoveInput', {'inputName': camera_name})
             self._wait_for_input_presence(client, camera_name, False)
