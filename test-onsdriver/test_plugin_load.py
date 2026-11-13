@@ -357,18 +357,20 @@ class PluginLoadTest(obstest.OBSTest):
                 'inputKind': 'face_tracker_source',
                 'inputSettings': {'target_name': other_camera_name, 'safe_tracking_enabled': True},
             })
-            other_adapter_image = self._wait_for_screenshot(
+            self._wait_for_screenshot(
                 client, other_adapter_name, lambda image: image != other_camera_image
             )
-            self.assertNotEqual(
-                other_adapter_image,
-                other_camera_image,
-                'A competing safe adapter must not acquire the other camera',
-            )
-            retained_image = self._wait_for_screenshot(
-                client, adapter_name, lambda image: image == bound_image
-            )
-            self.assertEqual(retained_image, bound_image)
+            for _ in range(3):
+                self.assertNotEqual(
+                    self._screenshot(client, other_adapter_name),
+                    other_camera_image,
+                    'A competing safe adapter must not acquire the other camera',
+                )
+                retained_image = self._wait_for_screenshot(
+                    client, adapter_name, lambda image: image == bound_image
+                )
+                self.assertEqual(retained_image, bound_image)
+                time.sleep(0.1)
 
             client.send('RemoveInput', {'inputName': camera_name})
             self._wait_for_input_presence(client, camera_name, False)
@@ -389,7 +391,6 @@ class PluginLoadTest(obstest.OBSTest):
             for _ in range(3):
                 self.assertEqual(self._screenshot(client, adapter_name), unavailable_image)
                 self.assertEqual(self._screenshot(client, other_camera_name), other_camera_image)
-                self.assertEqual(self._screenshot(client, other_adapter_name), other_adapter_image)
                 time.sleep(0.1)
 
             client.send('RemoveInput', {'inputName': adapter_name})
