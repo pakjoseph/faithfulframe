@@ -127,6 +127,7 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         self.assertEqual(report["schema_version"], 2)
         self.assertEqual(report["metrics"]["last_render_thread_tracker_work_microseconds"]["count"], 0)
         self.assertEqual(report["metrics"]["last_stagesurface_map_microseconds"]["count"], 0)
+        self.assertIsNone(report["diagnostic_rates_percent"]["stagesurface_map_failure_percent"])
 
     def test_loads_schema_v3_without_stagesurface_metrics(self):
         row = fixture_row(0, 10.0, 1_000_000, 1000, 5, "1.0")
@@ -143,6 +144,7 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         self.assertEqual(report["schema_version"], 3)
         self.assertEqual(report["metrics"]["last_render_thread_tracker_work_microseconds"]["count"], 1)
         self.assertEqual(report["metrics"]["last_stagesurface_map_microseconds"]["count"], 0)
+        self.assertIsNone(report["diagnostic_rates_percent"]["stagesurface_map_failure_percent"])
 
     def test_summarizes_metrics_and_counter_deltas(self):
         path = self.write_log(
@@ -165,6 +167,7 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         self.assertEqual(report["metrics"]["max_stagesurface_map_microseconds"]["p95"], 1200.0)
         self.assertEqual(report["counter_deltas"]["stagesurface_map_count"], 3600000)
         self.assertEqual(report["counter_deltas"]["stagesurface_map_failure_count"], 360)
+        self.assertAlmostEqual(report["diagnostic_rates_percent"]["stagesurface_map_failure_percent"], 0.01)
         self.assertEqual(report["counter_deltas"]["render_frames"], 1000)
         self.assertAlmostEqual(report["frame_drop_rates_percent"]["render_lag_percent"], 1.0)
         self.assertAlmostEqual(report["memory_growth_bytes_per_hour"]["resident"], 100_000)
@@ -191,6 +194,7 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
 
         self.assertTrue(comparison["matched_context"])
         self.assertFalse(comparison["thresholds_applied"])
+        self.assertEqual(comparison["measurements"]["stagesurface_map_failure_percent"]["difference"], 0.0)
         self.assertAlmostEqual(
             comparison["measurements"]["process_cpu_percent"]["change_percent"],
             16.666666666666664,
@@ -324,6 +328,19 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
 
         self.assertIsNone(report["counter_deltas"]["render_frames"])
         self.assertIsNone(report["frame_drop_rates_percent"]["render_lag_percent"])
+
+    def test_inconsistent_stage_map_failure_counters_do_not_report_a_rate(self):
+        first = fixture_row(0, 10.0, 1_000_000, 1000, 5, "1.0")
+        second = fixture_row(1000, 12.0, 1_100_000, 2000, 15, "1.0")
+        second["stagesurface_map_count"] = "101"
+        second["stagesurface_map_failure_count"] = "2"
+        path = self.write_log("inconsistent-map-failures.csv", [first, second])
+
+        report = analyzer.load_log(path)
+
+        self.assertEqual(report["counter_deltas"]["stagesurface_map_count"], 1)
+        self.assertEqual(report["counter_deltas"]["stagesurface_map_failure_count"], 2)
+        self.assertIsNone(report["diagnostic_rates_percent"]["stagesurface_map_failure_percent"])
 
 
 if __name__ == "__main__":

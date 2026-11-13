@@ -452,6 +452,13 @@ def load_log(path: str | Path) -> dict:
     encode_skip_delta = counter_deltas["encode_skipped_frames"]
     stream_delta = counter_deltas["stream_frames"]
     stream_drop_delta = counter_deltas["stream_dropped_frames"]
+    stage_map_delta = counter_deltas["stagesurface_map_count"]
+    stage_map_failure_delta = counter_deltas["stagesurface_map_failure_count"]
+    stage_map_failure_percent = (
+        100.0 * stage_map_failure_delta / stage_map_delta
+        if stage_map_delta and stage_map_failure_delta is not None and stage_map_failure_delta <= stage_map_delta
+        else None
+    )
     rates = {
         "render_lag_percent": (100.0 * render_lag_delta / render_delta)
         if render_delta and render_lag_delta is not None
@@ -463,6 +470,7 @@ def load_log(path: str | Path) -> dict:
         if stream_delta and stream_drop_delta is not None
         else None,
     }
+    diagnostic_rates = {"stagesurface_map_failure_percent": stage_map_failure_percent}
     states = {}
     reasons = {}
     for row in samples:
@@ -502,6 +510,7 @@ def load_log(path: str | Path) -> dict:
         },
         "counter_deltas": counter_deltas,
         "frame_drop_rates_percent": rates,
+        "diagnostic_rates_percent": diagnostic_rates,
         "state_sample_counts": states,
         "reason_sample_counts": reasons,
     }
@@ -560,6 +569,14 @@ def compare_logs(reference: dict, candidate: dict) -> dict:
     for metric in ("render_lag_percent", "encode_skip_percent", "stream_drop_percent"):
         before = reference["frame_drop_rates_percent"][metric]
         after = candidate["frame_drop_rates_percent"][metric]
+        comparisons[metric] = {
+            "reference": before,
+            "candidate": after,
+            "difference": after - before if before is not None and after is not None else None,
+        }
+    for metric in ("stagesurface_map_failure_percent",):
+        before = reference["diagnostic_rates_percent"][metric]
+        after = candidate["diagnostic_rates_percent"][metric]
         comparisons[metric] = {
             "reference": before,
             "candidate": after,
