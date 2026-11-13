@@ -1,162 +1,39 @@
 #include <obs-module.h>
 #include <obs.hpp>
+#include <atomic>
+#include <memory>
+#include <new>
+#include <string>
+#include <utility>
 #include "plugin-macros.generated.h"
 #include "helper.hpp"
 #include "faithfulframe-source-identity.hpp"
 
 #define MAX_ERROR 2
 
-struct face_tracker_monitor
+struct face_tracker_monitor_binding
 {
-	obs_source_t *context;
+	std::string source_uuid;
+	std::string filter_uuid;
 
-	// properties
-	char *source_name;
-	char *filter_name;
-	char *source_uuid;
-	char *filter_uuid;
-	bool notrack;
-	bool nosource;
-	bool landmark_only;
+	obs_weak_source_t *source_ref = nullptr;
+	obs_weak_source_t *filter_ref = nullptr;
 
-	obs_weak_source_t *source_ref;
-	obs_weak_source_t *filter_ref;
-
-	int n_error;
+	~face_tracker_monitor_binding()
+	{
+		obs_weak_source_release(filter_ref);
+		obs_weak_source_release(source_ref);
+	}
 };
 
-static const char *ftmon_get_name(void *unused)
+struct face_tracker_monitor
 {
-	UNUSED_PARAMETER(unused);
-	return obs_module_text("Face Tracker Monitor");
-}
-
-static obs_source_t *get_source(struct face_tracker_monitor *s);
-static obs_source_t *get_filter_by_uuid(struct face_tracker_monitor *s);
-
-static void *ftmon_create(obs_data_t *settings, obs_source_t *context)
-{
-	auto *s = (struct face_tracker_monitor *)bzalloc(sizeof(struct face_tracker_monitor));
-	s->context = context;
-
-	obs_source_update(context, settings);
-
-	return s;
-}
-
-static void ftmon_destroy(void *data)
-{
-	auto *s = (struct face_tracker_monitor *)data;
-
-	bfree(s->source_name);
-	bfree(s->filter_name);
-	bfree(s->source_uuid);
-	bfree(s->filter_uuid);
-	obs_weak_source_release(s->filter_ref);
-	obs_weak_source_release(s->source_ref);
-
-	bfree(s);
-}
-
-static void ftmon_update(void *data, obs_data_t *settings)
-{
-	auto *s = (struct face_tracker_monitor *)data;
-
-	const char *source_name = obs_data_get_string(settings, "source_name");
-	const char *filter_name = obs_data_get_string(settings, "filter_name");
-	const char *source_uuid = obs_data_get_string(settings, "source_uuid");
-	const char *filter_uuid = obs_data_get_string(settings, "filter_uuid");
-	const char *requested_source_uuid = source_uuid ? source_uuid : "";
-	const char *requested_filter_uuid = filter_uuid ? filter_uuid : "";
-	const bool source_binding_changed = s->source_uuid ? strcmp(requested_source_uuid, s->source_uuid) != 0
-							   : requested_source_uuid[0] != '\0';
-	const bool filter_binding_changed = s->filter_uuid ? strcmp(requested_filter_uuid, s->filter_uuid) != 0
-							   : requested_filter_uuid[0] != '\0';
-	if (source_name && (!s->source_name || strcmp(source_name, s->source_name))) {
-		bfree(s->source_name);
-		s->source_name = bstrdup(source_name);
-		s->n_error = 0;
-	}
-
-	if (!filter_name || !*filter_name) {
-		bfree(s->filter_name);
-		s->filter_name = NULL;
-		s->n_error = 0;
-	} else if (!s->filter_name || strcmp(filter_name, s->filter_name)) {
-		bfree(s->filter_name);
-		s->filter_name = bstrdup(filter_name);
-		s->n_error = 0;
-	}
-
-	if (source_binding_changed) {
-		bfree(s->source_uuid);
-		s->source_uuid = requested_source_uuid[0] ? bstrdup(requested_source_uuid) : NULL;
-		obs_weak_source_release(s->source_ref);
-		s->source_ref = NULL;
-		obs_weak_source_release(s->filter_ref);
-		s->filter_ref = NULL;
-		s->n_error = 0;
-	}
-
-	if (filter_binding_changed) {
-		bfree(s->filter_uuid);
-		s->filter_uuid = requested_filter_uuid[0] ? bstrdup(requested_filter_uuid) : NULL;
-		obs_weak_source_release(s->filter_ref);
-		s->filter_ref = NULL;
-		s->n_error = 0;
-	}
-
-	if (source_binding_changed && s->source_uuid) {
-		obs_source_t *source = obs_get_source_by_uuid(s->source_uuid);
-		if (source) {
-			s->source_ref = obs_source_get_weak_source(source);
-			obs_source_release(source);
-		}
-	}
-
-	if ((source_binding_changed || filter_binding_changed) && s->filter_uuid) {
-		obs_source_t *filter = get_filter_by_uuid(s);
-		if (filter) {
-			s->filter_ref = obs_source_get_weak_source(filter);
-			obs_source_release(filter);
-		}
-	}
-
-	s->notrack = obs_data_get_bool(settings, "notrack");
-
-	s->nosource = obs_data_get_bool(settings, "nosource");
-
-	s->landmark_only = obs_data_get_bool(settings, "landmark_only");
-}
-
-static obs_properties_t *ftmon_properties(void *)
-{
-	obs_properties_t *props;
-	props = obs_properties_create();
-
-	// TODO: use obs_properties_add_list
-	obs_properties_add_text(props, "source_name", obs_module_text("Source name"), OBS_TEXT_DEFAULT);
-	obs_properties_add_text(props, "filter_name", obs_module_text("Filter name"), OBS_TEXT_DEFAULT);
-	obs_properties_add_text(props, "source_uuid", obs_module_text("Source UUID"), OBS_TEXT_DEFAULT);
-	obs_properties_add_text(props, "filter_uuid", obs_module_text("Filter UUID"), OBS_TEXT_DEFAULT);
-
-	obs_properties_add_bool(props, "notrack", "Display original source");
-
-	obs_properties_add_bool(props, "nosource", "Overlay only");
-
-	obs_properties_add_bool(props, "landmark_only", "Display landmark information only");
-
-	return props;
-}
-
-static void ftmon_get_defaults(obs_data_t *) {}
-
-static obs_source_t *get_source(struct face_tracker_monitor *s)
-{
-	if (!s->source_ref || !s->source_uuid || !*s->source_uuid)
-		return NULL;
-	return obs_weak_source_get_source(s->source_ref);
-}
+	std::shared_ptr<const face_tracker_monitor_binding> binding;
+	std::atomic<bool> notrack{false};
+	std::atomic<bool> nosource{false};
+	std::atomic<bool> landmark_only{false};
+	std::atomic<int> n_error{0};
+};
 
 struct filter_uuid_search
 {
@@ -171,27 +48,106 @@ static void find_filter_by_uuid(obs_source_t *, obs_source_t *filter, void *para
 		lookup->match = obs_source_get_ref(filter);
 }
 
-static obs_source_t *get_filter(struct face_tracker_monitor *s)
+static obs_source_t *resolve_filter_by_uuid(obs_source_t *source, const char *uuid)
 {
-	if (!s->filter_ref || !s->filter_uuid || !*s->filter_uuid)
-		return NULL;
-	obs_source_t *source = get_source(s);
+	if (!source || !uuid || !*uuid)
+		return nullptr;
+	filter_uuid_search lookup{uuid, nullptr};
+	obs_source_enum_filters(source, find_filter_by_uuid, &lookup);
+	return lookup.match;
+}
+
+static obs_source_t *get_source(const face_tracker_monitor_binding &binding)
+{
+	if (!binding.source_ref || binding.source_uuid.empty())
+		return nullptr;
+	obs_source_t *source = obs_weak_source_get_source(binding.source_ref);
 	if (!source)
-		return NULL;
+		return nullptr;
+	if (!faithfulframe::source_identity_matches(binding.source_uuid.c_str(), obs_source_get_uuid(source))) {
+		obs_source_release(source);
+		return nullptr;
+	}
+	return source;
+}
+
+static obs_source_t *get_filter(const face_tracker_monitor_binding &binding)
+{
+	if (!binding.filter_ref || binding.filter_uuid.empty())
+		return nullptr;
+	obs_source_t *source = get_source(binding);
+	if (!source)
+		return nullptr;
+	obs_source_t *filter = obs_weak_source_get_source(binding.filter_ref);
+	if (!filter ||
+	    !faithfulframe::source_identity_matches(binding.filter_uuid.c_str(), obs_source_get_uuid(filter))) {
+		if (filter)
+			obs_source_release(filter);
+		obs_source_release(source);
+		return nullptr;
+	}
 	obs_source_release(source);
-	return obs_weak_source_get_source(s->filter_ref);
+	return filter;
 }
 
-static obs_source_t *get_target(struct face_tracker_monitor *s)
+static obs_source_t *get_target(const face_tracker_monitor_binding &binding)
 {
-	if (!s->filter_uuid || !*s->filter_uuid)
-		return get_source(s);
-	return get_filter(s);
+	return binding.filter_uuid.empty() ? get_source(binding) : get_filter(binding);
 }
 
-static bool get_safe_output_dimensions(struct face_tracker_monitor *s, uint32_t &width, uint32_t &height)
+static std::shared_ptr<const face_tracker_monitor_binding>
+make_binding(const char *source_uuid, const char *filter_uuid,
+	     const std::shared_ptr<const face_tracker_monitor_binding> &previous)
 {
-	obs_source_t *target = get_target(s);
+	const std::string requested_source = source_uuid ? source_uuid : "";
+	const std::string requested_filter = filter_uuid ? filter_uuid : "";
+	if (previous && previous->source_uuid == requested_source && previous->filter_uuid == requested_filter)
+		return previous;
+
+	auto binding = std::make_shared<face_tracker_monitor_binding>();
+	binding->source_uuid = requested_source;
+	binding->filter_uuid = requested_filter;
+	const bool same_source = previous && previous->source_uuid == requested_source;
+	if (!requested_source.empty()) {
+		if (same_source) {
+			if (previous->source_ref) {
+				binding->source_ref = previous->source_ref;
+				obs_weak_source_addref(binding->source_ref);
+			}
+		} else {
+			obs_source_t *source = obs_get_source_by_uuid(requested_source.c_str());
+			if (source) {
+				binding->source_ref = obs_source_get_weak_source(source);
+				obs_source_release(source);
+			}
+		}
+	}
+
+	if (!requested_filter.empty() && binding->source_ref) {
+		obs_source_t *source = obs_weak_source_get_source(binding->source_ref);
+		if (source) {
+			if (faithfulframe::source_identity_matches(requested_source.c_str(),
+								   obs_source_get_uuid(source))) {
+				obs_source_t *filter = resolve_filter_by_uuid(source, requested_filter.c_str());
+				if (filter) {
+					binding->filter_ref = obs_source_get_weak_source(filter);
+					obs_source_release(filter);
+				}
+			}
+			obs_source_release(source);
+		}
+	}
+	return binding;
+}
+
+static std::shared_ptr<const face_tracker_monitor_binding> load_binding(const face_tracker_monitor *s)
+{
+	return std::atomic_load_explicit(&s->binding, std::memory_order_acquire);
+}
+
+static bool get_safe_output_dimensions(const face_tracker_monitor_binding &binding, uint32_t &width, uint32_t &height)
+{
+	obs_source_t *target = get_target(binding);
 	if (!target)
 		return false;
 
@@ -220,169 +176,236 @@ static bool get_safe_output_dimensions(struct face_tracker_monitor *s, uint32_t 
 	return true;
 }
 
-static inline bool test_weak_source_uuid(obs_weak_source_t *ref, const char *uuid)
+static const char *ftmon_get_name(void *unused)
 {
-	if (!ref || !uuid || !*uuid)
-		return false;
-	obs_source_t *src = obs_weak_source_get_source(ref);
-	if (!src)
-		return false;
-
-	const char *actual_uuid = obs_source_get_uuid(src);
-	bool ret = faithfulframe::source_identity_matches(uuid, actual_uuid);
-	obs_source_release(src);
-	return ret;
+	UNUSED_PARAMETER(unused);
+	return obs_module_text("Face Tracker Monitor");
 }
 
-static inline void tick_source(obs_weak_source_t *&ref, const char *uuid)
+static void *ftmon_create(obs_data_t *settings, obs_source_t *context)
 {
-	if (!uuid || !*uuid)
-		return;
+	auto *s = new (std::nothrow) face_tracker_monitor();
+	if (!s)
+		return nullptr;
+	obs_source_update(context, settings);
+	return s;
+}
 
-	if (!test_weak_source_uuid(ref, uuid)) {
-		obs_weak_source_release(ref);
-		ref = NULL;
+static void ftmon_destroy(void *data)
+{
+	auto *s = (struct face_tracker_monitor *)data;
+	delete s;
+}
+
+static void ftmon_update(void *data, obs_data_t *settings)
+{
+	auto *s = (struct face_tracker_monitor *)data;
+	const auto previous = load_binding(s);
+	const char *source_uuid = obs_data_has_user_value(settings, "source_uuid")
+					  ? obs_data_get_string(settings, "source_uuid")
+					  : nullptr;
+	const char *filter_uuid = obs_data_has_user_value(settings, "filter_uuid")
+					  ? obs_data_get_string(settings, "filter_uuid")
+					  : nullptr;
+	const std::string requested_source = source_uuid ? source_uuid : (previous ? previous->source_uuid : "");
+	const std::string requested_filter = filter_uuid ? filter_uuid : (previous ? previous->filter_uuid : "");
+	const bool binding_changed = !previous || previous->source_uuid != requested_source ||
+				     previous->filter_uuid != requested_filter;
+	try {
+		auto next = make_binding(requested_source.c_str(), requested_filter.c_str(), previous);
+		std::atomic_store_explicit(&s->binding, std::move(next), std::memory_order_release);
+	} catch (...) {
+		std::atomic_store_explicit(&s->binding, std::shared_ptr<const face_tracker_monitor_binding>(),
+					   std::memory_order_release);
+		blog(LOG_ERROR, "FaithfulFrame preview monitor could not publish its source binding");
 	}
+	if (binding_changed)
+		s->n_error.store(0, std::memory_order_release);
+	if (obs_data_has_user_value(settings, "notrack"))
+		s->notrack.store(obs_data_get_bool(settings, "notrack"), std::memory_order_release);
+	if (obs_data_has_user_value(settings, "nosource"))
+		s->nosource.store(obs_data_get_bool(settings, "nosource"), std::memory_order_release);
+	if (obs_data_has_user_value(settings, "landmark_only"))
+		s->landmark_only.store(obs_data_get_bool(settings, "landmark_only"), std::memory_order_release);
 }
 
-static obs_source_t *get_filter_by_uuid(struct face_tracker_monitor *s)
+static obs_properties_t *ftmon_properties(void *)
 {
-	obs_source_t *src = get_source(s);
-	if (!src)
-		return NULL;
-	filter_uuid_search lookup{s->filter_uuid, nullptr};
-	obs_source_enum_filters(src, find_filter_by_uuid, &lookup);
-	obs_source_release(src);
-	return lookup.match;
+	obs_properties_t *props;
+	props = obs_properties_create();
+
+	// TODO: use obs_properties_add_list
+	obs_properties_add_text(props, "source_name", obs_module_text("Source name"), OBS_TEXT_DEFAULT);
+	obs_properties_add_text(props, "filter_name", obs_module_text("Filter name"), OBS_TEXT_DEFAULT);
+	obs_properties_add_text(props, "source_uuid", obs_module_text("Source UUID"), OBS_TEXT_DEFAULT);
+	obs_properties_add_text(props, "filter_uuid", obs_module_text("Filter UUID"), OBS_TEXT_DEFAULT);
+
+	obs_properties_add_bool(props, "notrack", "Display original source");
+
+	obs_properties_add_bool(props, "nosource", "Overlay only");
+
+	obs_properties_add_bool(props, "landmark_only", "Display landmark information only");
+
+	return props;
 }
+
+static void ftmon_get_defaults(obs_data_t *) {}
 
 static void ftmon_tick(void *data, float)
 {
 	auto *s = (struct face_tracker_monitor *)data;
-
-	bool source_specified = s->source_uuid && *s->source_uuid;
-	bool filter_specified = s->filter_uuid && *s->filter_uuid;
-
-	if (source_specified)
-		tick_source(s->source_ref, s->source_uuid);
-	if (filter_specified)
-		tick_source(s->filter_ref, s->filter_uuid);
-	if (source_specified && !s->source_ref && s->filter_ref) {
-		obs_weak_source_release(s->filter_ref);
-		s->filter_ref = NULL;
+	const auto binding = load_binding(s);
+	const bool source_specified = binding && !binding->source_uuid.empty();
+	const bool filter_specified = binding && !binding->filter_uuid.empty();
+	bool source_available = false;
+	if (source_specified) {
+		obs_source_t *source = get_source(*binding);
+		source_available = source != nullptr;
+		if (source)
+			obs_source_release(source);
+	}
+	bool filter_available = false;
+	if (filter_specified && source_available) {
+		obs_source_t *filter = get_filter(*binding);
+		filter_available = filter != nullptr;
+		if (filter)
+			obs_source_release(filter);
 	}
 
-	if (source_specified && !s->source_ref) {
-		if (s->n_error < MAX_ERROR) {
+	if (source_specified && !source_available) {
+		const int errors = s->n_error.fetch_add(1, std::memory_order_acq_rel);
+		if (errors < MAX_ERROR)
 			blog(LOG_INFO, "failed to resolve the configured source");
-			s->n_error++;
-		}
-	} else if (filter_specified && !s->filter_ref) {
-		if (s->n_error < MAX_ERROR) {
+	} else if (filter_specified && !filter_available) {
+		const int errors = s->n_error.fetch_add(1, std::memory_order_acq_rel);
+		if (errors < MAX_ERROR)
 			blog(LOG_INFO, "failed to resolve the configured filter");
-			s->n_error++;
-		}
 	} else {
-		s->n_error = 0;
+		s->n_error.store(0, std::memory_order_release);
 	}
 }
 
 static uint32_t ftmon_get_width(void *data)
 {
 	auto *s = (struct face_tracker_monitor *)data;
+	const auto binding = load_binding(s);
+	if (!binding)
+		return 0;
 
-	if (s->notrack) {
-		OBSSource target(get_target(s));
-		obs_source_release(target);
-
-		proc_handler_t *ph = obs_source_get_proc_handler(target);
-		if (!ph)
+	if (s->notrack.load(std::memory_order_acquire)) {
+		obs_source_t *target = get_target(*binding);
+		if (!target)
 			return 0;
+		proc_handler_t *ph = obs_source_get_proc_handler(target);
+		if (!ph) {
+			obs_source_release(target);
+			return 0;
+		}
 
 		CALLDATA_FIXED_DECL(cd, 128);
 		if (proc_handler_call(ph, "get_target_size", &cd)) {
 			long long ret;
-			if (calldata_get_int(&cd, "width", &ret))
+			if (calldata_get_int(&cd, "width", &ret)) {
+				obs_source_release(target);
 				return (uint32_t)ret;
+			}
 		}
+		obs_source_release(target);
 	}
 
-	if (!s->notrack) {
+	if (!s->notrack.load(std::memory_order_acquire)) {
 		uint32_t width = 0;
 		uint32_t height = 0;
-		if (get_safe_output_dimensions(s, width, height))
+		if (get_safe_output_dimensions(*binding, width, height))
 			return width;
 	}
 
-	OBSSource source(get_source(s));
-	obs_source_release(source);
+	obs_source_t *source = get_source(*binding);
 	if (!source)
 		return 0;
-	return obs_source_get_width(source);
+	const uint32_t width = obs_source_get_width(source);
+	obs_source_release(source);
+	return width;
 }
 
 static uint32_t ftmon_get_height(void *data)
 {
 	auto *s = (struct face_tracker_monitor *)data;
+	const auto binding = load_binding(s);
+	if (!binding)
+		return 0;
 
-	if (s->notrack) {
-		OBSSource target(get_target(s));
-		obs_source_release(target);
-
-		proc_handler_t *ph = obs_source_get_proc_handler(target);
-		if (!ph)
+	if (s->notrack.load(std::memory_order_acquire)) {
+		obs_source_t *target = get_target(*binding);
+		if (!target)
 			return 0;
+		proc_handler_t *ph = obs_source_get_proc_handler(target);
+		if (!ph) {
+			obs_source_release(target);
+			return 0;
+		}
 
 		CALLDATA_FIXED_DECL(cd, 128);
 		if (proc_handler_call(ph, "get_target_size", &cd)) {
 			long long ret;
-			if (calldata_get_int(&cd, "height", &ret))
+			if (calldata_get_int(&cd, "height", &ret)) {
+				obs_source_release(target);
 				return (uint32_t)ret;
+			}
 		}
+		obs_source_release(target);
 	}
 
-	if (!s->notrack) {
+	if (!s->notrack.load(std::memory_order_acquire)) {
 		uint32_t width = 0;
 		uint32_t height = 0;
-		if (get_safe_output_dimensions(s, width, height))
+		if (get_safe_output_dimensions(*binding, width, height))
 			return height;
 	}
 
-	OBSSource source(get_source(s));
-	obs_source_release(source);
+	obs_source_t *source = get_source(*binding);
 	if (!source)
 		return 0;
-	return obs_source_get_height(source);
+	const uint32_t height = obs_source_get_height(source);
+	obs_source_release(source);
+	return height;
 }
 
 static void ftmon_video_render(void *data, gs_effect_t *)
 {
 	auto *s = (struct face_tracker_monitor *)data;
+	const auto binding = load_binding(s);
+	if (!binding)
+		return;
 
-	OBSSource target(get_target(s));
-	obs_source_release(target);
+	obs_source_t *target = get_target(*binding);
 	if (!target)
 		return;
 
 	proc_handler_t *ph = obs_source_get_proc_handler(target);
-	if (!ph)
+	if (!ph) {
+		obs_source_release(target);
 		return;
+	}
 
 	CALLDATA_FIXED_DECL(cd, 128);
-	calldata_set_bool(&cd, "notrack", s->notrack);
+	calldata_set_bool(&cd, "notrack", s->notrack.load(std::memory_order_acquire));
 
-	if (!s->nosource) {
+	if (!s->nosource.load(std::memory_order_acquire)) {
 		if (!proc_handler_call(ph, "render_frame", &cd)) {
-			OBSSource src(get_source(s));
-			obs_source_release(src);
-			obs_source_video_render(src);
+			obs_source_t *source = get_source(*binding);
+			if (source) {
+				obs_source_video_render(source);
+				obs_source_release(source);
+			}
 		}
 	}
 
-	if (s->landmark_only)
+	if (s->landmark_only.load(std::memory_order_acquire))
 		calldata_set_bool(&cd, "landmark_only", true);
 
 	proc_handler_call(ph, "render_info", &cd);
+	obs_source_release(target);
 }
 
 extern "C" void register_face_tracker_monitor(bool hide_monitor)
