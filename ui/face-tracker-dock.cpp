@@ -2058,7 +2058,7 @@ void ft_docks_init()
 	dock_save_callback_registered = true;
 
 	new_dock_action = static_cast<QAction *>(
-		obs_frontend_add_tools_menu_qaction(obs_module_text("New Face Tracker Dock...")));
+		obs_frontend_add_tools_menu_qaction(obs_module_text("New FaithfulFrame Dock...")));
 	QAction *action = new_dock_action.data();
 	blog(LOG_INFO, "ft_docks_init: Adding face tracker dock menu action=%p", action);
 	if (!action) {

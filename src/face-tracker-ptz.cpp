@@ -70,7 +70,7 @@ public:
 static const char *ftptz_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return obs_module_text("Face Tracker PTZ");
+	return obs_module_text("FaithfulFrame PTZ");
 }
 
 struct ptz_backend_type_s
@@ -667,15 +667,15 @@ static void register_hotkeys(struct face_tracker_ptz *s, obs_source_t *target)
 
 	if (s->hotkey_pause == OBS_INVALID_HOTKEY_PAIR_ID) {
 		s->hotkey_pause = obs_hotkey_pair_register_source(target, "face-tracker.pause",
-								  obs_module_text("Pause Face Tracker PTZ"),
+								  obs_module_text("Pause FaithfulFrame PTZ"),
 								  "face-tracker.pause_resume",
-								  obs_module_text("Resume Face Tracker PTZ"),
+								  obs_module_text("Resume FaithfulFrame PTZ"),
 								  hotkey_cb_pause, hotkey_cb_pause_resume, s, s);
 	}
 
 	if (s->hotkey_reset == OBS_INVALID_HOTKEY_ID) {
 		s->hotkey_reset = obs_hotkey_register_source(
-			target, "face-tracker.reset", obs_module_text("Reset Face Tracker PTZ"), hotkey_cb_reset, s);
+			target, "face-tracker.reset", obs_module_text("Reset FaithfulFrame PTZ"), hotkey_cb_reset, s);
 	}
 }
 

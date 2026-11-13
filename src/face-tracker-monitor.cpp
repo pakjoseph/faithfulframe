@@ -179,7 +179,7 @@ static bool get_safe_output_dimensions(const face_tracker_monitor_binding &bindi
 static const char *ftmon_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return obs_module_text("Face Tracker Monitor");
+	return obs_module_text("FaithfulFrame Monitor");
 }
 
 static void *ftmon_create(obs_data_t *settings, obs_source_t *context)

@@ -52,7 +52,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
 endif()
 
 project(face-tracker VERSION 0.9.1)
-set(PLUGIN_URL "https://obsproject.com/forum/resources/face-tracker.1294/")
+set(PLUGIN_URL "https://github.com/pakjoseph/faithfulframe")
 set(PLUGIN_AUTHOR "Norihiro Kamae")
 set(MACOS_BUNDLEID "net.nagater.obs-face-tracker")
 set(MACOS_PACKAGE_UUID   "A2EB2F73-9828-40C4-A307-F47282BB8D3F")
