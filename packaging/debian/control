@@ -1,7 +1,7 @@
 Source: face-tracker-plugin-for-obs
 Section: video
 Priority: optional
-Maintainer: Norihiro Kamae <norihiro-ppa-plugins-for-obs-studio@nagater.net>
+Maintainer: FaithfulFrame contributors <joepak@bu.edu>
 Rules-Requires-Root: no
 Build-Depends:
  debhelper-compat (= 13),
@@ -10,12 +10,13 @@ Build-Depends:
  libsimde-dev,
  qt6-base-dev, qt6-base-private-dev, libqt6svg6-dev, qt6-wayland,
  libxcb1-dev, libx11-xcb-dev, libwayland-dev, libglvnd-dev,
- libopenblas-dev libopenblas0
+ libopenblas-dev, libopenblas0
 Standards-Version: 4.6.0
-Homepage: https://github.com/norihiro/obs-face-tracker
+Homepage: https://github.com/pakjoseph/faithfulframe
 
 Package: face-tracker-plugin-for-obs
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: template plugin plugin for OBS Studio
+Description: FaithfulFrame face tracking plugin for OBS Studio
+ Digital face tracking and pan/zoom for a selected OBS camera source.
 

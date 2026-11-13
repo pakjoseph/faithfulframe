@@ -2,4 +2,4 @@ face-tracker-plugin-for-obs (%VERSION%-%RELEASE%~%DISTRIBUTION%) %DISTRIBUTION%;
 
   * Initial release
 
- -- Norihiro Kamae (PPA) <norihiro-ppa-plugins-for-obs-studio@nagater.net>  %DATE%
+ -- FaithfulFrame contributors <joepak@bu.edu>  %DATE%

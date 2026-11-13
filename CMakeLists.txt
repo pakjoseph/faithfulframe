@@ -58,7 +58,7 @@ set(MACOS_BUNDLEID "net.nagater.obs-face-tracker")
 set(MACOS_PACKAGE_UUID   "A2EB2F73-9828-40C4-A307-F47282BB8D3F")
 set(MACOS_INSTALLER_UUID "652CF739-5A6F-4DAC-9611-B068FAC15BF3")
 set(WIN_INSTALLER_UUID   "723828DB-04B8-41F7-9F7A-AF692B2CDF3D")
-set(LINUX_MAINTAINER_EMAIL "norihiro@nagater.net")
+set(LINUX_PACKAGE_MAINTAINER "FaithfulFrame contributors <joepak@bu.edu>")
 
 option(WITH_PTZ_TCP "Enable to connect PTZ camera through TCP socket" ON)
 option(WITH_DLIB_SUBMODULE "Link dlib from submodule" ON)

@@ -1,7 +1,8 @@
 Name: @PLUGIN_NAME_FEDORA@
 Version: @VERSION@
 Release: @RELEASE@%{?dist}
-Summary: OBS Studio plugin as video filters to track face for mainly a speaking person
+Summary: FaithfulFrame plugin for face tracking and digital pan/zoom in OBS Studio
+URL: https://github.com/pakjoseph/faithfulframe
 License: GPL-2.0-only AND LGPL-2.1-or-later AND BSL-1.0
 
 Source0: %{name}-%{version}.tar.bz2

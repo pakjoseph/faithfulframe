@@ -1,7 +1,8 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: face-tracker-plugin-for-obs
-Upstream-Contact: Norihiro Kamae <norihiro@nagater.net>
-Source: https://github.com/norihiro/obs-face-tracker
+Upstream-Name: FaithfulFrame
+Upstream-Contact: FaithfulFrame contributors <joepak@bu.edu>
+Source: https://github.com/pakjoseph/faithfulframe
+Comment: GPL-2.0-only fork of norihiro/obs-face-tracker; original copyright notices are retained below.
 
 Files: *
 Copyright: 2021 Norihiro Kamae <norihiro@nagater.net>
@@ -48,6 +49,7 @@ License: BSL-1.0
 # the following clauses, or change it to suit. Delete these two lines
 Files: debian/*
 Copyright: 2026 Norihiro Kamae <norihiro-ppa-plugins-for-obs-studio@nagater.net>
+           2026 FaithfulFrame contributors <joepak@bu.edu>
 License: GPL-2+
  This package is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
