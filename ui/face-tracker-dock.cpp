@@ -30,6 +30,7 @@
 #include "face-tracker-widget.hpp"
 #include "face-tracker-dock-internal.hpp"
 #include "faithfulframe-performance-spool.hpp"
+#include "faithfulframe-source-identity.hpp"
 #ifdef ENABLE_RUST_CORE_BRIDGE
 #include "faithfulframe-candidate-selection.hpp"
 #include "faithfulframe-adapter-lease.hpp"
@@ -668,25 +669,43 @@ struct init_target_selector_s
 {
 	QComboBox *q;
 	int index;
-	const char *source_name;
-	const char *filter_name;
+	const char *source_uuid;
+	const char *filter_uuid;
+	int match_index;
 };
 
-static bool init_target_selector_compare_name(struct init_target_selector_s *ctx, const char *source_name,
-					      const char *filter_name)
+struct filter_uuid_search
 {
-	if (strcmp(ctx->source_name, source_name) != 0)
+	const char *uuid;
+	obs_source_t *match;
+};
+
+static void find_filter_by_uuid(obs_source_t *, obs_source_t *filter, void *param)
+{
+	auto *lookup = static_cast<filter_uuid_search *>(param);
+	if (!lookup->match && faithfulframe::source_identity_matches(lookup->uuid, obs_source_get_uuid(filter)))
+		lookup->match = obs_source_get_ref(filter);
+}
+
+static obs_source_t *resolve_filter_by_uuid(obs_source_t *source, const char *uuid)
+{
+	if (!source || !uuid || !*uuid)
+		return nullptr;
+	filter_uuid_search lookup{uuid, nullptr};
+	obs_source_enum_filters(source, find_filter_by_uuid, &lookup);
+	return lookup.match;
+}
+
+static bool init_target_selector_matches_identity(struct init_target_selector_s *ctx, obs_source_t *source,
+						  obs_source_t *filter)
+{
+	if (!faithfulframe::source_identity_matches(ctx->source_uuid, obs_source_get_uuid(source)))
 		return false;
 
-	// both expect source
-	if (!ctx->filter_name && !filter_name)
-		return true;
-
-	// either one expects source
-	if (!ctx->filter_name || !filter_name)
-		return false;
-
-	return strcmp(ctx->filter_name, filter_name) == 0;
+	const char *actual_filter_uuid = filter ? obs_source_get_uuid(filter) : nullptr;
+	if (ctx->filter_uuid && *ctx->filter_uuid)
+		return faithfulframe::source_identity_matches(ctx->filter_uuid, actual_filter_uuid);
+	return !actual_filter_uuid || !*actual_filter_uuid;
 }
 
 static void init_target_selector_cb_add(struct init_target_selector_s *ctx, obs_source_t *source, obs_source_t *filter)
@@ -696,15 +715,21 @@ static void init_target_selector_cb_add(struct init_target_selector_s *ctx, obs_
 
 	const char *name = obs_source_get_name(source);
 	const char *filter_name = NULL;
+	const char *source_uuid = obs_source_get_uuid(source);
+	const char *filter_uuid = NULL;
 	text = QString::fromUtf8(name);
 	val.append(QByteArray(name));
+	val.append(QByteArray());
 
 	if (filter) {
 		filter_name = obs_source_get_name(filter);
+		filter_uuid = obs_source_get_uuid(filter);
 		text += " / ";
 		text += QString::fromUtf8(filter_name);
-		val.append(QByteArray(filter_name));
 	}
+	val[1] = QByteArray(filter_name ? filter_name : "");
+	val.append(QByteArray(source_uuid ? source_uuid : ""));
+	val.append(QByteArray(filter_uuid ? filter_uuid : ""));
 
 	if (ctx->index < ctx->q->count()) {
 		ctx->q->setItemText(ctx->index, text);
@@ -712,10 +737,8 @@ static void init_target_selector_cb_add(struct init_target_selector_s *ctx, obs_
 	} else
 		ctx->q->insertItem(ctx->index, text, val);
 
-	if (ctx->source_name) {
-		if (init_target_selector_compare_name(ctx, name, filter_name))
-			ctx->q->setCurrentIndex(ctx->index);
-	}
+	if (ctx->source_uuid && *ctx->source_uuid && init_target_selector_matches_identity(ctx, source, filter))
+		ctx->match_index = ctx->index;
 
 	ctx->index++;
 }
@@ -745,30 +768,35 @@ static bool init_target_selector_cb_source(void *data, obs_source_t *source)
 	return true;
 }
 
-static void init_target_selector(QComboBox *q, const char *source_name = NULL, const char *filter_name = NULL)
+static void init_target_selector(QComboBox *q, const char *source_uuid = NULL, const char *filter_uuid = NULL)
 {
-	QString current = q->currentText();
+	QByteArray preserved_source_uuid;
+	QByteArray preserved_filter_uuid;
+	if (!source_uuid) {
+		const QList<QVariant> current_data = q->currentData().toList();
+		if (current_data.count() >= 4) {
+			preserved_source_uuid = current_data[2].toByteArray();
+			preserved_filter_uuid = current_data[3].toByteArray();
+			if (!preserved_source_uuid.isEmpty()) {
+				source_uuid = preserved_source_uuid.constData();
+				filter_uuid = preserved_filter_uuid.constData();
+			}
+		}
+	}
 
-	if (filter_name && !*filter_name)
-		filter_name = NULL;
-
-	init_target_selector_s ctx = {q, 0, source_name, filter_name};
+	QSignalBlocker blocker(q);
+	q->clear();
+	q->addItem(obs_module_text("Select a tracking source"), QVariantList());
+	init_target_selector_s ctx = {q, 1, source_uuid, filter_uuid, -1};
 	obs_enum_scenes(init_target_selector_cb_source, &ctx);
 	obs_enum_sources(init_target_selector_cb_source, &ctx);
-
-	while (q->count() > ctx.index)
-		q->removeItem(ctx.index);
-
-	if (current.length() && !source_name) {
-		int ix = q->findText(current);
-		if (ix >= 0)
-			q->setCurrentIndex(ix);
-	}
+	q->setCurrentIndex(ctx.match_index >= 0 ? ctx.match_index : 0);
 }
 
 void FTDock::checkTargetSelector()
 {
 	init_target_selector(targetSelector);
+	updateState();
 }
 
 FTDock::FTDock(QWidget *parent) : QFrame(parent)
@@ -912,6 +940,10 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	statusTimer->setInterval(250);
 	connect(statusTimer, &QTimer::timeout, this, &FTDock::updateState);
 	statusTimer->start();
+	sourceSelectorTimer = new QTimer(this);
+	sourceSelectorTimer->setInterval(2000);
+	connect(sourceSelectorTimer, &QTimer::timeout, this, &FTDock::checkTargetSelector);
+	sourceSelectorTimer->start();
 }
 
 void FTDock::applyDesignTokens()
@@ -944,11 +976,17 @@ FTDock::~FTDock()
 {
 	if (statusTimer)
 		statusTimer->stop();
+	if (sourceSelectorTimer)
+		sourceSelectorTimer->stop();
 	stopPerformanceMetrics();
 	if (source_sh) {
 		signal_handler_disconnect(source_sh, "state_changed", onStateChanged, this);
 		source_sh = NULL;
 	}
+	obs_weak_source_release(selected_filter_ref);
+	selected_filter_ref = nullptr;
+	obs_weak_source_release(selected_source_ref);
+	selected_source_ref = nullptr;
 
 	face_tracker_dock_release(data);
 	if (docks)
@@ -1000,33 +1038,96 @@ void FTDock::targetSelectorChanged()
 	if (updating_widget)
 		return;
 
+	bindSelectedTarget();
 	operatorNotice.clear();
 	operatorNoticeTimer.invalidate();
 	updateState();
 }
 
-OBSSource FTDock::get_source()
+void FTDock::bindSelectedTarget()
 {
-	OBSSource target;
-	QList<QVariant> data = targetSelector->currentData().toList();
+	obs_weak_source_release(selected_filter_ref);
+	selected_filter_ref = nullptr;
+	obs_weak_source_release(selected_source_ref);
+	selected_source_ref = nullptr;
 
-	for (int i = 0; i < data.count(); i++) {
-		const char *name = data[i].toByteArray().constData();
-		if (i == 0) {
-			target = obs_get_source_by_name(name);
-			obs_source_release(target);
-		} else if (i == 1) {
-			target = obs_source_get_filter_by_name(target, name);
-			obs_source_release(target);
+	const QList<QVariant> data = targetSelector->currentData().toList();
+	if (data.count() < 4)
+		return;
+	const QByteArray source_uuid = data[2].toByteArray();
+	if (source_uuid.isEmpty())
+		return;
+
+	obs_source_t *source = obs_get_source_by_uuid(source_uuid.constData());
+	if (!source)
+		return;
+	if (!faithfulframe::source_identity_matches(source_uuid.constData(), obs_source_get_uuid(source))) {
+		obs_source_release(source);
+		return;
+	}
+	selected_source_ref = obs_source_get_weak_source(source);
+
+	const QByteArray filter_uuid = data[3].toByteArray();
+	if (!filter_uuid.isEmpty()) {
+		obs_source_t *filter = resolve_filter_by_uuid(source, filter_uuid.constData());
+		if (filter) {
+			selected_filter_ref = obs_source_get_weak_source(filter);
+			obs_source_release(filter);
 		}
 	}
+	obs_source_release(source);
+}
 
+OBSSource FTDock::get_source()
+{
+	const QList<QVariant> data = targetSelector->currentData().toList();
+	if (data.count() < 4)
+		return {};
+
+	const QByteArray source_uuid = data[2].toByteArray();
+	if (source_uuid.isEmpty() || !selected_source_ref)
+		return {};
+
+	obs_source_t *raw_source = obs_weak_source_get_source(selected_source_ref);
+	if (!raw_source)
+		return {};
+	if (!faithfulframe::source_identity_matches(source_uuid.constData(), obs_source_get_uuid(raw_source))) {
+		obs_source_release(raw_source);
+		return {};
+	}
+	OBSSource source(raw_source);
+	obs_source_release(raw_source);
+
+	const QByteArray filter_uuid = data[3].toByteArray();
+	if (filter_uuid.isEmpty())
+		return source;
+	if (!selected_filter_ref)
+		return {};
+
+	obs_source_t *raw_filter = obs_weak_source_get_source(selected_filter_ref);
+	if (!raw_filter)
+		return {};
+	if (!faithfulframe::source_identity_matches(filter_uuid.constData(), obs_source_get_uuid(raw_filter))) {
+		obs_source_release(raw_filter);
+		return {};
+	}
+	obs_source_t *current_filter = resolve_filter_by_uuid(source, filter_uuid.constData());
+	const bool filter_is_still_attached = current_filter == raw_filter;
+	if (current_filter)
+		obs_source_release(current_filter);
+	if (!filter_is_still_attached) {
+		obs_source_release(raw_filter);
+		return {};
+	}
+	OBSSource target(raw_filter);
+	obs_source_release(raw_filter);
 	return target;
 }
 
 static bool is_filter(QComboBox *targetSelector)
 {
-	return targetSelector->currentData().toList().count() == 2;
+	const QList<QVariant> data = targetSelector->currentData().toList();
+	return data.count() >= 4 && !data[3].toByteArray().isEmpty();
 }
 
 static inline void set_monitor(obs_source_t *monitor, const QList<QVariant> &target_data)
@@ -1035,13 +1136,14 @@ static inline void set_monitor(obs_source_t *monitor, const QList<QVariant> &tar
 	OBSData data = obs_data_create();
 	obs_data_release(data);
 
-	if (target_data.count() < 1)
-		return;
-
-	obs_data_set_string(data, "source_name", target_data[0].toByteArray().constData());
-
+	obs_data_set_string(data, "source_name",
+			    target_data.count() >= 1 ? target_data[0].toByteArray().constData() : "");
 	obs_data_set_string(data, "filter_name",
-			    target_data.count() > 1 ? target_data[1].toByteArray().constData() : "");
+			    target_data.count() >= 2 ? target_data[1].toByteArray().constData() : "");
+	obs_data_set_string(data, "source_uuid",
+			    target_data.count() >= 4 ? target_data[2].toByteArray().constData() : "");
+	obs_data_set_string(data, "filter_uuid",
+			    target_data.count() >= 4 ? target_data[3].toByteArray().constData() : "");
 
 	obs_source_update(monitor, data);
 }
@@ -1078,7 +1180,21 @@ void FTDock::onStateChanged(void *data, calldata_t *)
 void FTDock::updateState()
 {
 	OBSSource target = get_source();
-	proc_handler_t *ph = obs_source_get_proc_handler(target);
+	if (!target) {
+		if (targetSelector->currentIndex() > 0) {
+			QSignalBlocker blocker(targetSelector);
+			targetSelector->setCurrentIndex(0);
+		}
+		bindSelectedTarget();
+	}
+
+	if (data && data->src_monitor) {
+		pthread_mutex_lock(&data->mutex);
+		set_monitor(data->src_monitor, targetSelector->currentData().toList());
+		pthread_mutex_unlock(&data->mutex);
+	}
+
+	proc_handler_t *ph = target ? obs_source_get_proc_handler(target) : nullptr;
 	if (!ph) {
 		operatorNotice.clear();
 		operatorNoticeTimer.invalidate();
@@ -1464,16 +1580,6 @@ void FTDock::updateState()
 	}
 
 	in_updateState = false;
-
-	if (!data)
-		return;
-
-	pthread_mutex_lock(&data->mutex);
-
-	if (data->src_monitor)
-		set_monitor(data->src_monitor, targetSelector->currentData().toList());
-
-	pthread_mutex_unlock(&data->mutex);
 }
 
 void FTDock::updateWidget()
@@ -1486,11 +1592,13 @@ void FTDock::updateWidget()
 	if (data->src_monitor) {
 		obs_data_t *props = obs_source_get_settings(data->src_monitor);
 
-		const char *source_name = obs_data_get_string(props, "source_name");
-		const char *filter_name = obs_data_get_string(props, "filter_name");
-		init_target_selector(targetSelector, source_name, filter_name);
+		const char *source_uuid = obs_data_get_string(props, "source_uuid");
+		const char *filter_uuid = obs_data_get_string(props, "filter_uuid");
+		init_target_selector(targetSelector, source_uuid, filter_uuid);
+		bindSelectedTarget();
 
-		set_enable_button(enableButton, is_filter(targetSelector), obs_source_enabled(get_source()));
+		OBSSource selected = get_source();
+		set_enable_button(enableButton, is_filter(targetSelector), selected && obs_source_enabled(selected));
 
 		bool notrack = obs_data_get_bool(props, "notrack");
 		notrackButton->setCheckState(notrack ? Qt::Checked : Qt::Unchecked);
@@ -1629,6 +1737,8 @@ void FTDock::pauseButtonClicked(bool checked)
 		return;
 	}
 #endif
+	if (!target)
+		return;
 	proc_handler_t *ph = obs_source_get_proc_handler(target);
 	if (!ph)
 		return;
@@ -1660,6 +1770,8 @@ void FTDock::resetButtonClicked(bool checked)
 		return;
 	}
 #endif
+	if (!target)
+		return;
 	proc_handler_t *ph = obs_source_get_proc_handler(target);
 	if (!ph)
 		return;
@@ -1802,19 +1914,24 @@ void FTDock::propertyButtonClicked(bool checked)
 {
 	UNUSED_PARAMETER(checked);
 
-	QList<QVariant> data = targetSelector->currentData().toList();
-	if (data.count() < 1)
+	const QList<QVariant> data = targetSelector->currentData().toList();
+	if (data.count() < 4)
 		return;
 
-	const char *name = data[0].toByteArray().constData();
+	const QByteArray source_uuid = data[2].toByteArray();
+	if (source_uuid.isEmpty() || !selected_source_ref)
+		return;
 
-	obs_source_t *target = obs_get_source_by_name(name);
+	obs_source_t *target = obs_weak_source_get_source(selected_source_ref);
 	if (!target) {
-		blog(LOG_ERROR, "Cannot find the target for name='%s'", name);
+		return;
+	}
+	if (!faithfulframe::source_identity_matches(source_uuid.constData(), obs_source_get_uuid(target))) {
+		obs_source_release(target);
 		return;
 	}
 
-	if (data.count() == 1)
+	if (data[3].toByteArray().isEmpty())
 		obs_frontend_open_source_properties(target);
 	else
 		obs_frontend_open_source_filters(target);

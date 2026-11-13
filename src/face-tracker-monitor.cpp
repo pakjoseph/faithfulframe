@@ -2,6 +2,7 @@
 #include <obs.hpp>
 #include "plugin-macros.generated.h"
 #include "helper.hpp"
+#include "faithfulframe-source-identity.hpp"
 
 #define MAX_ERROR 2
 
@@ -12,6 +13,8 @@ struct face_tracker_monitor
 	// properties
 	char *source_name;
 	char *filter_name;
+	char *source_uuid;
+	char *filter_uuid;
 	bool notrack;
 	bool nosource;
 	bool landmark_only;
@@ -27,6 +30,9 @@ static const char *ftmon_get_name(void *unused)
 	UNUSED_PARAMETER(unused);
 	return obs_module_text("Face Tracker Monitor");
 }
+
+static obs_source_t *get_source(struct face_tracker_monitor *s);
+static obs_source_t *get_filter_by_uuid(struct face_tracker_monitor *s);
 
 static void *ftmon_create(obs_data_t *settings, obs_source_t *context)
 {
@@ -44,6 +50,8 @@ static void ftmon_destroy(void *data)
 
 	bfree(s->source_name);
 	bfree(s->filter_name);
+	bfree(s->source_uuid);
+	bfree(s->filter_uuid);
 	obs_weak_source_release(s->filter_ref);
 	obs_weak_source_release(s->source_ref);
 
@@ -56,6 +64,14 @@ static void ftmon_update(void *data, obs_data_t *settings)
 
 	const char *source_name = obs_data_get_string(settings, "source_name");
 	const char *filter_name = obs_data_get_string(settings, "filter_name");
+	const char *source_uuid = obs_data_get_string(settings, "source_uuid");
+	const char *filter_uuid = obs_data_get_string(settings, "filter_uuid");
+	const char *requested_source_uuid = source_uuid ? source_uuid : "";
+	const char *requested_filter_uuid = filter_uuid ? filter_uuid : "";
+	const bool source_binding_changed = s->source_uuid ? strcmp(requested_source_uuid, s->source_uuid) != 0
+							   : requested_source_uuid[0] != '\0';
+	const bool filter_binding_changed = s->filter_uuid ? strcmp(requested_filter_uuid, s->filter_uuid) != 0
+							   : requested_filter_uuid[0] != '\0';
 	if (source_name && (!s->source_name || strcmp(source_name, s->source_name))) {
 		bfree(s->source_name);
 		s->source_name = bstrdup(source_name);
@@ -70,6 +86,40 @@ static void ftmon_update(void *data, obs_data_t *settings)
 		bfree(s->filter_name);
 		s->filter_name = bstrdup(filter_name);
 		s->n_error = 0;
+	}
+
+	if (source_binding_changed) {
+		bfree(s->source_uuid);
+		s->source_uuid = requested_source_uuid[0] ? bstrdup(requested_source_uuid) : NULL;
+		obs_weak_source_release(s->source_ref);
+		s->source_ref = NULL;
+		obs_weak_source_release(s->filter_ref);
+		s->filter_ref = NULL;
+		s->n_error = 0;
+	}
+
+	if (filter_binding_changed) {
+		bfree(s->filter_uuid);
+		s->filter_uuid = requested_filter_uuid[0] ? bstrdup(requested_filter_uuid) : NULL;
+		obs_weak_source_release(s->filter_ref);
+		s->filter_ref = NULL;
+		s->n_error = 0;
+	}
+
+	if (source_binding_changed && s->source_uuid) {
+		obs_source_t *source = obs_get_source_by_uuid(s->source_uuid);
+		if (source) {
+			s->source_ref = obs_source_get_weak_source(source);
+			obs_source_release(source);
+		}
+	}
+
+	if ((source_binding_changed || filter_binding_changed) && s->filter_uuid) {
+		obs_source_t *filter = get_filter_by_uuid(s);
+		if (filter) {
+			s->filter_ref = obs_source_get_weak_source(filter);
+			obs_source_release(filter);
+		}
 	}
 
 	s->notrack = obs_data_get_bool(settings, "notrack");
@@ -87,6 +137,8 @@ static obs_properties_t *ftmon_properties(void *)
 	// TODO: use obs_properties_add_list
 	obs_properties_add_text(props, "source_name", obs_module_text("Source name"), OBS_TEXT_DEFAULT);
 	obs_properties_add_text(props, "filter_name", obs_module_text("Filter name"), OBS_TEXT_DEFAULT);
+	obs_properties_add_text(props, "source_uuid", obs_module_text("Source UUID"), OBS_TEXT_DEFAULT);
+	obs_properties_add_text(props, "filter_uuid", obs_module_text("Filter UUID"), OBS_TEXT_DEFAULT);
 
 	obs_properties_add_bool(props, "notrack", "Display original source");
 
@@ -101,21 +153,38 @@ static void ftmon_get_defaults(obs_data_t *) {}
 
 static obs_source_t *get_source(struct face_tracker_monitor *s)
 {
-	if (!s->source_ref)
+	if (!s->source_ref || !s->source_uuid || !*s->source_uuid)
 		return NULL;
 	return obs_weak_source_get_source(s->source_ref);
 }
 
+struct filter_uuid_search
+{
+	const char *uuid;
+	obs_source_t *match;
+};
+
+static void find_filter_by_uuid(obs_source_t *, obs_source_t *filter, void *param)
+{
+	auto *lookup = static_cast<filter_uuid_search *>(param);
+	if (!lookup->match && faithfulframe::source_identity_matches(lookup->uuid, obs_source_get_uuid(filter)))
+		lookup->match = obs_source_get_ref(filter);
+}
+
 static obs_source_t *get_filter(struct face_tracker_monitor *s)
 {
-	if (!s->filter_ref)
+	if (!s->filter_ref || !s->filter_uuid || !*s->filter_uuid)
 		return NULL;
+	obs_source_t *source = get_source(s);
+	if (!source)
+		return NULL;
+	obs_source_release(source);
 	return obs_weak_source_get_source(s->filter_ref);
 }
 
 static obs_source_t *get_target(struct face_tracker_monitor *s)
 {
-	if (!s->filter_name || !*s->filter_name)
+	if (!s->filter_uuid || !*s->filter_uuid)
 		return get_source(s);
 	return get_filter(s);
 }
@@ -151,59 +220,57 @@ static bool get_safe_output_dimensions(struct face_tracker_monitor *s, uint32_t 
 	return true;
 }
 
-static inline bool test_weak_source_name(obs_weak_source_t *ref, const char *name)
+static inline bool test_weak_source_uuid(obs_weak_source_t *ref, const char *uuid)
 {
+	if (!ref || !uuid || !*uuid)
+		return false;
 	obs_source_t *src = obs_weak_source_get_source(ref);
 	if (!src)
 		return false;
 
-	const char *n = obs_source_get_name(src);
-	if (!n)
-		return false;
-	bool ret = strcmp(n, name) == 0;
+	const char *actual_uuid = obs_source_get_uuid(src);
+	bool ret = faithfulframe::source_identity_matches(uuid, actual_uuid);
 	obs_source_release(src);
 	return ret;
 }
 
-static inline void tick_source(struct face_tracker_monitor *s, obs_weak_source_t *&ref, const char *name,
-			       obs_source_t *(*get_by_name)(struct face_tracker_monitor *))
+static inline void tick_source(obs_weak_source_t *&ref, const char *uuid)
 {
-	if (!name || !*name)
+	if (!uuid || !*uuid)
 		return;
 
-	if (!test_weak_source_name(ref, name)) {
+	if (!test_weak_source_uuid(ref, uuid)) {
 		obs_weak_source_release(ref);
 		ref = NULL;
-		obs_source_t *src = get_by_name(s);
-		ref = obs_source_get_weak_source(src);
-		obs_source_release(src);
 	}
 }
 
-obs_source_t *get_source_by_name(struct face_tracker_monitor *s)
-{
-	return obs_get_source_by_name(s->source_name);
-}
-
-obs_source_t *get_filter_by_name(struct face_tracker_monitor *s)
+static obs_source_t *get_filter_by_uuid(struct face_tracker_monitor *s)
 {
 	obs_source_t *src = get_source(s);
-	obs_source_t *ret = obs_source_get_filter_by_name(src, s->filter_name);
+	if (!src)
+		return NULL;
+	filter_uuid_search lookup{s->filter_uuid, nullptr};
+	obs_source_enum_filters(src, find_filter_by_uuid, &lookup);
 	obs_source_release(src);
-	return ret;
+	return lookup.match;
 }
 
 static void ftmon_tick(void *data, float)
 {
 	auto *s = (struct face_tracker_monitor *)data;
 
-	bool source_specified = s->source_name && *s->source_name;
-	bool filter_specified = s->filter_name && *s->filter_name;
+	bool source_specified = s->source_uuid && *s->source_uuid;
+	bool filter_specified = s->filter_uuid && *s->filter_uuid;
 
 	if (source_specified)
-		tick_source(s, s->source_ref, s->source_name, get_source_by_name);
+		tick_source(s->source_ref, s->source_uuid);
 	if (filter_specified)
-		tick_source(s, s->filter_ref, s->filter_name, get_filter_by_name);
+		tick_source(s->filter_ref, s->filter_uuid);
+	if (source_specified && !s->source_ref && s->filter_ref) {
+		obs_weak_source_release(s->filter_ref);
+		s->filter_ref = NULL;
+	}
 
 	if (source_specified && !s->source_ref) {
 		if (s->n_error < MAX_ERROR) {

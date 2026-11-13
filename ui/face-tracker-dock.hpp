@@ -42,6 +42,7 @@ public:
 	class QPushButton *manualOverrideButton;
 	class QPushButton *selectCandidateButton;
 	class QTimer *statusTimer;
+	class QTimer *sourceSelectorTimer;
 	os_cpu_usage_info_t *processCpuUsageInfo = nullptr;
 	QElapsedTimer processMetricsTimer;
 	double processCpuPercent = -1.0;
@@ -76,10 +77,13 @@ private:
 	void showOperatorNotice(const QString &message);
 	void stopPerformanceMetrics();
 	bool exportPerformanceRecording();
+	void bindSelectedTarget();
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
 
 	OBSSource get_source();
+	obs_weak_source_t *selected_source_ref = NULL;
+	obs_weak_source_t *selected_filter_ref = NULL;
 	signal_handler_t *source_sh = NULL;
 
 	static void onStateChanged(void *data, calldata_t *cd);
