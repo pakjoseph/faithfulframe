@@ -113,7 +113,20 @@ bool detector_duration_samples_are_bounded_and_deterministic()
 	faithfulframe::offline::duration_sample exact(3);
 	exact.add(10);
 	exact.add(20);
-	return exact.exact() && exact.values() == std::vector<uint64_t>({10, 20});
+	if (!exact.exact() || exact.values() != std::vector<uint64_t>({10, 20}))
+		return false;
+
+	faithfulframe::offline::duration_sample long_run;
+	const uint64_t long_run_count = faithfulframe::offline::duration_sample::default_capacity * 16;
+	for (uint64_t value = 0; value < faithfulframe::offline::duration_sample::default_capacity; ++value)
+		long_run.add(value);
+	const size_t allocated_capacity = long_run.values().capacity();
+	for (uint64_t value = faithfulframe::offline::duration_sample::default_capacity; value < long_run_count;
+	     ++value)
+		long_run.add(value);
+	return !long_run.exact() && long_run.seen() == long_run_count &&
+	       long_run.values().size() == faithfulframe::offline::duration_sample::default_capacity &&
+	       long_run.values().capacity() == allocated_capacity;
 }
 
 } // namespace
