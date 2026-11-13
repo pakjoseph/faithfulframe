@@ -1,6 +1,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <utility>
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include "plugin-macros.generated.h"
@@ -55,5 +56,40 @@ void property_list_add_sources(obs_property_t *prop, obs_source_t *self)
 	for (size_t i = 0; i < ctx.source_names.size(); i++) {
 		const std::string name = obs_module_text("Source: ") + ctx.source_names[i];
 		obs_property_list_add_string(prop, name.c_str(), ctx.source_names[i].c_str());
+	}
+}
+
+struct add_video_input_sources_by_uuid_s
+{
+	obs_source_t *self;
+	std::vector<std::pair<std::string, std::string>> sources;
+};
+
+static bool add_video_input_sources_by_uuid(void *data, obs_source_t *source)
+{
+	auto &ctx = *(add_video_input_sources_by_uuid_s *)data;
+	if (source == ctx.self || obs_source_get_type(source) != OBS_SOURCE_TYPE_INPUT || obs_source_is_scene(source) ||
+	    obs_source_is_group(source) || !(obs_source_get_output_flags(source) & OBS_SOURCE_VIDEO))
+		return true;
+
+	const char *name = obs_source_get_name(source);
+	const char *uuid = obs_source_get_uuid(source);
+	if (name && *name && uuid && *uuid)
+		ctx.sources.emplace_back(name, uuid);
+	return true;
+}
+
+void property_list_add_video_input_sources_by_uuid(obs_property_t *prop, obs_source_t *self)
+{
+	obs_property_list_add_string(prop, obs_module_text("Select a video input"), "");
+	add_video_input_sources_by_uuid_s ctx;
+	ctx.self = self;
+	obs_enum_sources(add_video_input_sources_by_uuid, &ctx);
+	std::sort(ctx.sources.begin(), ctx.sources.end(), [](const auto &left, const auto &right) {
+		return left.first == right.first ? left.second < right.second : left.first < right.first;
+	});
+	for (const auto &source : ctx.sources) {
+		const std::string label = std::string(obs_module_text("Source: ")) + source.first;
+		obs_property_list_add_string(prop, label.c_str(), source.second.c_str());
 	}
 }

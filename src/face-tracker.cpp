@@ -28,6 +28,7 @@
 #include "faithfulframe-config-guard.hpp"
 #include "faithfulframe-crop-selector.hpp"
 #include "faithfulframe-preview-geometry.hpp"
+#include "faithfulframe-source-identity.hpp"
 #endif
 
 static inline void scale_texture(struct face_tracker_filter *s, float scale);
@@ -76,6 +77,7 @@ struct faithfulframe_source_binding
 	};
 
 	obs_weak_source_t *target = nullptr;
+	std::string target_uuid;
 	// The adapter source outlives its bindings. OBS requires a custom parent to
 	// register active children while active, then remove them before the binding
 	// or parent is destroyed.
@@ -198,7 +200,7 @@ struct faithfulframe_source_runtime
 	std::atomic<bool> adapter_active{false};
 	std::atomic<bool> reconfiguration_pending{false};
 	std::mutex configuration_mutex;
-	std::string requested_target_name;
+	std::string requested_target_uuid;
 	double requested_dead_zone_percent = 5.0;
 	double requested_max_zoom = 4.0;
 	double requested_pan_smoothing = 0.25;
@@ -351,7 +353,28 @@ static void fts_update(void *data, obs_data_t *settings)
 	bool defer_tracker_update = false;
 
 	const char *target_name = obs_data_get_string(settings, "target_name");
-	const std::string requested_name = target_name ? target_name : "";
+	const std::string legacy_requested_name = target_name ? target_name : "";
+	const bool has_target_uuid_setting = obs_data_has_user_value(settings, "target_uuid");
+	const char *target_uuid = obs_data_get_string(settings, "target_uuid");
+	const std::string requested_uuid = target_uuid ? target_uuid : "";
+	std::string requested_name = legacy_requested_name;
+	const bool safety_tracking_enabled = obs_data_get_bool(settings, "safe_tracking_enabled");
+	if (!requested_uuid.empty()) {
+		obs_source_t *configured_source = obs_get_source_by_uuid(requested_uuid.c_str());
+		if (configured_source) {
+			const char *configured_name = obs_source_get_name(configured_source);
+			if (safety_tracking_enabled)
+				requested_name = configured_name ? configured_name : "";
+			obs_source_release(configured_source);
+		} else if (safety_tracking_enabled) {
+			// An unavailable UUID remains unavailable. Never recover it by looking up
+			// a display name, which may now identify a replacement camera.
+			requested_name.clear();
+		}
+	} else if (has_target_uuid_setting && safety_tracking_enabled) {
+		// An empty safety UUID must not inherit the name-based legacy selection.
+		requested_name.clear();
+	}
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	bool binding_changed = false;
 	bool dead_zone_changed = false;
@@ -363,8 +386,8 @@ static void fts_update(void *data, obs_data_t *settings)
 		obs_data_t *previous = nullptr;
 		{
 			std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
-			binding_changed = s->safe_runtime->requested_target_name != requested_name;
-			s->safe_runtime->requested_target_name = requested_name;
+			binding_changed = s->safe_runtime->requested_target_uuid != requested_uuid;
+			s->safe_runtime->requested_target_uuid = requested_uuid;
 			const double requested_dead_zone =
 				obs_data_get_double(settings, "safe_tracking_dead_zone_percent");
 			dead_zone_changed = s->safe_runtime->requested_dead_zone_percent != requested_dead_zone;
@@ -716,6 +739,9 @@ static obs_properties_t *fts_properties(void *data)
 	obs_property_t *safe_mode = obs_properties_add_bool(props, "safe_tracking_enabled",
 							    "Use FaithfulFrame safe tracking (experimental)");
 	obs_properties_t *safe_options = obs_properties_create();
+	obs_property_t *safe_source = obs_properties_add_list(safe_options, "target_uuid", "Safety tracking source",
+							      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	property_list_add_video_input_sources_by_uuid(safe_source, s ? s->context : NULL);
 	obs_properties_add_float(safe_options, "safe_tracking_dead_zone_percent", "Pan dead zone (%)", 0.0, 24.0, 0.5);
 	obs_properties_add_float(safe_options, "safe_tracking_max_zoom", "Maximum zoom (×)", 1.0, 8.0, 0.25);
 	obs_properties_add_float(safe_options, "safe_tracking_pan_response", "Pan response (higher = faster)", 0.05,
@@ -724,8 +750,9 @@ static obs_properties_t *fts_properties(void *data)
 				 1.0, 0.05);
 	obs_properties_add_float(safe_options, "safe_tracking_loss_grace_seconds", "Target loss grace (seconds)", 0.5,
 				 15.0, 0.5);
-	obs_property_t *safe_options_group = obs_properties_add_group(
-		props, "safe_tracking_options", "Safe tracking motion and recovery", OBS_GROUP_NORMAL, safe_options);
+	obs_property_t *safe_options_group = obs_properties_add_group(props, "safe_tracking_options",
+								      "Safe tracking source, motion and recovery",
+								      OBS_GROUP_NORMAL, safe_options);
 	obs_data_t *current_settings = obs_source_get_settings(s->context);
 	if (current_settings) {
 		obs_property_set_visible(safe_options_group,
@@ -756,6 +783,7 @@ static void ftf_get_defaults(obs_data_t *settings)
 	obs_data_set_default_double(settings, "safe_tracking_pan_response", 0.25);
 	obs_data_set_default_double(settings, "safe_tracking_zoom_response", 0.25);
 	obs_data_set_default_double(settings, "safe_tracking_loss_grace_seconds", 5.0);
+	obs_data_set_default_string(settings, "target_uuid", "");
 	face_tracker_manager::get_defaults(settings);
 	obs_data_set_default_double(settings, "track_z", 0.70);  //  1.00  0.50  0.35
 	obs_data_set_default_double(settings, "track_y", +0.00); // +0.00 +0.10 +0.30
@@ -1265,7 +1293,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	uint64_t revision = 0;
 	uint64_t tracker_revision = 0;
 	bool enabled = false;
-	std::string target_name;
+	std::string target_uuid;
 	{
 		std::lock_guard<std::mutex> lock(runtime->configuration_mutex);
 		revision = runtime->configuration_version.load(std::memory_order_acquire);
@@ -1273,7 +1301,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 			return;
 		tracker_revision = runtime->tracker_configuration_version.load(std::memory_order_acquire);
 		enabled = runtime->enabled.load(std::memory_order_acquire);
-		target_name = runtime->requested_target_name;
+		target_uuid = runtime->requested_target_uuid;
 	}
 
 	faithfulframe_source_binding *previous = nullptr;
@@ -1310,7 +1338,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		return;
 	}
 
-	if (target_name.empty()) {
+	if (target_uuid.empty()) {
 		faithfulframe::single_adapter_lease::release(runtime);
 		runtime->configuration_issue.store(
 			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::no_source_selected),
@@ -1320,12 +1348,13 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		return;
 	}
 
-	obs_source_t *target = obs_get_source_by_name(target_name.c_str());
+	obs_source_t *target = obs_get_source_by_uuid(target_uuid.c_str());
 	bool has_legacy_tracker = false;
 	if (target)
 		obs_source_enum_filters(target, find_legacy_tracker_filter, &has_legacy_tracker);
 	const char *target_id = target ? obs_source_get_id(target) : nullptr;
-	if (!target || obs_source_removed(target) || target == s->context || obs_source_is_scene(target) ||
+	if (!target || !faithfulframe::source_identity_matches(target_uuid.c_str(), obs_source_get_uuid(target)) ||
+	    obs_source_removed(target) || target == s->context || obs_source_is_scene(target) ||
 	    obs_source_get_type(target) != OBS_SOURCE_TYPE_INPUT ||
 	    !(obs_source_get_output_flags(target) & OBS_SOURCE_VIDEO) || !target_id ||
 	    !strcmp(target_id, "face_tracker_source") || has_legacy_tracker) {
@@ -1376,7 +1405,9 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		clear_reconfiguration();
 		return;
 	}
-	binding->target_name = target_name;
+	const char *resolved_target_name = obs_source_get_name(target);
+	binding->target_uuid = target_uuid;
+	binding->target_name = resolved_target_name ? resolved_target_name : "";
 	binding->target = obs_source_get_weak_source(target);
 	binding->parent_context = s->context;
 	const bool adapter_active = runtime->adapter_active.load(std::memory_order_acquire);
@@ -1590,7 +1621,8 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 		faithfulframe::single_adapter_lease::release(runtime);
 		return;
 	}
-	if (obs_source_removed(target)) {
+	if (obs_source_removed(target) ||
+	    !faithfulframe::source_identity_matches(binding->target_uuid.c_str(), obs_source_get_uuid(target))) {
 		binding->set_active_child(false);
 		auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
 		if (executor && !binding->closed.load(std::memory_order_acquire)) {
@@ -1780,7 +1812,7 @@ static void fts_tick(void *data, float second)
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	if (s->safe_runtime) {
 		std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
-		configured_target_name = s->safe_runtime->requested_target_name;
+		configured_target_name = s->target_name ? s->target_name : "";
 	} else
 #endif
 		configured_target_name = s->target_name ? s->target_name : "";
@@ -2138,10 +2170,12 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 		}
 	}
 
-	const bool source_geometry_current = bound_source &&
-					     ff_preview_source_geometry_matches(source_width, source_height,
-										obs_source_get_width(bound_source),
-										obs_source_get_height(bound_source));
+	const bool source_geometry_current =
+		bound_source &&
+		faithfulframe::source_identity_matches(binding->target_uuid.c_str(),
+						       obs_source_get_uuid(bound_source)) &&
+		ff_preview_source_geometry_matches(source_width, source_height, obs_source_get_width(bound_source),
+						   obs_source_get_height(bound_source));
 	const bool source_available = !force_black && source_geometry_current && !obs_source_removed(bound_source) &&
 				      obs_source_active(bound_source) && binding &&
 				      !binding->closed.load(std::memory_order_acquire) &&
@@ -2419,6 +2453,8 @@ static void fts_render(void *data, gs_effect_t *)
 			s->rendered = true;
 			const bool source_geometry_current =
 				safe_target &&
+				faithfulframe::source_identity_matches(binding->target_uuid.c_str(),
+								       obs_source_get_uuid(safe_target)) &&
 				ff_preview_source_geometry_matches(
 					binding->source_width.load(std::memory_order_acquire),
 					binding->source_height.load(std::memory_order_acquire),
