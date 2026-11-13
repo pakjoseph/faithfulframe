@@ -557,6 +557,22 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 	if (!preview.available)
 		return "FaithfulFrame safe tracking: waiting for a valid source session";
 	if (preview.command_result == FF_COMMAND_REJECTED) {
+		if (!preview.signal_connected)
+			return "Command rejected; the camera signal disconnected independently. Restore the camera, then select the speaker again.";
+		if (!preview.target_active)
+			return "Command rejected; the camera source or scene became inactive independently. Activate its scene, then select the speaker again.";
+		if (preview.reason == FF_REASON_TARGET_EVIDENCE_STALE && preview.loss_remaining_ms >= 0)
+			return QString("Command rejected; target loss began independently. Holding framing; same-speaker "
+				       "reacquisition: %1 s, then select again.")
+				.arg(preview.loss_remaining_ms / 1000.0, 0, 'f', 1);
+		if (preview.reason == FF_REASON_TARGET_LOSS_DEADLINE_EXPIRED)
+			return "Command rejected; the recovery timer expired independently. Select a face to start following again or reset wide.";
+		if (preview.reason == FF_REASON_FRAMING_FAILURE)
+			return "Command rejected; framing failed independently and wide view is active. Check camera/output geometry, then select a speaker again.";
+		if (preview.reason == FF_REASON_LIFECYCLE_INVALIDATED)
+			return "Command rejected; camera or tracking settings changed independently. Select a speaker again before following.";
+		if (preview.reason == FF_REASON_TRACKER_IDENTITY_EXPIRED)
+			return "Command rejected; tracker identity expired independently. Select a speaker again before following.";
 		if (preview.rejection_reason == FF_REJECTION_STALE_COMMAND)
 			return "Selection or command expired; choose again from the current preview";
 		if (preview.rejection_reason == FF_REJECTION_SESSION_CLOSED)
