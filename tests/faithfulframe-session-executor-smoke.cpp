@@ -670,32 +670,45 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 	blocking_executor_handoff.join();
 	blocking_cleanup_handoff.join();
 	faithfulframe_test_set_reaper_queue_lock_hook(nullptr, nullptr);
-	if (!first_holds_queue_lock || !cleanup_handoff_was_nonblocking || !contended_returned ||
-	    !paused_accepted.load(std::memory_order_acquire) || paused_executor ||
-	    contended_accepted.load(std::memory_order_acquire) || !contended_executor ||
-	    !teardown_handoffs_waited_for_queue || !blocking_executor_accepted.load(std::memory_order_acquire) ||
-	    teardown_executor || !blocking_cleanup_accepted.load(std::memory_order_acquire))
-		return false;
-	faithfulframe_activate_reap_task(&teardown_cleanup.task);
-	if (!defer_reap_task_when_available(&cleanup.task, mark_reaper_cleanup_complete, &cleanup))
-		return false;
-	const auto cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-	while (!cleanup.completed.load(std::memory_order_acquire) &&
-	       std::chrono::steady_clock::now() < cleanup_deadline)
-		std::this_thread::yield();
-	if (!cleanup.completed.load(std::memory_order_acquire) ||
-	    !cleanup.ran_off_caller.load(std::memory_order_acquire) || !await_expired(teardown_weak))
-		return false;
-	const auto teardown_cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-	while (!teardown_cleanup.completed.load(std::memory_order_acquire) &&
-	       std::chrono::steady_clock::now() < teardown_cleanup_deadline)
-		std::this_thread::yield();
-	if (!teardown_cleanup.completed.load(std::memory_order_acquire) ||
-	    !teardown_cleanup.ran_off_caller.load(std::memory_order_acquire))
-		return false;
-	if (!retire_executor_when_available(contended_executor) || contended_executor)
-		return false;
-	return await_expired(paused_weak) && await_expired(contended_weak);
+	const bool handoff_checks_passed =
+		first_holds_queue_lock && cleanup_handoff_was_nonblocking && contended_returned &&
+		paused_accepted.load(std::memory_order_acquire) && !paused_executor &&
+		!contended_accepted.load(std::memory_order_acquire) && contended_executor &&
+		teardown_handoffs_waited_for_queue && blocking_executor_accepted.load(std::memory_order_acquire) &&
+		!teardown_executor && blocking_cleanup_accepted.load(std::memory_order_acquire);
+
+	// Once accepted, a cleanup task remains linked to the reaper until its
+	// callback runs. Always activate and drain accepted stack-backed tasks before
+	// this function can return, including when an earlier assertion failed.
+	const bool teardown_cleanup_accepted = blocking_cleanup_accepted.load(std::memory_order_acquire);
+	if (teardown_cleanup_accepted)
+		faithfulframe_activate_reap_task(&teardown_cleanup.task);
+
+	bool cleanup_accepted = false;
+	if (handoff_checks_passed)
+		cleanup_accepted =
+			defer_reap_task_when_available(&cleanup.task, mark_reaper_cleanup_complete, &cleanup);
+
+	auto drain_cleanup = [](reaper_cleanup_test_context &state) {
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while (!state.completed.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+			std::this_thread::yield();
+		const bool completed_before_deadline = state.completed.load(std::memory_order_acquire);
+		// A timeout is a test failure, but returning while the reaper still owns
+		// this stack context would turn that failure into a use-after-return.
+		while (!state.completed.load(std::memory_order_acquire))
+			std::this_thread::yield();
+		return completed_before_deadline && state.ran_off_caller.load(std::memory_order_acquire);
+	};
+
+	const bool teardown_cleanup_completed = teardown_cleanup_accepted ? drain_cleanup(teardown_cleanup) : false;
+	const bool cleanup_completed = cleanup_accepted ? drain_cleanup(cleanup) : false;
+	const bool teardown_executor_expired = await_expired(teardown_weak);
+	const bool contended_retired = retire_executor_when_available(contended_executor) && !contended_executor;
+	const bool paused_expired = await_expired(paused_weak);
+	const bool contended_expired = await_expired(contended_weak);
+	return handoff_checks_passed && teardown_cleanup_completed && cleanup_accepted && cleanup_completed &&
+	       teardown_executor_expired && contended_retired && paused_expired && contended_expired;
 }
 
 bool duplicate_retirement_requests_enqueue_once(const ff_session_config &config, const ff_generations &generations)
