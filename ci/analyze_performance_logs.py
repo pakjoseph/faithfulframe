@@ -21,6 +21,8 @@ from pathlib import Path
 
 
 SCHEMA_VERSION = 4
+MINIMUM_REHEARSAL_DURATION_HOURS = 2.0
+RECOMMENDED_REHEARSAL_DURATION_HOURS = 3.0
 EXPECTED_COLUMNS = [
     "schema_version",
     "run_metadata_present",
@@ -885,6 +887,24 @@ def compare_logs(reference: dict, candidate: dict) -> dict:
         "matched_context": True,
         "reference_duration_hours": reference["duration_hours"],
         "candidate_duration_hours": candidate["duration_hours"],
+        "rehearsal_duration_gate": {
+            "minimum_hours": MINIMUM_REHEARSAL_DURATION_HOURS,
+            "recommended_hours": RECOMMENDED_REHEARSAL_DURATION_HOURS,
+            "reference_meets_minimum": (
+                reference["duration_hours"] >= MINIMUM_REHEARSAL_DURATION_HOURS
+            ),
+            "candidate_meets_minimum": (
+                candidate["duration_hours"] >= MINIMUM_REHEARSAL_DURATION_HOURS
+            ),
+            "both_meet_minimum": (
+                reference["duration_hours"] >= MINIMUM_REHEARSAL_DURATION_HOURS
+                and candidate["duration_hours"] >= MINIMUM_REHEARSAL_DURATION_HOURS
+            ),
+            "both_meet_recommendation": (
+                reference["duration_hours"] >= RECOMMENDED_REHEARSAL_DURATION_HOURS
+                and candidate["duration_hours"] >= RECOMMENDED_REHEARSAL_DURATION_HOURS
+            ),
+        },
         "measurements": comparisons,
         "not_compared_metrics": sorted(set(not_compared)),
         "not_compared_video_settings": not_compared_video_settings,

@@ -232,11 +232,41 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
 
         self.assertTrue(comparison["matched_context"])
         self.assertFalse(comparison["thresholds_applied"])
+        self.assertFalse(comparison["rehearsal_duration_gate"]["both_meet_minimum"])
         self.assertEqual(comparison["measurements"]["stagesurface_map_failure_percent"]["difference"], 0.0)
         self.assertAlmostEqual(
             comparison["measurements"]["process_cpu_percent"]["change_percent"],
             16.666666666666664,
         )
+
+    def test_rehearsal_duration_gate_uses_two_hour_minimum_and_three_hour_recommendation(self):
+        results = []
+        for duration_hours in (2, 3):
+            elapsed_ms = duration_hours * 60 * 60 * 1000
+            reference_path = self.write_log(
+                f"reference-{duration_hours}h.csv",
+                [
+                    fixture_row(0, 10.0, 1_000_000, 1000, 5, "upstream"),
+                    fixture_row(elapsed_ms, 12.0, 1_100_000, 2000, 15, "upstream"),
+                ],
+            )
+            candidate_path = self.write_log(
+                f"candidate-{duration_hours}h.csv",
+                [
+                    fixture_row(0, 12.0, 1_050_000, 1000, 5, "faithfulframe"),
+                    fixture_row(elapsed_ms, 14.0, 1_200_000, 2000, 25, "faithfulframe"),
+                ],
+            )
+            results.append(
+                analyzer.compare_logs(
+                    analyzer.load_log(reference_path), analyzer.load_log(candidate_path)
+                )["rehearsal_duration_gate"]
+            )
+
+        self.assertTrue(results[0]["both_meet_minimum"])
+        self.assertFalse(results[0]["both_meet_recommendation"])
+        self.assertTrue(results[1]["both_meet_minimum"])
+        self.assertTrue(results[1]["both_meet_recommendation"])
 
     def test_rejects_mismatched_workload_notes(self):
         first = fixture_row(0, 10.0, 1_000_000, 1000, 5, "upstream")
