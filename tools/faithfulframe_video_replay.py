@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +42,23 @@ def replay_command(replay_bin: str, model: Path, fps: int, csv: Path | None) -> 
     if csv is not None:
         command.extend(["--csv", str(csv)])
     return command
+
+
+def same_file_or_path(left: Path, right: Path) -> bool:
+    try:
+        if left.exists() and right.exists() and os.path.samefile(left, right):
+            return True
+    except OSError:
+        pass
+    return left.resolve() == right.resolve()
+
+
+def executable_path(command: str) -> Path | None:
+    candidate = Path(command)
+    if candidate.is_file():
+        return candidate
+    located = shutil.which(command)
+    return Path(located) if located else None
 
 
 def stop_process(process: subprocess.Popen | None) -> None:
@@ -139,11 +158,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"dlib model does not exist: {args.model}", file=sys.stderr)
         return 2
     if args.csv is not None:
-        video_path = args.video.resolve()
-        model_path = args.model.resolve()
-        csv_path = args.csv.resolve()
-        if csv_path in (video_path, model_path):
-            print("CSV output must not replace the video or detector model", file=sys.stderr)
+        protected_paths = [args.video, args.model, Path(__file__)]
+        for command in (args.ffmpeg_bin, args.replay_bin):
+            resolved = executable_path(command)
+            if resolved is not None:
+                protected_paths.append(resolved)
+        if any(same_file_or_path(args.csv, path) for path in protected_paths):
+            print("CSV output must not replace an input, executable, or replay script", file=sys.stderr)
             return 2
     return run_pipeline(
         ffmpeg_bin=args.ffmpeg_bin,

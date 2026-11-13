@@ -1,5 +1,7 @@
 import io
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
@@ -37,6 +39,23 @@ class FakeProcess:
 
 
 class VideoReplayTests(unittest.TestCase):
+    def test_output_collision_detects_hard_link_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "video.mp4"
+            output = Path(directory) / "results.csv"
+            original.write_bytes(b"input")
+            try:
+                os.link(original, output)
+            except OSError as error:
+                self.skipTest(f"hard links are unavailable: {error}")
+
+            self.assertTrue(video_replay.same_file_or_path(output, original))
+            normalized = original.parent / "." / "video.mp4"
+            self.assertTrue(video_replay.same_file_or_path(original, normalized))
+
+    def test_resolves_executable_from_path_or_explicit_file(self):
+        self.assertEqual(video_replay.executable_path(sys.executable), Path(sys.executable))
+
     def test_ffmpeg_command_samples_without_shell_or_upscaling(self):
         command = video_replay.ffmpeg_command("ffmpeg", Path("service recording.mov"), 7, 1440)
         self.assertEqual(command[0], "ffmpeg")
