@@ -504,8 +504,8 @@ public:
 	{
 		if (!executor)
 			return false;
-			// Keep the test gate outside the queue critical section. A delayed caller
-			// must not prevent independent sessions from handing off their workers.
+		// Keep the test gate outside the queue critical section. A delayed caller
+		// must not prevent independent sessions from handing off their workers.
 #ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
 		faithfulframe_test_run_reaper_enqueue_hook();
 #endif
@@ -856,10 +856,9 @@ extern "C" void faithfulframe_teardown_begin_module_unload()
 
 void faithfulframe_session_executor::snapshot_publisher::publish(const ff_snapshot &snapshot, uint64_t published_at)
 {
-	std::array<uint64_t, word_count> copy{};
-	std::memcpy(copy.data(), &snapshot, sizeof(snapshot));
+	const auto copy = faithfulframe_snapshot_words(snapshot);
 	sequence.fetch_add(1, std::memory_order_seq_cst);
-	for (size_t i = 0; i < word_count; ++i)
+	for (size_t i = 0; i < faithfulframe_snapshot_word_count; ++i)
 		words[i].store(copy[i], std::memory_order_seq_cst);
 	published_at_ms.store(published_at, std::memory_order_seq_cst);
 	sequence.fetch_add(1, std::memory_order_seq_cst);
@@ -870,8 +869,8 @@ bool faithfulframe_session_executor::snapshot_publisher::try_read(ff_snapshot &s
 	const uint64_t before = sequence.load(std::memory_order_seq_cst);
 	if (before == 0 || (before & 1))
 		return false;
-	std::array<uint64_t, word_count> copy{};
-	for (size_t i = 0; i < word_count; ++i)
+	std::array<uint64_t, faithfulframe_snapshot_word_count> copy{};
+	for (size_t i = 0; i < faithfulframe_snapshot_word_count; ++i)
 		copy[i] = words[i].load(std::memory_order_seq_cst);
 	const uint64_t time = published_at_ms.load(std::memory_order_seq_cst);
 	if (sequence.load(std::memory_order_seq_cst) != before)

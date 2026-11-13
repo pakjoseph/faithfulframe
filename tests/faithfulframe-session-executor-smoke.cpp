@@ -6,6 +6,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <mutex>
@@ -175,6 +176,66 @@ bool deferred_cleanup_runs_on_reaper()
 		std::this_thread::yield();
 	return !ran_before_activation && state.completed.load(std::memory_order_acquire) &&
 	       state.ran_off_caller.load(std::memory_order_acquire);
+}
+
+bool snapshot_words_clear_ffi_padding()
+{
+	ff_snapshot dirty{};
+	std::memset(&dirty, 0xA5, sizeof(dirty));
+	dirty.state = FF_STATE_LOCKED;
+	dirty.reason = FF_REASON_SELECTED_BY_OPERATOR;
+	dirty.crop_action = FF_CROP_TRACK;
+	dirty.identity = ff_identity{0x101, 0x202};
+	dirty.status_version = 0x303;
+	dirty.observation_version = 0x404;
+	dirty.selected_handle = 0x505;
+	dirty.loss_deadline_ms = 0x606;
+	dirty.has_selected = 1;
+	dirty.has_loss_deadline = 1;
+	dirty.closed = 0;
+	dirty.command_result = FF_COMMAND_APPLIED;
+	dirty.rejection_reason = FF_REJECTION_NONE;
+	dirty.crop = ff_rect{0.1f, 0.2f, 0.3f, 0.4f};
+	dirty.viewport = ff_rect{0.5f, 0.6f, 0.7f, 0.8f};
+	dirty.generations = ff_generations{1, 2, 3, 4, 5};
+
+	const auto words = faithfulframe_snapshot_words(dirty);
+	ff_snapshot round_trip{};
+	std::memcpy(&round_trip, words.data(), sizeof(round_trip));
+	if (round_trip.state != dirty.state || round_trip.reason != dirty.reason ||
+	    round_trip.crop_action != dirty.crop_action || round_trip.identity.source != dirty.identity.source ||
+	    round_trip.identity.session != dirty.identity.session ||
+	    round_trip.status_version != dirty.status_version ||
+	    round_trip.observation_version != dirty.observation_version ||
+	    round_trip.selected_handle != dirty.selected_handle ||
+	    round_trip.loss_deadline_ms != dirty.loss_deadline_ms || round_trip.has_selected != dirty.has_selected ||
+	    round_trip.has_loss_deadline != dirty.has_loss_deadline || round_trip.closed != dirty.closed ||
+	    round_trip.command_result != dirty.command_result ||
+	    round_trip.rejection_reason != dirty.rejection_reason || round_trip.crop.x != dirty.crop.x ||
+	    round_trip.crop.y != dirty.crop.y || round_trip.crop.width != dirty.crop.width ||
+	    round_trip.crop.height != dirty.crop.height || round_trip.viewport.x != dirty.viewport.x ||
+	    round_trip.viewport.y != dirty.viewport.y || round_trip.viewport.width != dirty.viewport.width ||
+	    round_trip.viewport.height != dirty.viewport.height ||
+	    round_trip.generations.source != dirty.generations.source ||
+	    round_trip.generations.session != dirty.generations.session ||
+	    round_trip.generations.stream != dirty.generations.stream ||
+	    round_trip.generations.geometry != dirty.generations.geometry ||
+	    round_trip.generations.tracker != dirty.generations.tracker)
+		return false;
+
+	const auto *bytes = reinterpret_cast<const unsigned char *>(words.data());
+	const size_t padding_ranges[][2] = {
+		{offsetof(ff_snapshot, crop_action) + sizeof(uint32_t), offsetof(ff_snapshot, identity)},
+		{offsetof(ff_snapshot, closed) + sizeof(uint8_t), offsetof(ff_snapshot, command_result)},
+		{offsetof(ff_snapshot, viewport) + sizeof(ff_rect), offsetof(ff_snapshot, generations)},
+	};
+	for (const auto &range : padding_ranges) {
+		for (size_t offset = range[0]; offset < range[1]; ++offset) {
+			if (bytes[offset] != 0)
+				return false;
+		}
+	}
+	return true;
 }
 
 template<typename T> bool await_expired(const std::weak_ptr<T> &value)
@@ -877,6 +938,8 @@ bool control_work_is_admitted_during_detector_backlog(const ff_session_config &c
 
 int run_smoke()
 {
+	if (!snapshot_words_clear_ffi_padding())
+		return 119;
 	if (faithfulframe_teardown_register_instance() != 0)
 		return 92;
 	if (faithfulframe_executor_reaper_start() != 1)

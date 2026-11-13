@@ -6,12 +6,47 @@
 #include <cstddef>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <thread>
 
 #include "faithfulframe_ffi.h"
 #include "faithfulframe-candidate-limits.hpp"
+
+inline constexpr size_t faithfulframe_snapshot_word_count =
+	(sizeof(ff_snapshot) + sizeof(uint64_t) - 1) / sizeof(uint64_t);
+
+/// Copy only defined FFI fields into a zero-initialized record before treating
+/// its object representation as atomic words. Rust repr(C) padding is not part
+/// of the ABI and may otherwise contain indeterminate bytes.
+inline std::array<uint64_t, faithfulframe_snapshot_word_count>
+faithfulframe_snapshot_words(const ff_snapshot &snapshot) noexcept
+{
+	ff_snapshot canonical{};
+	canonical.state = snapshot.state;
+	canonical.reason = snapshot.reason;
+	canonical.crop_action = snapshot.crop_action;
+	canonical.identity = ff_identity{snapshot.identity.source, snapshot.identity.session};
+	canonical.status_version = snapshot.status_version;
+	canonical.observation_version = snapshot.observation_version;
+	canonical.selected_handle = snapshot.selected_handle;
+	canonical.loss_deadline_ms = snapshot.loss_deadline_ms;
+	canonical.has_selected = snapshot.has_selected;
+	canonical.has_loss_deadline = snapshot.has_loss_deadline;
+	canonical.closed = snapshot.closed;
+	canonical.command_result = snapshot.command_result;
+	canonical.rejection_reason = snapshot.rejection_reason;
+	canonical.crop = ff_rect{snapshot.crop.x, snapshot.crop.y, snapshot.crop.width, snapshot.crop.height};
+	canonical.viewport =
+		ff_rect{snapshot.viewport.x, snapshot.viewport.y, snapshot.viewport.width, snapshot.viewport.height};
+	canonical.generations = ff_generations{snapshot.generations.source, snapshot.generations.session,
+					       snapshot.generations.stream, snapshot.generations.geometry,
+					       snapshot.generations.tracker};
+	std::array<uint64_t, faithfulframe_snapshot_word_count> words{};
+	std::memcpy(words.data(), &canonical, sizeof(canonical));
+	return words;
+}
 
 class faithfulframe_executor_reaper;
 
@@ -140,8 +175,7 @@ private:
 	};
 
 	class snapshot_publisher {
-		static constexpr size_t word_count = (sizeof(ff_snapshot) + sizeof(uint64_t) - 1) / sizeof(uint64_t);
-		std::array<std::atomic<uint64_t>, word_count> words{};
+		std::array<std::atomic<uint64_t>, faithfulframe_snapshot_word_count> words{};
 		std::atomic<uint64_t> sequence{0};
 		std::atomic<uint64_t> published_at_ms{0};
 
