@@ -587,6 +587,12 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 			return "Wide framing; select a face to follow again";
 		return "Manual; select a face before following";
 	case FF_STATE_SEARCHING:
+		if (preview.reason == FF_REASON_AWAITING_SELECTION) {
+			if (preview.loss_remaining_ms >= 0)
+				return QString("No speaker selected; choose a visible face within %1 s to start following.")
+					.arg(preview.loss_remaining_ms / 1000.0, 0, 'f', 1);
+			return "No speaker selected; choose a visible face to start following";
+		}
 		if (preview.loss_remaining_ms >= 0)
 			return QString("Target briefly lost; holding framing. Same-speaker reacquisition: %1 s; then select again.")
 				.arg(preview.loss_remaining_ms / 1000.0, 0, 'f', 1);
