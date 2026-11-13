@@ -295,12 +295,15 @@ class PluginLoadTest(obstest.OBSTest):
             )
             self.assertTrue(original_scene, 'OBS must have an active program scene')
 
-            kinds_response = client.send('GetInputKindList', {'unversioned': True})
+            kinds_response = client.send('GetInputKindList', {'unversioned': False})
             input_kinds = kinds_response.input_kinds
-            self.assertIn(
-                'color_source',
-                input_kinds,
-                'OBS color source is required for hardware-free lifecycle testing',
+            color_kinds = [
+                kind for kind in input_kinds if kind == 'color_source' or kind.startswith('color_source_v')
+            ]
+            self.assertTrue(color_kinds, 'OBS color source is required for hardware-free lifecycle testing')
+            color_kind = max(
+                color_kinds,
+                key=lambda kind: int(kind.rsplit('_v', 1)[1]) if '_v' in kind else 0,
             )
 
             client.send('CreateScene', {'sceneName': scene_name})
@@ -309,7 +312,7 @@ class PluginLoadTest(obstest.OBSTest):
             client.send('CreateInput', {
                 'sceneName': scene_name,
                 'inputName': camera_name,
-                'inputKind': 'color_source',
+                'inputKind': color_kind,
                 'inputSettings': {'color': 0xFFFF0000, 'width': 320, 'height': 180},
             })
             client.send('CreateInput', {
@@ -338,7 +341,7 @@ class PluginLoadTest(obstest.OBSTest):
             client.send('CreateInput', {
                 'sceneName': scene_name,
                 'inputName': camera_name,
-                'inputKind': 'color_source',
+                'inputKind': color_kind,
                 'inputSettings': {'color': 0xFF0000FF, 'width': 320, 'height': 180},
             })
             replacement_image = self._wait_for_screenshot(
