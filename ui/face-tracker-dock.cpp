@@ -1196,6 +1196,10 @@ void FTDock::updateState()
 
 	proc_handler_t *ph = target ? obs_source_get_proc_handler(target) : nullptr;
 	if (!ph) {
+		pauseButton->setEnabled(false);
+		resetButton->setEnabled(false);
+		enableButton->setEnabled(false);
+		propertyButton->setEnabled(false);
 		operatorNotice.clear();
 		operatorNoticeTimer.invalidate();
 		if (performanceRecording) {
@@ -1227,6 +1231,10 @@ void FTDock::updateState()
 		}
 		return;
 	}
+
+	pauseButton->setEnabled(true);
+	resetButton->setEnabled(true);
+	propertyButton->setEnabled(true);
 
 	in_updateState = true;
 	bool safe_mode = false;
