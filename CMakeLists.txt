@@ -37,14 +37,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
 		unset(_faithfulframe_is_apple_silicon)
 		unset(_faithfulframe_sysctl_result)
 	endif()
-	if(DEFINED ENV{MACOSX_DEPLOYMENT_TARGET} AND NOT "$ENV{MACOSX_DEPLOYMENT_TARGET}" STREQUAL "")
-		set(_faithfulframe_default_macos_target "$ENV{MACOSX_DEPLOYMENT_TARGET}")
-	else()
-		set(_faithfulframe_default_macos_target "13.0")
-	endif()
-	set(CMAKE_OSX_DEPLOYMENT_TARGET "${_faithfulframe_default_macos_target}" CACHE STRING
+	# Do not inherit a workstation's MACOSX_DEPLOYMENT_TARGET: doing so can
+	# silently raise the minimum supported macOS version for local release builds.
+	# A deliberate product-floor change remains available through -D at configure time.
+	set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
 		"OBS deployment target for macOS - 13.0+ required")
-	unset(_faithfulframe_default_macos_target)
 	if(NOT CMAKE_OSX_DEPLOYMENT_TARGET MATCHES "^[0-9]+(\\.[0-9]+)*$" OR
 	   CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS "13.0")
 		message(FATAL_ERROR "FaithfulFrame requires a macOS deployment target of 13.0 or later")

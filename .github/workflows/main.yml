@@ -243,8 +243,9 @@ jobs:
           GIT_TAG=$(git describe --tags --always)
           PKG_SUFFIX=-${GIT_TAG}-obs${{ matrix.obs }}-macos-${{ matrix.arch }}
           set -e
-          # Exercise the repository's pre-project macOS 13 default.
-          unset MACOSX_DEPLOYMENT_TARGET
+          # A host environment override must not silently raise the published
+          # macOS floor. An intentional override remains available via -D.
+          export MACOSX_DEPLOYMENT_TARGET=15.0
           unset OPENBLAS_HOME
           SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           test -f "$SDKROOT/usr/lib/libcblas.tbd"
@@ -261,6 +262,7 @@ jobs:
             -D PKG_SUFFIX=$PKG_SUFFIX \
             -D OBS_BUNDLE_CODESIGN_IDENTITY='${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}' \
             ${{ steps.obsdeps.outputs.PLUGIN_CMAKE_OPTIONS }}
+          grep -q '^CMAKE_OSX_DEPLOYMENT_TARGET:STRING=13.0$' build/CMakeCache.txt
           cmake --build build --config RelWithDebInfo
           ctest --test-dir build --output-on-failure
           python3 -m unittest tests/test_verify_macos_deployment_target.py
