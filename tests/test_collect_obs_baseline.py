@@ -19,7 +19,7 @@ analyzer = importlib.util.module_from_spec(ANALYZER_SPEC)
 ANALYZER_SPEC.loader.exec_module(analyzer)
 
 
-def response_for(request_type, *, stream_active=True, record_active=False):
+def response_for(request_type, *, stream_active=True, record_active=False, record_paused=False):
     return {
         "GetVersion": {
             "obsVersion": "33.0.1", "platformDescription": "Windows 11",
@@ -37,7 +37,7 @@ def response_for(request_type, *, stream_active=True, record_active=False):
         "GetStreamStatus": {
             "outputActive": stream_active, "outputTotalFrames": 9990, "outputSkippedFrames": 5,
         },
-        "GetRecordStatus": {"outputActive": record_active, "outputPaused": False},
+        "GetRecordStatus": {"outputActive": record_active, "outputPaused": record_paused},
     }[request_type]
 
 
@@ -58,6 +58,7 @@ class FakeSocket:
         self.closed = False
         self.stream_active = True
         self.record_active = False
+        self.record_paused = False
 
     def send(self, raw):
         message = json.loads(raw)
@@ -77,6 +78,7 @@ class FakeSocket:
                             data["requestType"],
                             stream_active=self.stream_active,
                             record_active=self.record_active,
+                            record_paused=self.record_paused,
                         ),
                     },
                 }
@@ -137,6 +139,31 @@ class BaselineCollectorTests(unittest.TestCase):
         self.socket.record_active = False
         client.connect()
         with self.assertRaisesRegex(collector.BaselineCollectionError, "start OBS recording or streaming"):
+            collector.collect_snapshot(client, (3840, 2160))
+
+    def test_rejects_paused_recording_without_streaming(self):
+        client = self.make_client()
+        self.socket.stream_active = False
+        self.socket.record_active = True
+        self.socket.record_paused = True
+        client.connect()
+        with self.assertRaisesRegex(collector.BaselineCollectionError, "start OBS recording or streaming"):
+            collector.collect_snapshot(client, (3840, 2160))
+
+    def test_rejects_invalid_output_status_types(self):
+        client = self.make_client()
+        self.socket.stream_active = 1
+        client.connect()
+        with self.assertRaisesRegex(collector.BaselineCollectionError, "invalid outputActive"):
+            collector.collect_snapshot(client, (3840, 2160))
+
+        self.socket = FakeSocket()
+        client = self.make_client()
+        self.socket.stream_active = False
+        self.socket.record_active = True
+        self.socket.record_paused = "false"
+        client.connect()
+        with self.assertRaisesRegex(collector.BaselineCollectionError, "invalid outputPaused"):
             collector.collect_snapshot(client, (3840, 2160))
 
     def test_accepts_recording_without_streaming(self):
