@@ -585,6 +585,8 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 	case FF_STATE_MANUAL:
 		if (preview.reason == FF_REASON_RESET_WIDE)
 			return "Wide framing; select a face to follow again";
+		if (preview.reason == FF_REASON_MANUAL_OVERRIDE)
+			return "Manual override active; following stopped and current framing held. Select a face or reset wide.";
 		return "Manual; select a face before following";
 	case FF_STATE_SEARCHING:
 		if (preview.reason == FF_REASON_AWAITING_SELECTION) {
@@ -840,7 +842,7 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	connect(autoFollowButton, &QPushButton::clicked, this, &FTDock::autoFollowButtonClicked);
 
 	manualOverrideButton = new QPushButton("Manual Override", this);
-	manualOverrideButton->setAccessibleName("Stop automatic following and use manual framing");
+	manualOverrideButton->setAccessibleName("Stop automatic following and hold the current framing");
 	mainLayout->addWidget(manualOverrideButton);
 	connect(manualOverrideButton, &QPushButton::clicked, this, &FTDock::manualOverrideButtonClicked);
 
