@@ -569,8 +569,9 @@ static void fts_update(void *data, obs_data_t *settings)
 			obs_data_release(previous);
 	}
 #endif
-	if (!defer_tracker_update)
+	if (!defer_tracker_update) {
 		ftf_update(data, settings);
+	}
 	// Source adapters with the Rust bridge keep their display name in the
 	// runtime configuration protected above. Preserve the legacy field only for
 	// builds that do not provide that runtime.
