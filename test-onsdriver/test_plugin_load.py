@@ -155,6 +155,19 @@ class PluginLoadTest(obstest.OBSTest):
         expectation = 'appear' if expected else 'be removed'
         self.fail(f'Timed out waiting for OBS input {input_name!r} to {expectation}')
 
+    def _wait_for_log_text(self, text, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            logfile = self.obs.get_logfile()
+            try:
+                with open(logfile, 'r', encoding='utf-8', errors='replace') as fr:
+                    if text in fr.read():
+                        return
+            except OSError:
+                pass
+            time.sleep(0.1)
+        self.fail(f'Timed out waiting for OBS log message {text!r}')
+
     def _screenshot(self, client, source_name):
         response = client.send('GetSourceScreenshot', {
             'sourceName': source_name,
@@ -357,6 +370,9 @@ class PluginLoadTest(obstest.OBSTest):
                 'inputKind': 'face_tracker_source',
                 'inputSettings': {'target_name': other_camera_name, 'safe_tracking_enabled': True},
             })
+            self._wait_for_log_text(
+                'FaithfulFrame allows safe tracking on one source adapter at a time'
+            )
             self._wait_for_screenshot(
                 client, other_adapter_name, lambda image: image != other_camera_image
             )
