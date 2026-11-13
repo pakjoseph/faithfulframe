@@ -7,6 +7,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
+import uuid
 import unittest
 from onsdriver import obstest
 
@@ -139,6 +141,37 @@ class SetupShutdownSentinelTest(unittest.TestCase):
 class PluginLoadTest(obstest.OBSTest):
     'Test the plugin is loaded by OBS Studio'
 
+    @staticmethod
+    def _input_names(client):
+        response = client.send('GetInputList', {})
+        return {item['inputName'] for item in response.response_data['inputs']}
+
+    def _screenshot(self, client, source_name):
+        response = client.send('GetSourceScreenshot', {
+            'sourceName': source_name,
+            'imageFormat': 'png',
+            'imageWidth': 16,
+            'imageHeight': 16,
+        })
+        return response.response_data['imageData']
+
+    def _wait_for_screenshot(self, client, source_name, predicate, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        last_image = None
+        last_error = None
+        while time.monotonic() < deadline:
+            try:
+                last_image = self._screenshot(client, source_name)
+                last_error = None
+                if predicate(last_image):
+                    return last_image
+            except Exception as error:  # OBS may need a frame after a scene or source change.
+                last_error = error
+            time.sleep(0.1)
+        if last_error:
+            self.fail(f'Unable to capture {source_name!r}: {last_error}')
+        self.fail(f'Timed out waiting for the expected frame from {source_name!r}')
+
     def setUp(self):
         # Keep the OBSExec instance even if startup checking times out, so the
         # failed launch's log and stderr can be saved and its process cleaned up.
@@ -244,6 +277,92 @@ class PluginLoadTest(obstest.OBSTest):
                     loaded = True
                     break
         self.assertTrue(loaded)
+
+    def test_safe_adapter_requires_explicit_rebinding_after_source_replacement(self):
+        'Create a safe adapter and verify a same-name replacement stays unbound'
+        client = self.obs.get_obsws()
+        suffix = uuid.uuid4().hex
+        scene_name = f'FaithfulFrame lifecycle {suffix}'
+        camera_name = f'FaithfulFrame synthetic camera {suffix}'
+        adapter_name = f'FaithfulFrame safe adapter {suffix}'
+        original_scene = None
+        scene_created = False
+
+        try:
+            scene_response = client.send('GetCurrentProgramScene', {})
+            scene_data = scene_response.response_data
+            original_scene = scene_data.get('sceneName') or scene_data.get('currentProgramSceneName')
+            self.assertTrue(original_scene, 'OBS must have an active program scene')
+
+            kinds_response = client.send('GetInputKindList', {'unversioned': True})
+            input_kinds = kinds_response.response_data['inputKinds']
+            self.assertIn(
+                'color_source',
+                input_kinds,
+                'OBS color source is required for hardware-free lifecycle testing',
+            )
+
+            client.send('CreateScene', {'sceneName': scene_name})
+            scene_created = True
+            client.send('SetCurrentProgramScene', {'sceneName': scene_name})
+            client.send('CreateInput', {
+                'sceneName': scene_name,
+                'inputName': camera_name,
+                'inputKind': 'color_source',
+                'inputSettings': {'color': 0xFFFF0000, 'width': 320, 'height': 180},
+            })
+            client.send('CreateInput', {
+                'sceneName': scene_name,
+                'inputName': adapter_name,
+                'inputKind': 'face_tracker_source',
+                'inputSettings': {'target_name': camera_name, 'safe_tracking_enabled': True},
+            })
+
+            adapter_settings = client.send('GetInputSettings', {'inputName': adapter_name}).response_data
+            self.assertEqual(adapter_settings['inputKind'], 'face_tracker_source')
+            self.assertEqual(adapter_settings['inputSettings'].get('target_name'), camera_name)
+            self.assertTrue(adapter_settings['inputSettings'].get('safe_tracking_enabled'))
+
+            camera_image = self._wait_for_screenshot(client, camera_name, bool)
+            bound_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image == camera_image
+            )
+
+            client.send('RemoveInput', {'inputName': camera_name})
+            self.assertNotIn(camera_name, self._input_names(client))
+            unavailable_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image != bound_image
+            )
+
+            client.send('CreateInput', {
+                'sceneName': scene_name,
+                'inputName': camera_name,
+                'inputKind': 'color_source',
+                'inputSettings': {'color': 0xFF0000FF, 'width': 320, 'height': 180},
+            })
+            replacement_image = self._wait_for_screenshot(
+                client, camera_name, lambda image: image != camera_image
+            )
+            self.assertNotEqual(replacement_image, camera_image)
+            for _ in range(3):
+                self.assertEqual(self._screenshot(client, adapter_name), unavailable_image)
+                time.sleep(0.1)
+
+            client.send('RemoveInput', {'inputName': adapter_name})
+            self.assertNotIn(adapter_name, self._input_names(client))
+            self.assertIn(camera_name, self._input_names(client), 'Removing the adapter must leave its camera intact')
+        finally:
+            # Keep this test isolated from the next OBS test even when an assertion fails.
+            names = self._input_names(client)
+            if adapter_name in names:
+                client.send('RemoveInput', {'inputName': adapter_name})
+            names = self._input_names(client)
+            if camera_name in names:
+                client.send('RemoveInput', {'inputName': camera_name})
+            if original_scene:
+                client.send('SetCurrentProgramScene', {'sceneName': original_scene})
+            if scene_created:
+                client.send('RemoveScene', {'sceneName': scene_name})
 
 
 if __name__ == '__main__':
