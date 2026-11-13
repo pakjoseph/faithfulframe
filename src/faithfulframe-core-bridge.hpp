@@ -81,6 +81,11 @@ bool faithfulframe_next_lifecycle_generations(uint32_t kind, const ff_generation
 class faithfulframe_session_executor {
 public:
 	static constexpr size_t max_candidates = faithfulframe_max_candidates;
+	static constexpr size_t max_queued_work = 16;
+	// Keep capacity for operator commands and authoritative lifecycle events
+	// while detector observations or frame ticks are backlogged.
+	static constexpr size_t reserved_control_work = 4;
+	static constexpr size_t max_queued_background_work = max_queued_work - reserved_control_work;
 
 	faithfulframe_session_executor(const ff_session_config &, const ff_identity &, const ff_generations &);
 	~faithfulframe_session_executor();
@@ -156,7 +161,6 @@ private:
 	// off without consulting a global mutex, and unload cannot reclaim the
 	// reaper while an adapter still owns an executor.
 	const std::shared_ptr<faithfulframe_executor_reaper> reaper;
-	static constexpr size_t max_queued_work = 16;
 	std::array<work_item, max_queued_work + 1> queue{};
 	size_t queue_head = 0;
 	size_t queue_size = 0;
@@ -226,4 +230,7 @@ extern "C" void faithfulframe_test_set_reaper_enqueue_hook(void (*hook)(void *),
 #endif
 #ifdef FAITHFULFRAME_TEST_REAPER_QUEUE_LOCK_HOOK
 extern "C" void faithfulframe_test_set_reaper_queue_lock_hook(void (*hook)(void *), void *context);
+#endif
+#ifdef FAITHFULFRAME_TEST_SESSION_WORK_HOOK
+extern "C" void faithfulframe_test_set_session_work_hook(void (*hook)(void *), void *context);
 #endif

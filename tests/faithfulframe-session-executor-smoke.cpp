@@ -38,6 +38,15 @@ struct reaper_queue_lock_test_gate
 	bool release_queue_lock = false;
 };
 
+struct session_work_test_gate
+{
+	std::mutex mutex;
+	std::condition_variable condition;
+	std::atomic<bool> pause_claimed{false};
+	bool work_paused = false;
+	bool release_work = false;
+};
+
 struct reaper_cleanup_test_context
 {
 	faithfulframe_reap_task task{};
@@ -101,6 +110,17 @@ void pause_reaper_queue_lock(void *context)
 	gate->queue_lock_held = true;
 	gate->condition.notify_all();
 	gate->condition.wait(lock, [gate] { return gate->release_queue_lock; });
+}
+
+void pause_session_work(void *context)
+{
+	auto *gate = static_cast<session_work_test_gate *>(context);
+	if (gate->pause_claimed.exchange(true, std::memory_order_acq_rel))
+		return;
+	std::unique_lock<std::mutex> lock(gate->mutex);
+	gate->work_paused = true;
+	gate->condition.notify_all();
+	gate->condition.wait(lock, [gate] { return gate->release_work; });
 }
 
 template<typename Predicate>
@@ -740,6 +760,89 @@ bool rejected_command_notice_expires_without_policy_change(const ff_session_conf
 	       snapshot.crop.x == rejected.crop.x && snapshot.crop.y == rejected.crop.y &&
 	       snapshot.crop.width == rejected.crop.width && snapshot.crop.height == rejected.crop.height;
 }
+
+bool control_work_is_admitted_during_detector_backlog(const ff_session_config &config,
+						      const ff_generations &generations)
+{
+	const ff_identity identity{157, 257};
+	faithfulframe_session_executor executor(config, identity, generations);
+	ff_snapshot initial{};
+	if (!await_snapshot(executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, initial))
+		return false;
+
+	session_work_test_gate gate;
+	faithfulframe_test_set_session_work_hook(pause_session_work, &gate);
+	const bool initial_tick_queued = executor.enqueue_tick(1);
+	bool worker_paused = false;
+	if (initial_tick_queued) {
+		std::unique_lock<std::mutex> lock(gate.mutex);
+		worker_paused =
+			gate.condition.wait_for(lock, std::chrono::seconds(2), [&gate] { return gate.work_paused; });
+	}
+	if (!worker_paused) {
+		{
+			std::lock_guard<std::mutex> lock(gate.mutex);
+			gate.release_work = true;
+		}
+		gate.condition.notify_all();
+		faithfulframe_test_set_session_work_hook(nullptr, nullptr);
+		executor.shutdown();
+		return false;
+	}
+
+	bool background_queued = true;
+	for (size_t index = 0; index < faithfulframe_session_executor::max_queued_background_work; ++index) {
+		const uint64_t at = index + 2;
+		if (index % 2 == 0) {
+			const uint64_t version = index / 2 + 1;
+			const ff_candidate candidate{version,
+						     1000 + version,
+						     identity,
+						     version,
+						     generations,
+						     at,
+						     at + config.max_evidence_age_ms,
+						     {0.4f, 0.2f, 0.1f, 0.2f}};
+			background_queued = executor.enqueue_candidates(at, &candidate, 1) && background_queued;
+		} else {
+			background_queued = executor.enqueue_tick(at) && background_queued;
+		}
+	}
+	const uint64_t next_version = faithfulframe_session_executor::max_queued_background_work / 2 + 1;
+	const ff_candidate excess_candidate{next_version, 1000 + next_version,
+					    identity,     next_version,
+					    generations,  32,
+					    532,          {0.5f, 0.2f, 0.1f, 0.2f}};
+	const bool excess_background_rejected = !executor.enqueue_candidates(32, &excess_candidate, 1);
+	ff_generations inactive_generations{};
+	const bool lifecycle_generations_valid = faithfulframe_next_lifecycle_generations(
+		FF_LIFECYCLE_SCENE_INACTIVE, generations, inactive_generations);
+	const ff_lifecycle inactive{FF_LIFECYCLE_SCENE_INACTIVE, identity, inactive_generations, 0, 0};
+	const bool lifecycle_admitted = lifecycle_generations_valid && executor.enqueue_lifecycle(33, inactive);
+	const ff_command freeze{
+		FF_COMMAND_FREEZE, initial.identity, initial.status_version, inactive_generations, 0, 0};
+	const bool freeze_admitted = executor.enqueue_command(34, freeze);
+	const ff_executor_diagnostics queued_diagnostics = executor.diagnostics();
+
+	{
+		std::lock_guard<std::mutex> lock(gate.mutex);
+		gate.release_work = true;
+	}
+	gate.condition.notify_all();
+	faithfulframe_test_set_session_work_hook(nullptr, nullptr);
+	ff_snapshot final_snapshot{};
+	const bool freeze_applied = await_snapshot(
+		executor,
+		[](const ff_snapshot &value) {
+			return value.state == FF_STATE_FROZEN && value.command_result == FF_COMMAND_APPLIED;
+		},
+		final_snapshot);
+	const ff_executor_diagnostics completed_diagnostics = executor.diagnostics();
+	executor.shutdown();
+	return background_queued && excess_background_rejected && lifecycle_admitted && freeze_admitted &&
+	       queued_diagnostics.queue_depth == faithfulframe_session_executor::max_queued_background_work + 2 &&
+	       queued_diagnostics.rejected_work == 1 && freeze_applied && completed_diagnostics.rejected_work == 1;
+}
 } // namespace
 
 int run_smoke()
@@ -760,6 +863,8 @@ int run_smoke()
 		return 111;
 	if (!rejected_command_notice_expires_without_policy_change(config, ff_generations{1, 1, 1, 1, 1}))
 		return 117;
+	if (!control_work_is_admitted_during_detector_backlog(config, ff_generations{1, 1, 1, 1, 1}))
+		return 118;
 	if (faithfulframe_teardown_register_instance() != 1)
 		return 94;
 	faithfulframe_teardown_instance_created();

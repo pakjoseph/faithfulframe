@@ -68,6 +68,27 @@ void faithfulframe_test_run_reaper_join_hook()
 } // namespace
 #endif
 
+#ifdef FAITHFULFRAME_TEST_SESSION_WORK_HOOK
+namespace {
+std::mutex faithfulframe_test_session_work_hook_mutex;
+void (*faithfulframe_test_session_work_hook)(void *) = nullptr;
+void *faithfulframe_test_session_work_hook_context = nullptr;
+
+void faithfulframe_test_run_session_work_hook()
+{
+	void (*hook)(void *) = nullptr;
+	void *context = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(faithfulframe_test_session_work_hook_mutex);
+		hook = faithfulframe_test_session_work_hook;
+		context = faithfulframe_test_session_work_hook_context;
+	}
+	if (hook)
+		hook(context);
+}
+} // namespace
+#endif
+
 static void update_max(std::atomic<uint64_t> &maximum, uint64_t value)
 {
 	uint64_t current = maximum.load(std::memory_order_relaxed);
@@ -342,7 +363,20 @@ bool faithfulframe_session_executor::enqueue(work_item item, bool coalesce)
 			return true;
 		}
 	}
-	// Keep one slot reserved so shutdown can always enqueue its final lifecycle event.
+	if (item.kind == work_kind::tick || item.kind == work_kind::candidates) {
+		size_t queued_background_work = 0;
+		for (size_t offset = 0; offset < queue_size; ++offset) {
+			const work_kind queued_kind = queue[(queue_head + offset) % queue.size()].kind;
+			if (queued_kind == work_kind::tick || queued_kind == work_kind::candidates)
+				++queued_background_work;
+		}
+		// Bound the tick/candidate backlog below total capacity so operator and
+		// lifecycle events have reserved queue space under detector load.
+		if (queued_background_work >= max_queued_background_work) {
+			rejected_work.fetch_add(1, std::memory_order_relaxed);
+			return false;
+		}
+	}
 	if (queue_size == max_queued_work) {
 		rejected_work.fetch_add(1, std::memory_order_relaxed);
 		return false;
@@ -741,6 +775,15 @@ extern "C" void faithfulframe_test_set_reaper_queue_lock_hook(void (*hook)(void 
 }
 #endif
 
+#ifdef FAITHFULFRAME_TEST_SESSION_WORK_HOOK
+extern "C" void faithfulframe_test_set_session_work_hook(void (*hook)(void *), void *context)
+{
+	std::lock_guard<std::mutex> lock(faithfulframe_test_session_work_hook_mutex);
+	faithfulframe_test_session_work_hook = hook;
+	faithfulframe_test_session_work_hook_context = context;
+}
+#endif
+
 extern "C" void faithfulframe_teardown_instance_created()
 {
 	std::lock_guard<std::mutex> lock(faithfulframe_module_lifecycle_mutex);
@@ -879,6 +922,9 @@ void faithfulframe_session_executor::run()
 				queue_depth.store(queue_size, std::memory_order_relaxed);
 				update_oldest_queue_timestamp_locked();
 			}
+#ifdef FAITHFULFRAME_TEST_SESSION_WORK_HOOK
+			faithfulframe_test_run_session_work_hook();
+#endif
 			last_queue_wait_us.store(elapsed_microseconds(item.enqueued_at), std::memory_order_relaxed);
 			update_max(max_queue_wait_us, last_queue_wait_us.load(std::memory_order_relaxed));
 			const auto processing_started = std::chrono::steady_clock::now();
