@@ -721,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn framing_config_outside_safety_limits_cannot_create_a_session() {
+    fn configuration_outside_core_safety_limits_cannot_create_a_session() {
         let mut config = FfSessionConfig {
             loss_grace_ms: 5_000,
             max_evidence_age_ms: 500,
@@ -759,6 +759,20 @@ mod tests {
 
         config.dead_zone_fraction = 0.05;
         config.max_zoom = 8.25;
+        output = std::ptr::NonNull::<FfSession>::dangling().as_ptr();
+        let result = unsafe { ff_session_create(&config, &identity, &generations, &mut output) };
+        assert_eq!(result, INVALID_ARGUMENT);
+        assert!(output.is_null());
+
+        config.max_zoom = 4.0;
+        config.max_evidence_age_ms = 501;
+        output = std::ptr::NonNull::<FfSession>::dangling().as_ptr();
+        let result = unsafe { ff_session_create(&config, &identity, &generations, &mut output) };
+        assert_eq!(result, INVALID_ARGUMENT);
+        assert!(output.is_null());
+
+        config.max_evidence_age_ms = 500;
+        config.loss_grace_ms = 15_001;
         output = std::ptr::NonNull::<FfSession>::dangling().as_ptr();
         let result = unsafe { ff_session_create(&config, &identity, &generations, &mut output) };
         assert_eq!(result, INVALID_ARGUMENT);

@@ -1740,7 +1740,7 @@ int run_smoke()
 		ff_session_config preview_config = config;
 		// Let the command notice expire before the late-candidate event without
 		// making the selected evidence stale during this isolated version test.
-		preview_config.max_evidence_age_ms = 10'000;
+		preview_config.max_evidence_age_ms = 500;
 		faithfulframe_session_executor preview_executor(preview_config, ff_identity{110, 210}, generations);
 		ff_snapshot preview_snapshot{};
 		if (!await_snapshot(
@@ -1792,8 +1792,28 @@ int run_smoke()
 		    preview_snapshot.state != FF_STATE_LOCKED ||
 		    preview_snapshot.selected_handle != preview_candidate.handle)
 			return 80;
-		const ff_snapshot after_stale_click = preview_snapshot;
-		const ff_candidate late_candidate{42,   4002, preview_snapshot.identity, 2, generations,
+		// Refresh the selected tracker inside its grace period so the later
+		// stale-result check does not coincide with an independent loss deadline.
+		const ff_candidate fresh_continuity_candidate{43,   4001, preview_snapshot.identity, 3, generations,
+							      1600, 2100, {0.42f, 0.2f, 0.1f, 0.2f}};
+		if (!preview_executor.enqueue_candidates(1600, &fresh_continuity_candidate, 1) ||
+		    !await_snapshot(
+			    preview_executor,
+			    [](const ff_snapshot &value) {
+				    return value.observation_version == 3 && value.state == FF_STATE_LOCKED;
+			    },
+			    preview_snapshot))
+			return 123;
+		if (!preview_executor.enqueue_candidate_clear(1601, preview_snapshot.identity, generations, 4) ||
+		    !await_snapshot(
+			    preview_executor,
+			    [](const ff_snapshot &value) {
+				    return value.observation_version == 4 && value.state == FF_STATE_LOCKED;
+			    },
+			    preview_snapshot))
+			return 124;
+		const ff_snapshot before_late_candidate = preview_snapshot;
+		const ff_candidate late_candidate{44,   4002, preview_snapshot.identity, 4, generations,
 						  2006, 2506, {0.6f, 0.2f, 0.1f, 0.2f}};
 		if (!preview_executor.enqueue_candidates(2006, &late_candidate, 1))
 			return 91;
@@ -1809,14 +1829,14 @@ int run_smoke()
 		} while (std::chrono::steady_clock::now() < candidate_deadline);
 		if (candidate_published_at < 2006)
 			return 92;
-		if (preview_snapshot.state != after_stale_click.state ||
-		    preview_snapshot.selected_handle != after_stale_click.selected_handle ||
-		    preview_snapshot.status_version != after_stale_click.status_version ||
-		    preview_snapshot.observation_version != after_stale_click.observation_version ||
-		    preview_snapshot.crop.x != after_stale_click.crop.x ||
-		    preview_snapshot.crop.y != after_stale_click.crop.y ||
-		    preview_snapshot.crop.width != after_stale_click.crop.width ||
-		    preview_snapshot.crop.height != after_stale_click.crop.height)
+		if (preview_snapshot.state != before_late_candidate.state ||
+		    preview_snapshot.selected_handle != before_late_candidate.selected_handle ||
+		    preview_snapshot.status_version != before_late_candidate.status_version ||
+		    preview_snapshot.observation_version != before_late_candidate.observation_version ||
+		    preview_snapshot.crop.x != before_late_candidate.crop.x ||
+		    preview_snapshot.crop.y != before_late_candidate.crop.y ||
+		    preview_snapshot.crop.width != before_late_candidate.crop.width ||
+		    preview_snapshot.crop.height != before_late_candidate.crop.height)
 			return 93;
 	}
 	// The first destroy callback leaves cleanup available for the second active

@@ -11,6 +11,12 @@ pub type Millis = u64;
 pub type CandidateHandle = u64;
 pub type ContinuityToken = u64;
 pub const MAX_SESSION_CANDIDATES: usize = 8;
+/// Product bound mirrored by the OBS settings UI. Longer loss grace could
+/// preserve continuity long after an operator should have to select again.
+pub const MAX_TARGET_LOSS_GRACE_MS: Millis = 15_000;
+/// Fresh detector evidence is intentionally short-lived in the production
+/// adapter. Keep alternate callers from widening that stale-result window.
+pub const MAX_EVIDENCE_AGE_MS: Millis = 500;
 
 /// Opaque identities are stable for one adapter/session lifetime. Generation
 /// counters describe changes within those identities and are not substitutes.
@@ -78,6 +84,8 @@ pub enum GeometryError {
 pub enum SessionConfigError {
     InvalidIdentity,
     InvalidCandidateCapacity,
+    LossGraceTooLong,
+    EvidenceAgeTooLong,
     InvalidSafeWide(GeometryError),
     SafeWideMustBeFullFrame,
 }
@@ -334,6 +342,12 @@ impl TrackingSession {
         }
         if config.max_candidates == 0 || config.max_candidates > MAX_SESSION_CANDIDATES {
             return Err(SessionConfigError::InvalidCandidateCapacity);
+        }
+        if config.loss_grace_ms > MAX_TARGET_LOSS_GRACE_MS {
+            return Err(SessionConfigError::LossGraceTooLong);
+        }
+        if config.max_evidence_age_ms > MAX_EVIDENCE_AGE_MS {
+            return Err(SessionConfigError::EvidenceAgeTooLong);
         }
         let safe_wide = Rect::normalized(
             config.safe_wide.x,
@@ -2448,6 +2462,44 @@ mod tests {
                 Err(SessionConfigError::InvalidCandidateCapacity)
             ));
         }
+    }
+
+    #[test]
+    fn session_timers_cannot_exceed_product_safety_limits() {
+        for (config, expected) in [
+            (
+                Config {
+                    loss_grace_ms: MAX_TARGET_LOSS_GRACE_MS + 1,
+                    ..Config::default()
+                },
+                SessionConfigError::LossGraceTooLong,
+            ),
+            (
+                Config {
+                    max_evidence_age_ms: MAX_EVIDENCE_AGE_MS + 1,
+                    ..Config::default()
+                },
+                SessionConfigError::EvidenceAgeTooLong,
+            ),
+        ] {
+            assert!(matches!(
+                TrackingSession::new(config, identity(), generations()),
+                Err(error) if error == expected
+            ));
+        }
+
+        assert!(
+            TrackingSession::new(
+                Config {
+                    loss_grace_ms: MAX_TARGET_LOSS_GRACE_MS,
+                    max_evidence_age_ms: MAX_EVIDENCE_AGE_MS,
+                    ..Config::default()
+                },
+                identity(),
+                generations(),
+            )
+            .is_ok()
+        );
     }
 
     #[test]
