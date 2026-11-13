@@ -105,6 +105,13 @@ def _number(response: dict, field: str, *, integer: bool = False) -> int | float
     return value
 
 
+def _boolean(response: dict, field: str) -> bool:
+    value = response.get(field)
+    if not isinstance(value, bool):
+        raise BaselineCollectionError(f"OBS response is missing or has an invalid {field}")
+    return value
+
+
 class ObsWebSocketClient:
     """Small synchronous read-only OBS WebSocket v5 client."""
 
@@ -266,6 +273,9 @@ def collect_snapshot(client: ObsWebSocketClient, input_resolution: tuple[int, in
     stats = client.request("GetStats")
     stream = client.request("GetStreamStatus")
     record = client.request("GetRecordStatus")
+    stream_active = _boolean(stream, "outputActive")
+    record_output_active = _boolean(record, "outputActive")
+    record_active = record_output_active and not _boolean(record, "outputPaused")
 
     video = {
         "fps_numerator": _number(settings, "fpsNumerator", integer=True),
@@ -279,7 +289,7 @@ def collect_snapshot(client: ObsWebSocketClient, input_resolution: tuple[int, in
         raise BaselineCollectionError("OBS returned zero-valued video settings")
     if not version.get("obsVersion"):
         raise BaselineCollectionError("OBS response is missing obsVersion")
-    if not (stream.get("outputActive") is True or record.get("outputActive") is True):
+    if not (stream_active or record_active):
         raise BaselineCollectionError("start OBS recording or streaming before collecting a rehearsal baseline")
 
     input_width, input_height = input_resolution
@@ -297,13 +307,13 @@ def collect_snapshot(client: ObsWebSocketClient, input_resolution: tuple[int, in
         "render_total_frames": _number(stats, "renderTotalFrames", integer=True),
         "render_skipped_frames": _number(stats, "renderSkippedFrames", integer=True),
         "stream_total_frames": (
-            _number(stream, "outputTotalFrames", integer=True) if stream.get("outputActive") else None
+            _number(stream, "outputTotalFrames", integer=True) if stream_active else None
         ),
         "stream_skipped_frames": (
-            _number(stream, "outputSkippedFrames", integer=True) if stream.get("outputActive") else None
+            _number(stream, "outputSkippedFrames", integer=True) if stream_active else None
         ),
-        "stream_active": stream.get("outputActive") is True,
-        "record_active": record.get("outputActive") is True and record.get("outputPaused") is not True,
+        "stream_active": stream_active,
+        "record_active": record_active,
     }
 
 
