@@ -40,6 +40,13 @@ struct reaper_queue_lock_test_gate
 	bool release_queue_lock = false;
 };
 
+struct reaper_wait_test_gate
+{
+	std::mutex mutex;
+	std::condition_variable condition;
+	size_t calls = 0;
+};
+
 struct session_work_test_gate
 {
 	std::mutex mutex;
@@ -160,6 +167,16 @@ void pause_reaper_queue_lock(void *context)
 	gate->queue_lock_held = true;
 	gate->condition.notify_all();
 	gate->condition.wait(lock, [gate] { return gate->release_queue_lock; });
+}
+
+void record_reaper_wait(void *context)
+{
+	auto *gate = static_cast<reaper_wait_test_gate *>(context);
+	{
+		std::lock_guard<std::mutex> lock(gate->mutex);
+		++gate->calls;
+	}
+	gate->condition.notify_all();
 }
 
 void pause_session_work(void *context)
@@ -673,6 +690,8 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 	std::atomic<bool> blocking_executor_accepted{false};
 	std::atomic<bool> blocking_cleanup_finished{false};
 	std::atomic<bool> blocking_cleanup_accepted{false};
+	reaper_wait_test_gate wait_gate;
+	faithfulframe_test_set_reaper_wait_hook(record_reaper_wait, &wait_gate);
 	std::thread blocking_executor_handoff([&] {
 		blocking_executor_accepted.store(faithfulframe_retire_session_executor(teardown_executor, true),
 						 std::memory_order_release);
@@ -699,12 +718,18 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 	bool contended_returned = false;
 	{
 		std::unique_lock<std::mutex> lock(completion_mutex);
-		contended_returned = completion_condition.wait_for(lock, std::chrono::milliseconds(250), [&] {
+		contended_returned = completion_condition.wait_for(lock, std::chrono::seconds(2), [&] {
 			return contended_finished.load(std::memory_order_acquire);
 		});
 	}
-	std::this_thread::sleep_for(std::chrono::milliseconds(20));
-	const bool teardown_handoffs_waited_for_queue = !blocking_executor_finished.load(std::memory_order_acquire) &&
+	bool blocking_waiters_reached_lock = false;
+	{
+		std::unique_lock<std::mutex> lock(wait_gate.mutex);
+		blocking_waiters_reached_lock = wait_gate.condition.wait_for(lock, std::chrono::seconds(2),
+									     [&] { return wait_gate.calls == 2; });
+	}
+	const bool teardown_handoffs_waited_for_queue = blocking_waiters_reached_lock &&
+							!blocking_executor_finished.load(std::memory_order_acquire) &&
 							!blocking_cleanup_finished.load(std::memory_order_acquire);
 	{
 		std::lock_guard<std::mutex> lock(gate.mutex);
@@ -715,6 +740,7 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 	contended_handoff.join();
 	blocking_executor_handoff.join();
 	blocking_cleanup_handoff.join();
+	faithfulframe_test_set_reaper_wait_hook(nullptr, nullptr);
 	faithfulframe_test_set_reaper_queue_lock_hook(nullptr, nullptr);
 	const bool contended_owner_retained = static_cast<bool>(contended_executor);
 	const bool handoff_checks_passed =

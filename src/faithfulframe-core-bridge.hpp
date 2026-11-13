@@ -265,6 +265,9 @@ extern "C" void faithfulframe_test_set_reaper_enqueue_hook(void (*hook)(void *),
 #ifdef FAITHFULFRAME_TEST_REAPER_QUEUE_LOCK_HOOK
 extern "C" void faithfulframe_test_set_reaper_queue_lock_hook(void (*hook)(void *), void *context);
 #endif
+#ifdef FAITHFULFRAME_TEST_REAPER_WAIT_HOOK
+extern "C" void faithfulframe_test_set_reaper_wait_hook(void (*hook)(void *), void *context);
+#endif
 #ifdef FAITHFULFRAME_TEST_SESSION_WORK_HOOK
 extern "C" void faithfulframe_test_set_session_work_hook(void (*hook)(void *), void *context);
 #endif
