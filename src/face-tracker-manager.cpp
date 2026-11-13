@@ -82,12 +82,7 @@ face_tracker_base *face_tracker_manager::take_idle_tracker()
 
 uint64_t face_tracker_manager::allocate_candidate_handle()
 {
-	const uint64_t maximum = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
-	if (next_candidate_handle == 0 || next_candidate_handle > maximum)
-		return 0;
-	const uint64_t handle = next_candidate_handle;
-	next_candidate_handle = handle == maximum ? 0 : handle + 1;
-	return handle;
+	return faithfulframe_allocate_candidate_handle(next_candidate_handle);
 }
 
 inline bool face_tracker_manager::is_low_confident(const tracker_inst_s &t, float th1)
