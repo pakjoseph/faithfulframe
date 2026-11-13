@@ -1076,8 +1076,11 @@ int run_smoke()
 	if (faithfulframe_teardown_register_instance() != 1)
 		return 94;
 	faithfulframe_teardown_instance_created();
-	// Even an accidental early shutdown request must not close the reaper while
-	// a source is live: its destroy callback still needs a safe executor handoff.
+	// Repeated startup preserves live reservations, and beginning module unload
+	// must keep the reaper available until the source destroy callback hands off.
+	if (faithfulframe_executor_reaper_start() != 1)
+		return 121;
+	faithfulframe_teardown_begin_module_unload();
 	faithfulframe_executor_reaper_shutdown();
 	auto last_source_executor = std::make_shared<faithfulframe_session_executor>(config, ff_identity{109, 209},
 										     ff_generations{1, 1, 1, 1, 1});
@@ -1093,8 +1096,10 @@ int run_smoke()
 	if (!retire_executor_when_available(last_source_executor) || last_source_executor)
 		return 96;
 	faithfulframe_teardown_instance_destroyed();
-	if (!await_expired(last_source_weak) || faithfulframe_teardown_register_instance() != 1)
+	if (!await_expired(last_source_weak) || faithfulframe_teardown_register_instance() != 0)
 		return 97;
+	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
+		return 122;
 	// Failed creates only release their reservation. They do not turn into
 	// active source instances or change reaper ownership.
 	faithfulframe_teardown_instance_creation_failed();

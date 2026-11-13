@@ -244,6 +244,8 @@ std::shared_ptr<faithfulframe_executor_reaper> faithfulframe_acquire_executor_re
 
 /// Starts the asynchronous session-join worker. Module loading must fail if it
 /// cannot be started, so nonblocking OBS callbacks can transfer joins safely.
+/// Repeated calls preserve live source reservations; a draining lifecycle cannot
+/// be restarted until all registered sources have been destroyed.
 extern "C" int faithfulframe_executor_reaper_start();
 /// Drains and closes the worker only after module unload has begun and all
 /// registered source-instance cleanup has been handed off. Calls made earlier

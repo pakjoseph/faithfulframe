@@ -731,21 +731,33 @@ bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session
 extern "C" int faithfulframe_executor_reaper_start()
 {
 	std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
-	faithfulframe_reaper_closed = false;
-	if (!faithfulframe_reaper || !faithfulframe_reaper->available()) {
-		faithfulframe_reaper.reset();
-		try {
-			faithfulframe_reaper = std::make_shared<faithfulframe_executor_reaper>();
-		} catch (...) {
-			faithfulframe_reaper_closed = true;
-			return 0;
+	const bool reaper_available = faithfulframe_reaper && faithfulframe_reaper->available();
+	{
+		std::lock_guard<std::mutex> lifecycle_lock(faithfulframe_module_lifecycle_mutex);
+		if (reaper_available) {
+			// Module load may be retried while an earlier generation is still
+			// draining OBS source instances. Preserve its reservations and do not
+			// reopen a module that has already begun unloading.
+			return faithfulframe_module_unloading ? 0 : 1;
 		}
+		// A stopped/missing reaper cannot be replaced while any source creation
+		// or destruction still depends on the current lifecycle generation.
+		if (faithfulframe_live_instances != 0 || faithfulframe_pending_creates != 0)
+			return 0;
+	}
+	faithfulframe_reaper.reset();
+	try {
+		faithfulframe_reaper = std::make_shared<faithfulframe_executor_reaper>();
+	} catch (...) {
+		faithfulframe_reaper_closed = true;
+		return 0;
 	}
 	if (!faithfulframe_reaper || !faithfulframe_reaper->available()) {
 		faithfulframe_reaper.reset();
 		faithfulframe_reaper_closed = true;
 		return 0;
 	}
+	faithfulframe_reaper_closed = false;
 	{
 		std::lock_guard<std::mutex> lifecycle_lock(faithfulframe_module_lifecycle_mutex);
 		faithfulframe_pending_creates = 0;
