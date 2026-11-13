@@ -3,7 +3,8 @@
 use faithfulframe_core::framing::FramingConfig;
 use faithfulframe_core::{
     Candidate, Command, CommandEnvelope, CommandResult, Config, CropAction, Event, Generations,
-    Identity, Lifecycle, Reason, Rect, Snapshot, State, TrackingEngine,
+    Identity, Lifecycle, LifecycleKind, Reason, Rect, Snapshot, State, TrackingEngine,
+    next_lifecycle_generations,
 };
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -269,30 +270,81 @@ fn command(value: FfCommand) -> Result<Command, i32> {
 }
 fn lifecycle(value: FfLifecycle) -> Result<Lifecycle, i32> {
     let generations = generations(value.generations);
-    Ok(match value.kind {
-        0 => Lifecycle::SceneInactive { generations },
-        1 => Lifecycle::SceneActive { generations },
-        2 => Lifecycle::CameraDisconnected { generations },
-        3 => Lifecycle::CameraRestored { generations },
-        4 => Lifecycle::SourceRebound { generations },
-        5 => Lifecycle::GeometryChanged {
+    Ok(match lifecycle_kind(value.kind)? {
+        LifecycleKind::SceneInactive => Lifecycle::SceneInactive { generations },
+        LifecycleKind::SceneActive => Lifecycle::SceneActive { generations },
+        LifecycleKind::CameraDisconnected => Lifecycle::CameraDisconnected { generations },
+        LifecycleKind::CameraRestored => Lifecycle::CameraRestored { generations },
+        LifecycleKind::SourceRebound => Lifecycle::SourceRebound { generations },
+        LifecycleKind::GeometryChanged => Lifecycle::GeometryChanged {
             generations,
             source_width: value.source_width,
             source_height: value.source_height,
         },
-        6 => Lifecycle::TrackerChanged { generations },
-        7 => Lifecycle::FramingConfigChanged { generations },
-        8 => Lifecycle::CandidatePolicyChanged { generations },
-        9 => Lifecycle::AdapterDestroyed { generations },
-        10 => Lifecycle::SourceDestroyed { generations },
-        11 => Lifecycle::ObsShutdown { generations },
+        LifecycleKind::TrackerChanged => Lifecycle::TrackerChanged { generations },
+        LifecycleKind::FramingConfigChanged => Lifecycle::FramingConfigChanged { generations },
+        LifecycleKind::CandidatePolicyChanged => Lifecycle::CandidatePolicyChanged { generations },
+        LifecycleKind::AdapterDestroyed => Lifecycle::AdapterDestroyed { generations },
+        LifecycleKind::SourceDestroyed => Lifecycle::SourceDestroyed { generations },
+        LifecycleKind::ObsShutdown => Lifecycle::ObsShutdown { generations },
+    })
+}
+
+fn lifecycle_kind(value: u32) -> Result<LifecycleKind, i32> {
+    Ok(match value {
+        0 => LifecycleKind::SceneInactive,
+        1 => LifecycleKind::SceneActive,
+        2 => LifecycleKind::CameraDisconnected,
+        3 => LifecycleKind::CameraRestored,
+        4 => LifecycleKind::SourceRebound,
+        5 => LifecycleKind::GeometryChanged,
+        6 => LifecycleKind::TrackerChanged,
+        7 => LifecycleKind::FramingConfigChanged,
+        8 => LifecycleKind::CandidatePolicyChanged,
+        9 => LifecycleKind::AdapterDestroyed,
+        10 => LifecycleKind::SourceDestroyed,
+        11 => LifecycleKind::ObsShutdown,
         _ => return Err(INVALID_ARGUMENT),
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn faithfulframe_ffi_abi_version() -> u32 {
-    8
+    9
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Pointers must be valid for the duration of this call.
+pub unsafe extern "C" fn ff_lifecycle_next_generations(
+    kind: u32,
+    current: *const FfGenerations,
+    output: *mut FfGenerations,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        if current.is_null() || output.is_null() {
+            return INVALID_ARGUMENT;
+        }
+        *output = *current;
+        let kind = match lifecycle_kind(kind) {
+            Ok(value) => value,
+            Err(_) => return INVALID_ARGUMENT,
+        };
+        match next_lifecycle_generations(generations(*current), kind) {
+            Some(value) => {
+                *output = FfGenerations {
+                    source: value.source,
+                    session: value.session,
+                    stream: value.stream,
+                    geometry: value.geometry,
+                    tracker: value.tracker,
+                };
+                OK
+            }
+            None => INVALID_ARGUMENT,
+        }
+    }))
+    .unwrap_or(PANIC)
 }
 
 #[unsafe(no_mangle)]
@@ -555,7 +607,94 @@ mod tests {
 
     #[test]
     fn abi_version_is_stable() {
-        assert_eq!(faithfulframe_ffi_abi_version(), 8);
+        assert_eq!(faithfulframe_ffi_abi_version(), 9);
+    }
+
+    #[test]
+    fn lifecycle_generation_contract_is_owned_by_core_policy() {
+        let current = FfGenerations {
+            source: 10,
+            session: 20,
+            stream: 30,
+            geometry: 40,
+            tracker: 50,
+        };
+        let expected = [
+            (0, (10, 21, 30, 40, 51)),
+            (1, (10, 21, 30, 40, 51)),
+            (2, (10, 20, 31, 40, 51)),
+            (3, (10, 20, 31, 40, 51)),
+            (4, (11, 21, 31, 41, 51)),
+            (5, (10, 20, 31, 41, 51)),
+            (6, (10, 20, 30, 40, 51)),
+            (7, (10, 21, 30, 41, 51)),
+            (8, (10, 21, 30, 40, 51)),
+            (9, (10, 21, 30, 40, 51)),
+            (10, (11, 21, 31, 40, 51)),
+            (11, (11, 21, 31, 40, 51)),
+        ];
+
+        for (kind, expected) in expected {
+            let mut output = FfGenerations {
+                source: 0,
+                session: 0,
+                stream: 0,
+                geometry: 0,
+                tracker: 0,
+            };
+            assert_eq!(
+                unsafe { ff_lifecycle_next_generations(kind, &current, &mut output) },
+                OK,
+                "lifecycle kind {kind}"
+            );
+            assert_eq!(
+                (
+                    output.source,
+                    output.session,
+                    output.stream,
+                    output.geometry,
+                    output.tracker
+                ),
+                expected,
+                "lifecycle kind {kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_generation_overflow_and_unknown_kind_fail_closed() {
+        let current = FfGenerations {
+            source: u64::MAX,
+            session: 2,
+            stream: 3,
+            geometry: 4,
+            tracker: 5,
+        };
+        let mut output = FfGenerations {
+            source: 0,
+            session: 0,
+            stream: 0,
+            geometry: 0,
+            tracker: 0,
+        };
+        assert_eq!(
+            unsafe { ff_lifecycle_next_generations(4, &current, &mut output) },
+            INVALID_ARGUMENT
+        );
+        assert_eq!(output.source, current.source);
+        assert_eq!(output.session, current.session);
+        assert_eq!(
+            unsafe { ff_lifecycle_next_generations(0, std::ptr::null(), &mut output) },
+            INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { ff_lifecycle_next_generations(0, &current, std::ptr::null_mut()) },
+            INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { ff_lifecycle_next_generations(u32::MAX, &current, &mut output) },
+            INVALID_ARGUMENT
+        );
     }
 
     #[test]

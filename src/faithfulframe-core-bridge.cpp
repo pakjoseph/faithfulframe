@@ -205,38 +205,7 @@ static_assert(std::atomic<uint64_t>::is_always_lock_free, "OBS render snapshots 
 bool faithfulframe_next_lifecycle_generations(uint32_t kind, const ff_generations &current, ff_generations &next)
 {
 	next = current;
-	auto increment = [](uint64_t &value) {
-		if (value == std::numeric_limits<uint64_t>::max())
-			return false;
-		++value;
-		return true;
-	};
-	switch (kind) {
-	case FF_LIFECYCLE_SCENE_INACTIVE:
-	case FF_LIFECYCLE_SCENE_ACTIVE:
-		return increment(next.session) && increment(next.tracker);
-	case FF_LIFECYCLE_CAMERA_DISCONNECTED:
-	case FF_LIFECYCLE_CAMERA_RESTORED:
-		return increment(next.stream) && increment(next.tracker);
-	case FF_LIFECYCLE_SOURCE_REBOUND:
-		return increment(next.source) && increment(next.session) && increment(next.stream) &&
-		       increment(next.geometry) && increment(next.tracker);
-	case FF_LIFECYCLE_GEOMETRY_CHANGED:
-		return increment(next.stream) && increment(next.geometry) && increment(next.tracker);
-	case FF_LIFECYCLE_TRACKER_CHANGED:
-		return increment(next.tracker);
-	case FF_LIFECYCLE_FRAMING_CONFIG_CHANGED:
-		return increment(next.session) && increment(next.geometry) && increment(next.tracker);
-	case FF_LIFECYCLE_CANDIDATE_POLICY_CHANGED:
-	case FF_LIFECYCLE_ADAPTER_DESTROYED:
-		return increment(next.session) && increment(next.tracker);
-	case FF_LIFECYCLE_SOURCE_DESTROYED:
-	case FF_LIFECYCLE_OBS_SHUTDOWN:
-		return increment(next.source) && increment(next.session) && increment(next.stream) &&
-		       increment(next.tracker);
-	default:
-		return false;
-	}
+	return ff_lifecycle_next_generations(kind, &current, &next) == FF_OK;
 }
 
 faithfulframe_session_executor::faithfulframe_session_executor(const ff_session_config &config_,

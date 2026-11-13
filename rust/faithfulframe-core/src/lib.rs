@@ -189,6 +189,22 @@ pub enum Lifecycle {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LifecycleKind {
+    SceneInactive,
+    SceneActive,
+    CameraDisconnected,
+    CameraRestored,
+    SourceRebound,
+    GeometryChanged,
+    TrackerChanged,
+    FramingConfigChanged,
+    CandidatePolicyChanged,
+    AdapterDestroyed,
+    SourceDestroyed,
+    ObsShutdown,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Candidate {
     /// Monotonically allocated within a session. Issued handles are never reused.
@@ -1011,23 +1027,6 @@ fn event_time(event: Event) -> Millis {
 }
 
 fn expected_lifecycle_generations(current: Generations, event: Lifecycle) -> Option<Generations> {
-    let (source, session, stream, geometry, tracker) = match event {
-        Lifecycle::SceneInactive { .. } | Lifecycle::SceneActive { .. } => {
-            (false, true, false, false, true)
-        }
-        Lifecycle::CameraDisconnected { .. } | Lifecycle::CameraRestored { .. } => {
-            (false, false, true, false, true)
-        }
-        Lifecycle::SourceRebound { .. } => (true, true, true, true, true),
-        Lifecycle::GeometryChanged { .. } => (false, false, true, true, true),
-        Lifecycle::TrackerChanged { .. } => (false, false, false, false, true),
-        Lifecycle::AdapterDestroyed { .. } => (false, true, false, false, true),
-        Lifecycle::FramingConfigChanged { .. } => (false, true, false, true, true),
-        Lifecycle::CandidatePolicyChanged { .. } => (false, true, false, false, true),
-        Lifecycle::SourceDestroyed { .. } | Lifecycle::ObsShutdown { .. } => {
-            (true, true, true, false, true)
-        }
-    };
     let proposed = match event {
         Lifecycle::SceneInactive { generations }
         | Lifecycle::SceneActive { generations }
@@ -1042,14 +1041,59 @@ fn expected_lifecycle_generations(current: Generations, event: Lifecycle) -> Opt
         | Lifecycle::SourceDestroyed { generations }
         | Lifecycle::ObsShutdown { generations } => generations,
     };
-    let expected = Generations {
+    let expected = next_lifecycle_generations(current, lifecycle_kind(event))?;
+    (proposed == expected).then_some(proposed)
+}
+
+/// Derive the one authoritative generation vector for a lifecycle event.
+/// Both the session validator and the OBS adapter use this function so their
+/// source/session fences cannot drift independently.
+pub fn next_lifecycle_generations(
+    current: Generations,
+    kind: LifecycleKind,
+) -> Option<Generations> {
+    let (source, session, stream, geometry, tracker) = match kind {
+        LifecycleKind::SceneInactive | LifecycleKind::SceneActive => {
+            (false, true, false, false, true)
+        }
+        LifecycleKind::CameraDisconnected | LifecycleKind::CameraRestored => {
+            (false, false, true, false, true)
+        }
+        LifecycleKind::SourceRebound => (true, true, true, true, true),
+        LifecycleKind::GeometryChanged => (false, false, true, true, true),
+        LifecycleKind::TrackerChanged => (false, false, false, false, true),
+        LifecycleKind::AdapterDestroyed | LifecycleKind::CandidatePolicyChanged => {
+            (false, true, false, false, true)
+        }
+        LifecycleKind::FramingConfigChanged => (false, true, false, true, true),
+        LifecycleKind::SourceDestroyed | LifecycleKind::ObsShutdown => {
+            (true, true, true, false, true)
+        }
+    };
+    Some(Generations {
         source: increment_generation(current.source, source)?,
         session: increment_generation(current.session, session)?,
         stream: increment_generation(current.stream, stream)?,
         geometry: increment_generation(current.geometry, geometry)?,
         tracker: increment_generation(current.tracker, tracker)?,
-    };
-    (proposed == expected).then_some(proposed)
+    })
+}
+
+fn lifecycle_kind(event: Lifecycle) -> LifecycleKind {
+    match event {
+        Lifecycle::SceneInactive { .. } => LifecycleKind::SceneInactive,
+        Lifecycle::SceneActive { .. } => LifecycleKind::SceneActive,
+        Lifecycle::CameraDisconnected { .. } => LifecycleKind::CameraDisconnected,
+        Lifecycle::CameraRestored { .. } => LifecycleKind::CameraRestored,
+        Lifecycle::SourceRebound { .. } => LifecycleKind::SourceRebound,
+        Lifecycle::GeometryChanged { .. } => LifecycleKind::GeometryChanged,
+        Lifecycle::TrackerChanged { .. } => LifecycleKind::TrackerChanged,
+        Lifecycle::FramingConfigChanged { .. } => LifecycleKind::FramingConfigChanged,
+        Lifecycle::CandidatePolicyChanged { .. } => LifecycleKind::CandidatePolicyChanged,
+        Lifecycle::AdapterDestroyed { .. } => LifecycleKind::AdapterDestroyed,
+        Lifecycle::SourceDestroyed { .. } => LifecycleKind::SourceDestroyed,
+        Lifecycle::ObsShutdown { .. } => LifecycleKind::ObsShutdown,
+    }
 }
 
 fn increment_generation(value: u64, increment: bool) -> Option<u64> {

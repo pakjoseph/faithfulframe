@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-enum { FAITHFULFRAME_FFI_ABI_VERSION = 8 };
+enum { FAITHFULFRAME_FFI_ABI_VERSION = 9 };
 
 typedef enum ff_result { FF_OK = 0, FF_INVALID_ARGUMENT = 1, FF_PANIC = 2 } ff_result;
 
@@ -194,6 +194,7 @@ typedef struct ff_snapshot
 typedef struct ff_session ff_session;
 
 uint32_t faithfulframe_ffi_abi_version(void);
+ff_result ff_lifecycle_next_generations(uint32_t kind, const ff_generations *current, ff_generations *out_generations);
 ff_result ff_session_create(const ff_session_config *config, const ff_identity *identity,
 			    const ff_generations *generations, ff_session **out_session);
 void ff_session_destroy(ff_session *session);
