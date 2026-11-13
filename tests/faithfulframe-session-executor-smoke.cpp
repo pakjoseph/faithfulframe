@@ -756,8 +756,29 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 	const bool paused_expired = await_expired(paused_weak);
 	const bool contended_expired = await_expired(contended_weak);
 	faithfulframe_test_set_reaper_join_hook(nullptr, nullptr);
-	return handoff_checks_passed && teardown_cleanup_completed && cleanup_accepted && cleanup_completed &&
-	       teardown_executor_expired && contended_retired && paused_expired && contended_expired;
+	const bool all_checks_passed = handoff_checks_passed && teardown_cleanup_completed && cleanup_accepted &&
+				       cleanup_completed && teardown_executor_expired && contended_retired &&
+				       paused_expired && contended_expired;
+	if (!all_checks_passed) {
+		std::fprintf(stderr,
+			     "reaper handoff checks failed: first_lock=%d nonblocking_rejected=%d "
+			     "contended_returned=%d paused_accepted=%d paused_owner=%d "
+			     "contended_accepted=%d contended_owner=%d blocking_waited=%d "
+			     "blocking_executor_accepted=%d teardown_owner=%d blocking_cleanup_accepted=%d "
+			     "cleanup(teardown_accepted,teardown_done,cleanup_accepted,cleanup_done)=%d,%d,%d,%d "
+			     "reaped(teardown,contended,paused)=%d,%d,%d\n",
+			     first_holds_queue_lock, cleanup_handoff_was_nonblocking, contended_returned,
+			     paused_accepted.load(std::memory_order_acquire), static_cast<bool>(paused_executor),
+			     contended_accepted.load(std::memory_order_acquire), static_cast<bool>(contended_executor),
+			     teardown_handoffs_waited_for_queue,
+			     blocking_executor_accepted.load(std::memory_order_acquire),
+			     static_cast<bool>(teardown_executor),
+			     blocking_cleanup_accepted.load(std::memory_order_acquire), teardown_cleanup_accepted,
+			     teardown_cleanup_completed, cleanup_accepted, cleanup_completed, teardown_executor_expired,
+			     contended_expired, paused_expired);
+		std::fflush(stderr);
+	}
+	return all_checks_passed;
 }
 
 bool duplicate_retirement_requests_enqueue_once(const ff_session_config &config, const ff_generations &generations)
