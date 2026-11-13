@@ -409,6 +409,25 @@ class PluginLoadTest(obstest.OBSTest):
                 self.assertEqual(self._screenshot(client, other_camera_name), other_camera_image)
                 time.sleep(0.1)
 
+            client.send('RemoveInput', {'inputName': other_adapter_name})
+            self._wait_for_input_presence(client, other_adapter_name, False)
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'safe_tracking_enabled': False},
+                'overlay': True,
+            })
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'safe_tracking_enabled': True},
+                'overlay': True,
+            })
+            rebound_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image == replacement_image
+            )
+            self.assertEqual(rebound_image, replacement_image)
+            rebound_settings = client.send('GetInputSettings', {'inputName': adapter_name})
+            self.assertTrue(rebound_settings.input_settings.get('safe_tracking_enabled'))
+
             client.send('RemoveInput', {'inputName': adapter_name})
             self._wait_for_input_presence(client, adapter_name, False)
             self.assertIn(
