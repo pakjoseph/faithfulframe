@@ -624,6 +624,70 @@ bool duplicate_retirement_requests_enqueue_once(const ff_session_config &config,
 	}
 	return true;
 }
+
+bool rejected_command_notice_expires_without_policy_change(const ff_session_config &config,
+							   const ff_generations &generations)
+{
+	const ff_identity identity{156, 256};
+	faithfulframe_session_executor executor(config, identity, generations);
+	ff_snapshot snapshot{};
+	if (!await_snapshot(executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, snapshot))
+		return false;
+
+	const ff_command enable{
+		FF_COMMAND_ENABLE_AUTO_FOLLOW, snapshot.identity, snapshot.status_version, snapshot.generations, 0, 0};
+	if (!executor.enqueue_command(2, enable) || !await_snapshot(
+							    executor,
+							    [](const ff_snapshot &value) {
+								    return value.state == FF_STATE_SEARCHING &&
+									   value.command_result == FF_COMMAND_APPLIED;
+							    },
+							    snapshot))
+		return false;
+
+	const ff_command stale_selection{
+		FF_COMMAND_SELECT_CANDIDATE, snapshot.identity, snapshot.status_version, snapshot.generations, 987, 1};
+	if (!executor.enqueue_command(4, stale_selection) ||
+	    !await_snapshot(
+		    executor,
+		    [](const ff_snapshot &value) {
+			    return value.command_result == FF_COMMAND_REJECTED &&
+				   value.rejection_reason == FF_REJECTION_STALE_COMMAND;
+		    },
+		    snapshot))
+		return false;
+	const ff_snapshot rejected = snapshot;
+
+	if (!executor.enqueue_tick(5) ||
+	    !await_snapshot(
+		    executor,
+		    [version = rejected.status_version](const ff_snapshot &value) {
+			    return value.status_version > version && value.command_result == FF_COMMAND_REJECTED &&
+				   value.rejection_reason == FF_REJECTION_STALE_COMMAND;
+		    },
+		    snapshot) ||
+	    snapshot.state != rejected.state || snapshot.selected_handle != rejected.selected_handle ||
+	    snapshot.crop.x != rejected.crop.x || snapshot.crop.y != rejected.crop.y ||
+	    snapshot.crop.width != rejected.crop.width || snapshot.crop.height != rejected.crop.height)
+		return false;
+	const uint64_t latched_status_version = snapshot.status_version;
+
+	// The two-second rejection notice expires exactly at this monotonic tick.
+	// The selection grace deadline is later, so only transient notice metadata
+	// should change; tracking state and framing must remain the same.
+	return executor.enqueue_tick(2004) &&
+	       await_snapshot(
+		       executor,
+		       [latched_status_version](const ff_snapshot &value) {
+			       return value.status_version > latched_status_version &&
+				      value.command_result == FF_COMMAND_NOT_APPLICABLE &&
+				      value.rejection_reason == FF_REJECTION_NONE;
+		       },
+		       snapshot) &&
+	       snapshot.state == rejected.state && snapshot.selected_handle == rejected.selected_handle &&
+	       snapshot.crop.x == rejected.crop.x && snapshot.crop.y == rejected.crop.y &&
+	       snapshot.crop.width == rejected.crop.width && snapshot.crop.height == rejected.crop.height;
+}
 } // namespace
 
 int run_smoke()
@@ -642,6 +706,8 @@ int run_smoke()
 		return 112;
 	if (!duplicate_retirement_requests_enqueue_once(config, ff_generations{1, 1, 1, 1, 1}))
 		return 111;
+	if (!rejected_command_notice_expires_without_policy_change(config, ff_generations{1, 1, 1, 1, 1}))
+		return 117;
 	if (faithfulframe_teardown_register_instance() != 1)
 		return 94;
 	faithfulframe_teardown_instance_created();
