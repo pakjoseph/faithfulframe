@@ -64,6 +64,10 @@ struct faithfulframe_reap_task
 	faithfulframe_reap_task *next = nullptr;
 	void (*callback)(void *) = nullptr;
 	void *context = nullptr;
+	void (*wake_reaper)(void *) = nullptr;
+	void *wake_context = nullptr;
+	// Cleanup nodes stay queued but dormant until their owner has relinquished them.
+	std::atomic<bool> ready{false};
 	bool queued = false;
 };
 
@@ -188,9 +192,12 @@ private:
 /// module reaper. False means the queue was contended, no reaper is available,
 /// or it has closed; ownership stays with the caller for later retry.
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
-/// Transfer a single-use, lifetime-owned cleanup task to the module reaper.
+/// Enqueue a single-use cleanup task without making it executable. The caller
+/// must release its ownership, then activate the task before its lifetime ends.
 /// Returns false without taking ownership if the queue is contended or closed.
 bool faithfulframe_defer_reap_task(faithfulframe_reap_task *task, void (*callback)(void *), void *context);
+/// Publish the ownership transfer and allow the reaper to execute the task.
+void faithfulframe_activate_reap_task(faithfulframe_reap_task *task);
 std::shared_ptr<faithfulframe_executor_reaper> faithfulframe_acquire_executor_reaper();
 
 /// Starts the asynchronous session-join worker. Module loading must fail if it

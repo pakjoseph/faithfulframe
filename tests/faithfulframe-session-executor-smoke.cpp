@@ -44,6 +44,8 @@ struct reaper_cleanup_test_context
 	std::thread::id caller_thread;
 	std::atomic<bool> completed{false};
 	std::atomic<bool> ran_off_caller{false};
+	std::mutex mutex;
+	std::condition_variable condition;
 };
 
 void mark_reaper_cleanup_complete(void *context)
@@ -51,9 +53,10 @@ void mark_reaper_cleanup_complete(void *context)
 	auto *state = static_cast<reaper_cleanup_test_context *>(context);
 	state->ran_off_caller.store(std::this_thread::get_id() != state->caller_thread, std::memory_order_release);
 	state->completed.store(true, std::memory_order_release);
+	state->condition.notify_all();
 }
 
-bool defer_reap_task_when_available(faithfulframe_reap_task *task, void (*callback)(void *), void *context)
+bool enqueue_reap_task_when_available(faithfulframe_reap_task *task, void (*callback)(void *), void *context)
 {
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
 	do {
@@ -62,6 +65,14 @@ bool defer_reap_task_when_available(faithfulframe_reap_task *task, void (*callba
 		std::this_thread::yield();
 	} while (std::chrono::steady_clock::now() < deadline);
 	return false;
+}
+
+bool defer_reap_task_when_available(faithfulframe_reap_task *task, void (*callback)(void *), void *context)
+{
+	if (!enqueue_reap_task_when_available(task, callback, context))
+		return false;
+	faithfulframe_activate_reap_task(task);
+	return true;
 }
 
 void pause_reaper_join(void *context)
@@ -135,13 +146,23 @@ bool deferred_cleanup_runs_on_reaper()
 {
 	reaper_cleanup_test_context state;
 	state.caller_thread = std::this_thread::get_id();
-	if (!defer_reap_task_when_available(&state.task, mark_reaper_cleanup_complete, &state) ||
-	    faithfulframe_defer_reap_task(&state.task, mark_reaper_cleanup_complete, &state))
+	if (!enqueue_reap_task_when_available(&state.task, mark_reaper_cleanup_complete, &state))
+		return false;
+	bool ran_before_activation = false;
+	{
+		std::unique_lock<std::mutex> lock(state.mutex);
+		ran_before_activation = state.condition.wait_for(lock, std::chrono::milliseconds(20), [&state] {
+			return state.completed.load(std::memory_order_acquire);
+		});
+	}
+	faithfulframe_activate_reap_task(&state.task);
+	if (faithfulframe_defer_reap_task(&state.task, mark_reaper_cleanup_complete, &state))
 		return false;
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
 	while (!state.completed.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
 		std::this_thread::yield();
-	return state.completed.load(std::memory_order_acquire) && state.ran_off_caller.load(std::memory_order_acquire);
+	return !ran_before_activation && state.completed.load(std::memory_order_acquire) &&
+	       state.ran_off_caller.load(std::memory_order_acquire);
 }
 
 template<typename T> bool await_expired(const std::weak_ptr<T> &value)

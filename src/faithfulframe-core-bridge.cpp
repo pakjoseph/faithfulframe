@@ -484,7 +484,7 @@ public:
 			executor->retirement_queued = true;
 			executor->reap_task.callback = &faithfulframe_executor_reaper::join_executor;
 			executor->reap_task.context = executor.get();
-			append_locked(&executor->reap_task);
+			append_locked(&executor->reap_task, true);
 		}
 		condition.notify_one();
 		return true;
@@ -500,10 +500,8 @@ public:
 				return false;
 			task->callback = callback;
 			task->context = context;
-			task->queued = true;
-			append_locked(task);
+			append_locked(task, false);
 		}
-		condition.notify_one();
 		return true;
 	}
 
@@ -529,7 +527,10 @@ private:
 			void *context = nullptr;
 			{
 				std::unique_lock<std::mutex> lock(mutex);
-				condition.wait(lock, [this] { return stopping || head; });
+				condition.wait(lock, [this] {
+					return (head && head->ready.load(std::memory_order_acquire)) ||
+					       (stopping && !head);
+				});
 				if (!head) {
 					if (stopping)
 						return;
@@ -563,15 +564,23 @@ private:
 		}
 	}
 
-	void append_locked(faithfulframe_reap_task *task)
+	void append_locked(faithfulframe_reap_task *task, bool ready)
 	{
 		task->next = nullptr;
+		task->wake_reaper = &faithfulframe_executor_reaper::notify_worker;
+		task->wake_context = this;
+		task->ready.store(ready, std::memory_order_relaxed);
 		task->queued = true;
 		if (tail)
 			tail->next = task;
 		else
 			head = task;
 		tail = task;
+	}
+
+	static void notify_worker(void *context)
+	{
+		static_cast<faithfulframe_executor_reaper *>(context)->condition.notify_one();
 	}
 
 	std::mutex shutdown_mutex;
@@ -608,6 +617,19 @@ bool faithfulframe_defer_reap_task(faithfulframe_reap_task *task, void (*callbac
 {
 	auto reaper = faithfulframe_acquire_executor_reaper();
 	return reaper && reaper->enqueue_cleanup(task, callback, context);
+}
+
+void faithfulframe_activate_reap_task(faithfulframe_reap_task *task)
+{
+	if (!task)
+		return;
+	void (*wake)(void *) = task->wake_reaper;
+	void *wake_context = task->wake_context;
+	bool expected_ready = false;
+	if (task->ready.compare_exchange_strong(expected_ready, true, std::memory_order_release,
+						std::memory_order_relaxed) &&
+	    wake)
+		wake(wake_context);
 }
 
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor)

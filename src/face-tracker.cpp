@@ -304,10 +304,13 @@ struct faithfulframe_source_runtime
 			return;
 		std::unique_ptr<faithfulframe_source_binding> deferred(deferred_reclamation.take());
 		if (deferred) {
-			if (deferred->handoff_binding_for_reclamation())
+			if (deferred->handoff_binding_for_reclamation()) {
+				auto *task = &deferred->reap_task;
 				deferred.release();
-			else if (!deferred_reclamation.try_store(deferred))
+				faithfulframe_activate_reap_task(task);
+			} else if (!deferred_reclamation.try_store(deferred)) {
 				blog(LOG_ERROR, "FaithfulFrame could not restore its deferred binding owner");
+			}
 		}
 		std::unique_lock<std::mutex> lock(bindings_mutex, std::try_to_lock);
 		if (!lock.owns_lock() || active.reader_count() != 0)
@@ -326,8 +329,10 @@ struct faithfulframe_source_runtime
 				++it;
 				continue;
 			}
+			auto *task = &(*it)->reap_task;
 			it->release();
 			it = bindings.erase(it);
+			faithfulframe_activate_reap_task(task);
 		}
 	}
 };
@@ -337,18 +342,21 @@ struct faithfulframe_source_runtime
 // shutdown fallback must not join a session worker. Retire immediately when
 // possible; if the nonblocking handoff is refused, retain the closed binding
 // in the runtime so a later tick or controlled destroy callback can retry.
-static void retire_unpublished_binding_on_tick(faithfulframe_source_runtime *runtime,
-					       std::unique_ptr<faithfulframe_source_binding> &binding)
+static faithfulframe_reap_task *
+retire_unpublished_binding_on_tick(faithfulframe_source_runtime *runtime,
+				   std::unique_ptr<faithfulframe_source_binding> &binding)
 {
 	if (!runtime || !binding)
-		return;
+		return nullptr;
 	fail_source_binding_closed(binding.get());
 	if (binding->handoff_binding_for_reclamation()) {
+		auto *task = &binding->reap_task;
 		binding.release();
-		return;
+		return task;
 	}
 	if (!runtime->deferred_reclamation.try_store(binding))
 		blog(LOG_ERROR, "FaithfulFrame deferred binding slot unexpectedly occupied");
+	return nullptr;
 }
 
 static std::atomic<uint64_t> faithfulframe_next_identity{1};
@@ -1561,7 +1569,8 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		blog(LOG_WARNING, "FaithfulFrame rejected a source after an incompatible tracker filter was added");
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
-		retire_unpublished_binding_on_tick(runtime, binding);
+		if (auto *task = retire_unpublished_binding_on_tick(runtime, binding))
+			faithfulframe_activate_reap_task(task);
 		clear_reconfiguration();
 		return;
 	}
