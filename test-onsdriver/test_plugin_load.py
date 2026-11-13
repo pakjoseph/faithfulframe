@@ -623,6 +623,10 @@ class PluginLoadTest(obstest.OBSTest):
                 client, adapter_name, lambda image: image == restored_camera_image
             )
             self.assertEqual(disabled_image, restored_camera_image)
+            # The adapter switches back to legacy rendering as soon as the
+            # setting is applied; let the OBS video tick finish retiring the
+            # old safe binding before testing a pre-existing filter.
+            time.sleep(0.25)
 
             # Existing disabled filters remain incompatible: enabling safety
             # must not bind until the filter is removed and the operator retries.
