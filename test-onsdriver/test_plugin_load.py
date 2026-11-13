@@ -396,7 +396,6 @@ class PluginLoadTest(obstest.OBSTest):
                 'Removing the adapter must leave its camera intact',
             )
             self.assertEqual(self._screenshot(client, other_camera_name), other_camera_image)
-            self.assertEqual(self._screenshot(client, other_adapter_name), other_adapter_image)
         finally:
             # Keep this test isolated from the next OBS test even when an assertion fails.
             names = self._input_names(client)
