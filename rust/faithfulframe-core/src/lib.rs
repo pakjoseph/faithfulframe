@@ -582,7 +582,7 @@ impl TrackingSession {
             if selected.continuity == candidate.continuity
                 && self.state == State::Locked
                 && candidate.observation_version > selected.observation_version
-                && candidate.observed_at >= selected.last_seen
+                && candidate.observed_at > selected.last_seen
             {
                 self.selected = Some(SelectedTarget {
                     handle: candidate.handle,
@@ -933,7 +933,7 @@ impl TrackingEngine {
             Event::Candidate { candidate, .. } => selected_before.is_some_and(|selected| {
                 selected.continuity == candidate.continuity
                     && candidate.observation_version > selected.observation_version
-                    && candidate.observed_at >= selected.last_seen
+                    && candidate.observed_at > selected.last_seen
             }),
             _ => false,
         };
@@ -2501,6 +2501,32 @@ mod tests {
         assert_eq!(duplicate.selected_rect, locked.selected_rect);
         assert_eq!(duplicate.crop, locked.crop);
         assert_eq!(duplicate.viewport, locked.viewport);
+
+        // A fresh preview version can repeat the same captured frame while
+        // detection or tracker workers are busy. New metadata must not make
+        // that old image evidence advance pan or zoom.
+        let stale_capture = Candidate {
+            handle: first_observation.handle,
+            continuity: first_observation.continuity,
+            identity: identity(),
+            observation_version: 2,
+            generations: generations(),
+            observed_at: first_observation.observed_at,
+            expires_at: first_observation.expires_at,
+            rect: Rect::normalized(0.8, 0.2, 0.1, 0.2).unwrap(),
+        };
+        let stale_refresh = engine.apply(Event::Candidate {
+            at: 5,
+            candidate: stale_capture,
+        });
+
+        assert_eq!(stale_refresh.command_result, CommandResult::NotACommand);
+        assert_eq!(stale_refresh.observation_version, 2);
+        assert_eq!(stale_refresh.state, State::Locked);
+        assert_eq!(stale_refresh.selected, locked.selected);
+        assert_eq!(stale_refresh.selected_rect, locked.selected_rect);
+        assert_eq!(stale_refresh.crop, locked.crop);
+        assert_eq!(stale_refresh.viewport, locked.viewport);
     }
 
     #[test]
