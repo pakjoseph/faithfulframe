@@ -210,6 +210,17 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(report["frame_drop_rates_percent"]["render_lag_percent"], 1.0)
         self.assertAlmostEqual(report["memory_growth_bytes_per_hour"]["resident"], 100_000)
 
+    def test_duration_uses_run_elapsed_when_first_sample_is_delayed(self):
+        first = fixture_row(0, 10.0, 1_000_000, 1000, 5, "1.0")
+        first["elapsed_milliseconds"] = "1000"
+        first["utc_timestamp"] = "2026-11-12T12:00:01.000Z"
+        second = fixture_row(7_200_000, 12.0, 1_100_000, 2000, 15, "1.0")
+        path = self.write_log("delayed-first-sample.csv", [first, second])
+
+        report = analyzer.load_log(path)
+
+        self.assertEqual(report["duration_hours"], 2.0)
+
     def test_compares_only_matched_run_context_without_thresholds(self):
         reference_path = self.write_log(
             "reference.csv",

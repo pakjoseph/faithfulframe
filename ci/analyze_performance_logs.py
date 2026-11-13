@@ -342,7 +342,10 @@ def _load_baseline_rows(path: Path, raw_rows: list[dict]) -> dict:
     for configuration in video_configurations:
         if configuration not in unique_video_configurations:
             unique_video_configurations.append(configuration)
-    elapsed_hours = (samples[-1]["elapsed_milliseconds"] - samples[0]["elapsed_milliseconds"]) / 3_600_000.0
+    # Elapsed values are measured from run start. The first FaithfulFrame
+    # sample can arrive after the first timer interval, so subtracting it would
+    # undercount the recorded rehearsal duration.
+    elapsed_hours = samples[-1]["elapsed_milliseconds"] / 3_600_000.0
     metric_summary = _empty_metric_summary()
     for column in ("process_cpu_percent", "resident_bytes", "active_fps"):
         values = [float(row[column]) for row in samples]
@@ -653,7 +656,10 @@ def load_log(path: str | Path) -> dict:
         and all(configuration is not None for configuration in obs_video_configurations)
         and len(known_obs_video_configurations) == 1
     )
-    elapsed_hours = (samples[-1]["elapsed_milliseconds"] - samples[0]["elapsed_milliseconds"]) / 3_600_000.0
+    # Elapsed values are measured from run start. The first FaithfulFrame
+    # sample can arrive after the first timer interval, so subtracting it would
+    # undercount the recorded rehearsal duration.
+    elapsed_hours = samples[-1]["elapsed_milliseconds"] / 3_600_000.0
     resolution_pairs = sorted(
         {
             (
