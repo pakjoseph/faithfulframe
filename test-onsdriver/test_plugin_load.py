@@ -10,6 +10,8 @@ import tempfile
 import time
 import uuid
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
 from onsdriver import obstest
 
 PLUGIN_NAME = 'face-tracker'
@@ -838,6 +840,21 @@ class PluginLoadTest(obstest.OBSTest):
                 client.send('SetCurrentProgramScene', {'sceneName': original_scene})
             if scene_created:
                 client.send('RemoveScene', {'sceneName': scene_name})
+
+
+class ScreenshotPayloadValidationTest(unittest.TestCase):
+    def test_empty_image_data_is_rejected(self):
+        client = Mock()
+        client.send.return_value = SimpleNamespace(image_data='')
+
+        with self.assertRaisesRegex(AssertionError, 'empty screenshot'):
+            PluginLoadTest._screenshot(None, client, 'camera')
+
+    def test_nonempty_image_data_is_returned(self):
+        client = Mock()
+        client.send.return_value = SimpleNamespace(image_data='cG5n')
+
+        self.assertEqual(PluginLoadTest._screenshot(None, client, 'camera'), 'cG5n')
 
 
 if __name__ == '__main__':
