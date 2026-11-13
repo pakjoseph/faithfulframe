@@ -1424,6 +1424,10 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 		return false;
 	binding->identity = ff_identity{source_id, session_id};
 	const ff_generations initial{1, 1, 1, 1, 1};
+	// The binding is not published yet, so initialize its generation before the
+	// executor starts. No fallible lock acquisition should unwind an active
+	// session through this local binding on the OBS video tick.
+	binding->generations = initial;
 	try {
 		auto executor = std::make_shared<faithfulframe_session_executor>(config, binding->identity, initial);
 		auto *render_executor = executor.get();
@@ -1431,10 +1435,6 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 		binding->render_executor.store(render_executor, std::memory_order_release);
 	} catch (...) {
 		return false;
-	}
-	{
-		std::lock_guard<std::mutex> lock(binding->lifecycle_mutex);
-		binding->generations = initial;
 	}
 	binding->source_width.store(source_width, std::memory_order_release);
 	binding->source_height.store(source_height, std::memory_order_release);
