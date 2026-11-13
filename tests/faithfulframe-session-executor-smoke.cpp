@@ -489,7 +489,7 @@ bool retirement_handoffs_are_concurrent(const ff_session_config &config, const f
 	const bool paused_first_attempt_accepted = paused_accepted.load(std::memory_order_acquire);
 	const bool paused_owner_retained_after_rejection = static_cast<bool>(paused_executor);
 	const bool paused_retry_accepted = !paused_first_attempt_accepted && paused_owner_retained_after_rejection &&
-					   faithfulframe_retire_session_executor(paused_executor);
+					   retire_executor_when_available(paused_executor);
 	const bool paused_retired = paused_first_attempt_accepted || paused_retry_accepted;
 	if (!paused_inside_enqueue || !contended_returned_while_first_paused || !paused_retired || paused_executor ||
 	    !contended_accepted.load(std::memory_order_acquire) || contended_executor) {
