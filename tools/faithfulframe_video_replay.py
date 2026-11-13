@@ -42,6 +42,30 @@ def replay_command(replay_bin: str, model: Path, fps: int, csv: Path | None) -> 
     return command
 
 
+def stop_process(process: subprocess.Popen | None) -> None:
+    """Stop a child process left behind when the pipeline exits early."""
+    if process is None or process.poll() is not None:
+        return
+    try:
+        process.terminate()
+    except OSError:
+        # The child may have exited between poll() and terminate().
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait()
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
 def run_pipeline(
     *,
     ffmpeg_bin: str,
@@ -68,22 +92,20 @@ def run_pipeline(
 
         replay_status = replay_process.wait()
         if replay_status != 0:
-            ffmpeg_process.terminate()
+            stop_process(ffmpeg_process)
         ffmpeg_status = ffmpeg_process.wait()
         if replay_status != 0:
             return replay_status if replay_status > 0 else 1
         return ffmpeg_status if ffmpeg_status > 0 else (1 if ffmpeg_status < 0 else 0)
     except OSError as error:
         print(f"Could not start video replay pipeline: {error}", file=sys.stderr)
-        if replay_process is not None:
-            replay_process.terminate()
-            replay_process.wait()
-        if ffmpeg_process is not None:
-            if ffmpeg_process.stdout is not None:
-                ffmpeg_process.stdout.close()
-            ffmpeg_process.terminate()
-            ffmpeg_process.wait()
         return 2
+    finally:
+        # Also clean up on interruption (for example, Ctrl+C during a long replay).
+        stop_process(replay_process)
+        if ffmpeg_process is not None and ffmpeg_process.stdout is not None:
+            ffmpeg_process.stdout.close()
+        stop_process(ffmpeg_process)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
