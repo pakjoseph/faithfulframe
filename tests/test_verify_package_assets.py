@@ -33,13 +33,17 @@ class PackageAssetVerificationTests(unittest.TestCase):
         )
 
     def test_rejects_restricted_landmark_asset(self):
-        restricted = self.root / "nested" / "shape_predictor_68_face_landmarks.dat"
-        restricted.parent.mkdir()
-        restricted.write_bytes(b"restricted fixture")
-        self.assertIn(
-            "restricted model asset is packaged: nested/shape_predictor_68_face_landmarks.dat",
-            verify_package_assets.package_errors(self.root),
-        )
+        restricted_directory = self.root / "nested"
+        restricted_directory.mkdir()
+        for name in sorted(verify_package_assets.RESTRICTED_FILES):
+            with self.subTest(name=name):
+                restricted = restricted_directory / name
+                restricted.write_bytes(b"restricted fixture")
+                self.assertIn(
+                    f"restricted model asset is packaged: nested/{name}",
+                    verify_package_assets.package_errors(self.root),
+                )
+                restricted.unlink()
 
     def test_rejects_empty_required_files(self):
         (self.root / "LICENSE").write_bytes(b"")
