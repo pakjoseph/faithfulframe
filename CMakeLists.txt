@@ -53,7 +53,7 @@ endif()
 
 project(face-tracker VERSION 0.9.1)
 set(PLUGIN_URL "https://github.com/pakjoseph/faithfulframe")
-set(PLUGIN_AUTHOR "Norihiro Kamae")
+set(PLUGIN_AUTHOR "FaithfulFrame contributors")
 set(MACOS_BUNDLEID "net.nagater.obs-face-tracker")
 set(MACOS_PACKAGE_UUID   "A2EB2F73-9828-40C4-A307-F47282BB8D3F")
 set(MACOS_INSTALLER_UUID "652CF739-5A6F-4DAC-9611-B068FAC15BF3")
