@@ -311,6 +311,127 @@ class PluginLoadTest(obstest.OBSTest):
                     break
         self.assertTrue(loaded)
 
+    def test_safe_adapter_scene_switch_holds_source_isolation(self):
+        'Switch away from and back to a bound camera without changing either source'
+        client = self.obs.get_obsws()
+        suffix = uuid.uuid4().hex
+        tracked_scene = f'FaithfulFrame scene switch {suffix}'
+        fallback_scene = f'FaithfulFrame fallback {suffix}'
+        camera_name = f'FaithfulFrame tracked camera {suffix}'
+        fallback_name = f'FaithfulFrame fallback camera {suffix}'
+        adapter_name = f'FaithfulFrame scene adapter {suffix}'
+        original_scene = None
+        created_scenes = []
+        created_inputs = []
+
+        try:
+            scene_response = client.send('GetCurrentProgramScene', {})
+            original_scene = getattr(scene_response, 'scene_name', None) or getattr(
+                scene_response, 'current_program_scene_name', None
+            )
+            self.assertTrue(original_scene, 'OBS must have an active program scene')
+
+            kinds_response = client.send('GetInputKindList', {'unversioned': False})
+            color_kinds = [
+                kind
+                for kind in kinds_response.input_kinds
+                if kind == 'color_source' or kind.startswith('color_source_v')
+            ]
+            self.assertTrue(color_kinds, 'OBS color source is required for hardware-free lifecycle testing')
+            color_kind = max(
+                color_kinds,
+                key=lambda kind: int(kind.rsplit('_v', 1)[1]) if '_v' in kind else 0,
+            )
+
+            client.send('CreateScene', {'sceneName': tracked_scene})
+            created_scenes.append(tracked_scene)
+            client.send('SetCurrentProgramScene', {'sceneName': tracked_scene})
+            client.send('CreateInput', {
+                'sceneName': tracked_scene,
+                'inputName': camera_name,
+                'inputKind': color_kind,
+                'inputSettings': {'color': 0xFFFF0000, 'width': 320, 'height': 180},
+            })
+            created_inputs.append(camera_name)
+            camera_uuid = self._input_uuid(client, camera_name)
+            client.send('CreateInput', {
+                'sceneName': tracked_scene,
+                'inputName': adapter_name,
+                'inputKind': 'face_tracker_source',
+                'inputSettings': {
+                    'target_name': camera_name,
+                    'target_uuid': camera_uuid,
+                    'safe_tracking_enabled': True,
+                },
+            })
+            created_inputs.append(adapter_name)
+
+            camera_image = self._wait_for_screenshot(client, camera_name, bool)
+            tracked_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: bool(image) and image == camera_image
+            )
+            self.assertEqual(tracked_image, camera_image)
+
+            client.send('CreateScene', {'sceneName': fallback_scene})
+            created_scenes.append(fallback_scene)
+            client.send('CreateInput', {
+                'sceneName': fallback_scene,
+                'inputName': fallback_name,
+                'inputKind': color_kind,
+                'inputSettings': {'color': 0xFF00FF00, 'width': 320, 'height': 180},
+            })
+            created_inputs.append(fallback_name)
+            fallback_image = self._wait_for_screenshot(client, fallback_name, bool)
+
+            for _ in range(3):
+                client.send('SetCurrentProgramScene', {'sceneName': fallback_scene})
+                inactive_image = self._wait_for_screenshot(
+                    client, adapter_name, lambda image: bool(image) and image != camera_image
+                )
+                self.assertNotEqual(
+                    inactive_image,
+                    camera_image,
+                    'An inactive scene must not keep rendering the bound camera through its adapter',
+                )
+                self.assertEqual(
+                    self._screenshot(client, fallback_name),
+                    fallback_image,
+                    'Scene switching must leave the fallback camera unchanged',
+                )
+
+                client.send('SetCurrentProgramScene', {'sceneName': tracked_scene})
+                restored_image = self._wait_for_screenshot(
+                    client, adapter_name, lambda image: bool(image) and image == camera_image
+                )
+                self.assertEqual(
+                    restored_image,
+                    camera_image,
+                    'Returning to the bound scene must restore only its original camera view',
+                )
+                self.assertEqual(self._screenshot(client, camera_name), camera_image)
+
+            self.assertEqual(self._screenshot(client, fallback_name), fallback_image)
+        finally:
+            try:
+                if original_scene:
+                    client.send('SetCurrentProgramScene', {'sceneName': original_scene})
+            except Exception:
+                pass
+
+            try:
+                names = self._input_names(client)
+                for input_name in created_inputs:
+                    if input_name in names:
+                        client.send('RemoveInput', {'inputName': input_name})
+            except Exception:
+                pass
+
+            for scene_name in reversed(created_scenes):
+                try:
+                    client.send('RemoveScene', {'sceneName': scene_name})
+                except Exception:
+                    pass
+
     def test_safe_adapter_requires_explicit_rebinding_after_source_replacement(self):
         'Create a safe adapter and verify a same-name replacement stays unbound'
         client = self.obs.get_obsws()
