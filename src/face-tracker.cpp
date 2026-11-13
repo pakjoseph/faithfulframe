@@ -238,6 +238,7 @@ struct faithfulframe_source_runtime
 	std::atomic<bool> reconfiguration_pending{false};
 	std::mutex configuration_mutex;
 	std::string requested_target_uuid;
+	std::string requested_target_name;
 	double requested_dead_zone_percent = 5.0;
 	double requested_max_zoom = 4.0;
 	double requested_pan_smoothing = 0.25;
@@ -494,6 +495,7 @@ static void fts_update(void *data, obs_data_t *settings)
 			std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
 			binding_changed = s->safe_runtime->requested_target_uuid != requested_uuid;
 			s->safe_runtime->requested_target_uuid = requested_uuid;
+			s->safe_runtime->requested_target_name = requested_name;
 			const double requested_dead_zone =
 				obs_data_get_double(settings, "safe_tracking_dead_zone_percent");
 			dead_zone_changed = s->safe_runtime->requested_dead_zone_percent != requested_dead_zone;
@@ -548,6 +550,13 @@ static void fts_update(void *data, obs_data_t *settings)
 #endif
 	if (!defer_tracker_update)
 		ftf_update(data, settings);
+	// Source adapters with the Rust bridge keep their display name in the
+	// runtime configuration protected above. Preserve the legacy field only for
+	// builds that do not provide that runtime.
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (s->safe_runtime)
+		return;
+#endif
 	const char *current_name = s->target_name ? s->target_name : "";
 	if (strcmp(current_name, requested_name.c_str()) != 0) {
 		bfree(s->target_name);
@@ -1975,7 +1984,7 @@ static void fts_tick(void *data, float second)
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	if (s->safe_runtime) {
 		std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
-		configured_target_name = s->target_name ? s->target_name : "";
+		configured_target_name = s->safe_runtime->requested_target_name;
 	} else
 #endif
 		configured_target_name = s->target_name ? s->target_name : "";
