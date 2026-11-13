@@ -359,6 +359,10 @@ int main(int argc, char **argv)
 #endif
 	}
 	if (!csv_path_value.empty()) {
+		if (same_file_or_path(csv_path_value, std::filesystem::path(argv[0]))) {
+			std::cerr << "CSV output must not replace the replay executable\n";
+			return 2;
+		}
 		if (same_file_or_path(csv_path_value, model_path) ||
 		    (!ppm_stdin && same_file_or_path(csv_path_value, manifest_path))) {
 			std::cerr << "CSV output must not replace the model or frame manifest\n";

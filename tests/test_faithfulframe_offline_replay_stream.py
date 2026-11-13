@@ -3,6 +3,7 @@ import csv
 import io
 import subprocess
 import sys
+from pathlib import Path
 
 
 def frame_bytes():
@@ -26,6 +27,24 @@ def main():
     parser.add_argument("--binary", required=True)
     parser.add_argument("--model", required=True)
     args = parser.parse_args()
+
+    executable_size = Path(args.binary).stat().st_size
+    overwrite = subprocess.run(
+        [args.binary, "--model", args.model, "--ppm-stdin", "--csv", args.binary],
+        input=b"",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if (
+        overwrite.returncode != 2
+        or b"must not replace the replay executable" not in overwrite.stderr
+        or Path(args.binary).stat().st_size != executable_size
+    ):
+        raise SystemExit(
+            f"replay accepted or damaged its executable as CSV output: "
+            f"status={overwrite.returncode}, stderr={overwrite.stderr!r}"
+        )
 
     frame = frame_bytes()
     replay = run(args.binary, args.model, frame + frame)
