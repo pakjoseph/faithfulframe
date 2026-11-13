@@ -144,7 +144,7 @@ class PluginLoadTest(obstest.OBSTest):
     @staticmethod
     def _input_names(client):
         response = client.send('GetInputList', {})
-        return {item['inputName'] for item in response.response_data['inputs']}
+        return {item['inputName'] for item in response.inputs}
 
     def _screenshot(self, client, source_name):
         response = client.send('GetSourceScreenshot', {
@@ -153,7 +153,7 @@ class PluginLoadTest(obstest.OBSTest):
             'imageWidth': 16,
             'imageHeight': 16,
         })
-        return response.response_data['imageData']
+        return response.image_data
 
     def _wait_for_screenshot(self, client, source_name, predicate, timeout=5.0):
         deadline = time.monotonic() + timeout
@@ -290,12 +290,13 @@ class PluginLoadTest(obstest.OBSTest):
 
         try:
             scene_response = client.send('GetCurrentProgramScene', {})
-            scene_data = scene_response.response_data
-            original_scene = scene_data.get('sceneName') or scene_data.get('currentProgramSceneName')
+            original_scene = getattr(scene_response, 'scene_name', None) or getattr(
+                scene_response, 'current_program_scene_name', None
+            )
             self.assertTrue(original_scene, 'OBS must have an active program scene')
 
             kinds_response = client.send('GetInputKindList', {'unversioned': True})
-            input_kinds = kinds_response.response_data['inputKinds']
+            input_kinds = kinds_response.input_kinds
             self.assertIn(
                 'color_source',
                 input_kinds,
@@ -318,10 +319,10 @@ class PluginLoadTest(obstest.OBSTest):
                 'inputSettings': {'target_name': camera_name, 'safe_tracking_enabled': True},
             })
 
-            adapter_settings = client.send('GetInputSettings', {'inputName': adapter_name}).response_data
-            self.assertEqual(adapter_settings['inputKind'], 'face_tracker_source')
-            self.assertEqual(adapter_settings['inputSettings'].get('target_name'), camera_name)
-            self.assertTrue(adapter_settings['inputSettings'].get('safe_tracking_enabled'))
+            adapter_settings = client.send('GetInputSettings', {'inputName': adapter_name})
+            self.assertEqual(adapter_settings.input_kind, 'face_tracker_source')
+            self.assertEqual(adapter_settings.input_settings.get('target_name'), camera_name)
+            self.assertTrue(adapter_settings.input_settings.get('safe_tracking_enabled'))
 
             camera_image = self._wait_for_screenshot(client, camera_name, bool)
             bound_image = self._wait_for_screenshot(
