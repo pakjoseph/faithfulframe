@@ -542,6 +542,19 @@ if(OS_WINDOWS)
 endif()
 
 if(OS_LINUX)
+	# GCC 16 diagnoses an unused variable in dlib's point_transforms.h as an
+	# error when compiling the dlib-backed translation units below. Keep the
+	# warning visible, but do not let this external-header warning break Linux
+	# package builds; all other warnings remain errors.
+	if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "16.0")
+		set_source_files_properties(
+			src/face-detector-dlib-hog.cpp
+			src/face-detector-dlib-cnn.cpp
+			src/face-tracker-dlib.cpp
+			PROPERTIES COMPILE_OPTIONS "-Wno-error=unused-but-set-variable"
+		)
+	endif()
+
 	target_compile_options(${PROJECT_NAME}
 		PRIVATE
 		-Wall
