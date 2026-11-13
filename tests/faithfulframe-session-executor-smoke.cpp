@@ -44,8 +44,6 @@ struct reaper_cleanup_test_context
 	std::thread::id caller_thread;
 	std::atomic<bool> completed{false};
 	std::atomic<bool> ran_off_caller{false};
-	std::mutex mutex;
-	std::condition_variable condition;
 };
 
 void mark_reaper_cleanup_complete(void *context)
@@ -53,7 +51,6 @@ void mark_reaper_cleanup_complete(void *context)
 	auto *state = static_cast<reaper_cleanup_test_context *>(context);
 	state->ran_off_caller.store(std::this_thread::get_id() != state->caller_thread, std::memory_order_release);
 	state->completed.store(true, std::memory_order_release);
-	state->condition.notify_all();
 }
 
 bool enqueue_reap_task_when_available(faithfulframe_reap_task *task, void (*callback)(void *), void *context)
@@ -148,13 +145,8 @@ bool deferred_cleanup_runs_on_reaper()
 	state.caller_thread = std::this_thread::get_id();
 	if (!enqueue_reap_task_when_available(&state.task, mark_reaper_cleanup_complete, &state))
 		return false;
-	bool ran_before_activation = false;
-	{
-		std::unique_lock<std::mutex> lock(state.mutex);
-		ran_before_activation = state.condition.wait_for(lock, std::chrono::milliseconds(20), [&state] {
-			return state.completed.load(std::memory_order_acquire);
-		});
-	}
+	std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	const bool ran_before_activation = state.completed.load(std::memory_order_acquire);
 	faithfulframe_activate_reap_task(&state.task);
 	if (faithfulframe_defer_reap_task(&state.task, mark_reaper_cleanup_complete, &state))
 		return false;
