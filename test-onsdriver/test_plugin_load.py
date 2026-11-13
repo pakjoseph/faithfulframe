@@ -349,15 +349,27 @@ class PluginLoadTest(obstest.OBSTest):
                 'sceneName': scene_name,
                 'inputName': adapter_name,
                 'inputKind': 'face_tracker_source',
-                'inputSettings': {'target_name': camera_name, 'safe_tracking_enabled': True},
+                'inputSettings': {'target_name': camera_name},
             })
             adapter_settings = client.send('GetInputSettings', {'inputName': adapter_name})
             self.assertEqual(adapter_settings.input_kind, 'face_tracker_source')
             self.assertEqual(adapter_settings.input_settings.get('target_name'), camera_name)
-            self.assertTrue(adapter_settings.input_settings.get('safe_tracking_enabled'))
+            self.assertFalse(adapter_settings.input_settings.get('safe_tracking_enabled', False))
 
             camera_image = self._wait_for_screenshot(client, camera_name, bool)
             other_camera_image = self._wait_for_screenshot(client, other_camera_name, bool)
+            legacy_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image == camera_image
+            )
+            self.assertEqual(legacy_image, camera_image)
+
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'safe_tracking_enabled': True},
+                'overlay': True,
+            })
+            adapter_settings = client.send('GetInputSettings', {'inputName': adapter_name})
+            self.assertTrue(adapter_settings.input_settings.get('safe_tracking_enabled'))
             bound_image = self._wait_for_screenshot(
                 client, adapter_name, lambda image: image == camera_image
             )
