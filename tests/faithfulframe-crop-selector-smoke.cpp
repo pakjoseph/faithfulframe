@@ -8,6 +8,10 @@ int main()
 		return 1;
 	if (faithfulframe_select_crop_input(true) != faithfulframe_crop_input::safe_session)
 		return 2;
+	if (faithfulframe_select_safe_crop_source(false, true) != faithfulframe_safe_crop_source::session_snapshot ||
+	    faithfulframe_select_safe_crop_source(false, false) != faithfulframe_safe_crop_source::safe_wide ||
+	    faithfulframe_select_safe_crop_source(true, true) != faithfulframe_safe_crop_source::safe_wide)
+		return 9;
 	if (!faithfulframe_session_crop_is_authorized(FF_CROP_TRACK, FF_STATE_LOCKED, true))
 		return 3;
 	if (faithfulframe_session_crop_is_authorized(FF_CROP_TRACK, FF_STATE_MANUAL, true) ||

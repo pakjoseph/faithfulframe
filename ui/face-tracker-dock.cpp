@@ -576,6 +576,8 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 		return "Waiting for video from the selected camera; check that the camera is connected and producing a signal";
 	case faithfulframe::safe_adapter_availability_issue::session_start_failed:
 		return "Tracking could not start. Check the camera format, then toggle safe tracking off and on to retry";
+	case faithfulframe::safe_adapter_availability_issue::session_worker_failed_safe_wide:
+		return "The tracking worker stopped; the camera is using wide framing. Toggle safe tracking off and on to start a new session";
 	case faithfulframe::safe_adapter_availability_issue::none:
 		break;
 	}

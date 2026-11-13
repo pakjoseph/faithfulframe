@@ -12,6 +12,7 @@ enum class safe_adapter_availability_issue : uint32_t {
 	invalid_source_binding = 3,
 	waiting_for_video_signal = 4,
 	session_start_failed = 5,
+	session_worker_failed_safe_wide = 6,
 };
 
 /// Process-wide lease for the one OBS adapter allowed to run safe tracking.

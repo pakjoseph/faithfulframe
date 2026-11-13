@@ -10,6 +10,11 @@ enum class faithfulframe_crop_input : uint8_t {
 	safe_session,
 };
 
+enum class faithfulframe_safe_crop_source : uint8_t {
+	safe_wide,
+	session_snapshot,
+};
+
 /// Keep automatic safety-policy tracking opt-in until production acceptance gates pass.
 constexpr bool faithfulframe_safety_policy_enabled_by_default = false;
 
@@ -27,6 +32,14 @@ constexpr faithfulframe_crop_input faithfulframe_select_crop_input(bool safety_p
 {
 	return safety_policy_enabled ? faithfulframe_crop_input::safe_session
 				     : faithfulframe_crop_input::legacy_aggregate;
+}
+
+/// A failed or unavailable policy worker must never reuse its last tracking crop.
+constexpr faithfulframe_safe_crop_source faithfulframe_select_safe_crop_source(bool policy_faulted,
+									       bool has_snapshot) noexcept
+{
+	return !policy_faulted && has_snapshot ? faithfulframe_safe_crop_source::session_snapshot
+					       : faithfulframe_safe_crop_source::safe_wide;
 }
 
 /// Track crops require an explicit lock. Hold, wide, and none are explicit

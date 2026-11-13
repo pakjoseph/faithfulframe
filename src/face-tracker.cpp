@@ -136,6 +136,9 @@ struct faithfulframe_source_binding
 	std::atomic<bool> adapter_active{false};
 	std::atomic<bool> effective_active{false};
 	std::atomic<bool> closed{false};
+	// A failed Rust worker leaves the immutable source binding usable for safe-wide
+	// output, but never for automatic tracking until explicit reconfiguration.
+	std::atomic<bool> policy_faulted{false};
 	std::atomic<bool> transition_pending{false};
 	std::atomic<bool> conflicting_legacy_filter{false};
 	// connect_ref keeps the source signal handler alive. Disconnect serializes
@@ -1428,6 +1431,21 @@ static void fail_source_binding_closed(faithfulframe_source_binding *binding)
 	binding->set_active_child(false);
 }
 
+static void fail_source_policy_wide(faithfulframe_source_binding *binding)
+{
+	if (!binding)
+		return;
+	binding->policy_faulted.store(true, std::memory_order_release);
+	binding->transition_pending.store(false, std::memory_order_release);
+	{
+		std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
+		if (lock.owns_lock())
+			binding->preview.candidate_count = 0;
+	}
+	if (auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire))
+		defer_session_join(executor);
+}
+
 static bool enqueue_source_lifecycle(faithfulframe_source_binding *binding, uint32_t kind, uint64_t at,
 				     uint32_t width = 0, uint32_t height = 0)
 {
@@ -1455,6 +1473,10 @@ static void update_effective_source_activation(faithfulframe_source_binding *bin
 		binding->source_active.store(source_active, std::memory_order_release);
 		const bool effective_active = adapter_active && source_active;
 		const bool was_active = binding->effective_active.exchange(effective_active, std::memory_order_acq_rel);
+		if (binding->policy_faulted.load(std::memory_order_acquire)) {
+			binding->transition_pending.store(false, std::memory_order_release);
+			return;
+		}
 		if (was_active != effective_active) {
 			const uint32_t lifecycle = effective_active ? FF_LIFECYCLE_SCENE_ACTIVE
 								    : FF_LIFECYCLE_SCENE_INACTIVE;
@@ -1992,12 +2014,32 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 	const bool active = obs_source_active(target);
 	const uint64_t now = source_monotonic_millis();
 	auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
+	if (binding->policy_faulted.load(std::memory_order_acquire)) {
+		binding->source_width.store(width, std::memory_order_release);
+		binding->source_height.store(height, std::memory_order_release);
+		binding->signal_connected.store(connected, std::memory_order_release);
+		binding->source_active.store(active, std::memory_order_release);
+		binding->effective_active.store(binding->adapter_active.load(std::memory_order_acquire) && active,
+						std::memory_order_release);
+		binding->source_settings_updated.store(false, std::memory_order_release);
+		s->known_width = width;
+		s->known_height = height;
+		s->width_with_aspect = binding->output_width.load(std::memory_order_acquire);
+		s->height_with_aspect = binding->output_height.load(std::memory_order_acquire);
+		s->ftm->tick(second);
+		s->ftm->tracker_rects.clear();
+		s->target_valid = s->width_with_aspect > 0 && s->height_with_aspect > 0;
+		obs_source_release(target);
+		return;
+	}
 	if (executor && !binding->closed.load(std::memory_order_acquire) && !executor->worker_available()) {
-		blog(LOG_ERROR, "FaithfulFrame tracking worker stopped; closing the session");
+		blog(LOG_ERROR, "FaithfulFrame tracking worker stopped; using safe-wide framing until reconfiguration");
 		runtime->configuration_issue.store(
-			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::session_start_failed),
+			static_cast<uint32_t>(
+				faithfulframe::safe_adapter_availability_issue::session_worker_failed_safe_wide),
 			std::memory_order_release);
-		fail_source_binding_closed(binding);
+		fail_source_policy_wide(binding);
+		s->ftm->reset_requested = true;
 		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
 				  binding->output_height.load(std::memory_order_acquire) > 0;
 		obs_source_release(target);
@@ -2484,7 +2526,8 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 	ff_snapshot displayed_snapshot{};
 	uint64_t displayed_snapshot_at = 0;
 	bool has_displayed_snapshot = false;
-	if (!force_black && binding && !has_conflicting_legacy_filter(binding) &&
+	const bool policy_faulted = binding && binding->policy_faulted.load(std::memory_order_acquire);
+	if (!force_black && binding && !policy_faulted && !has_conflicting_legacy_filter(binding) &&
 	    !binding->closed.load(std::memory_order_acquire) &&
 	    !binding->transition_pending.load(std::memory_order_acquire) &&
 	    !binding->source_settings_updated.load(std::memory_order_acquire)) {
@@ -2498,7 +2541,10 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 			const bool session_crop_is_authorized = faithfulframe_session_crop_is_authorized(
 				displayed_snapshot.crop_action, displayed_snapshot.state,
 				displayed_snapshot.has_selected);
-			if (!force_wide && !binding->transition_pending.load(std::memory_order_acquire) &&
+			if (!force_wide &&
+			    faithfulframe_select_safe_crop_source(policy_faulted, has_displayed_snapshot) ==
+				    faithfulframe_safe_crop_source::session_snapshot &&
+			    !binding->transition_pending.load(std::memory_order_acquire) &&
 			    !binding->source_settings_updated.load(std::memory_order_acquire) &&
 			    session_crop_is_authorized &&
 			    faithfulframe_valid_normalized_rect(displayed_snapshot.crop) &&
@@ -2829,7 +2875,8 @@ static void fts_render(void *data, gs_effect_t *)
 			    binding->source_active.load(std::memory_order_acquire)) {
 				const uint64_t tracker_work_started_at_ns = os_gettime_ns();
 				render_target(s, safe_target, NULL);
-				s->ftm->post_render(!tracker_settings_pending(s));
+				if (!binding->policy_faulted.load(std::memory_order_acquire))
+					s->ftm->post_render(!tracker_settings_pending(s));
 				record_render_thread_tracker_work(binding, tracker_work_started_at_ns);
 			}
 		}
