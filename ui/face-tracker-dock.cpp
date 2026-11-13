@@ -600,7 +600,7 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 	case FF_STATE_LOCKED:
 		return "Following the selected speaker; use Manual Override to change targets";
 	case FF_STATE_LOST:
-		return "Target lost; select a face or reset wide";
+		return "Recovery window expired; select a face to start following again or reset wide";
 	default:
 		return "FaithfulFrame safe tracking is unavailable";
 	}
