@@ -191,8 +191,16 @@ struct faithfulframe_source_binding
 			&executor, std::shared_ptr<faithfulframe_session_executor>{}, std::memory_order_acq_rel);
 		if (session && !executor_handed_to_reaper.load(std::memory_order_acquire)) {
 			session->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
-			if (!faithfulframe_retire_session_executor(session))
+			// A binding is destroyed either by the reaper cleanup task or from
+			// OBS's deferred source-destruction callback, after video readers drain.
+			// Wait for transient queue-lock contention here so it cannot turn into
+			// an inline worker join on an OBS callback thread.
+			if (!faithfulframe_retire_session_executor(session, true)) {
+				blog(LOG_ERROR,
+				     "FaithfulFrame could not hand off a session from deferred source destruction; "
+				     "joining on the OBS destruction thread");
 				session->shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+			}
 		}
 		if (target)
 			obs_weak_source_release(target);
