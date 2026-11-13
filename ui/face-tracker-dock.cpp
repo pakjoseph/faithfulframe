@@ -130,6 +130,10 @@ struct faithfulframe_safe_preview
 	uint64_t detector_work_count = 0;
 	uint64_t render_thread_tracker_work_last_us = 0;
 	uint64_t render_thread_tracker_work_max_us = 0;
+	uint64_t stagesurface_map_count = 0;
+	uint64_t stagesurface_map_failure_count = 0;
+	uint64_t stagesurface_map_last_us = 0;
+	uint64_t stagesurface_map_max_us = 0;
 	uint64_t source_id = 0;
 	uint64_t session_id = 0;
 	uint64_t status_version = 0;
@@ -363,6 +367,10 @@ static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &
 	read_calldata_int(&cd, "detector_work_count", preview.detector_work_count);
 	read_calldata_int(&cd, "last_render_thread_tracker_work_us", preview.render_thread_tracker_work_last_us);
 	read_calldata_int(&cd, "max_render_thread_tracker_work_us", preview.render_thread_tracker_work_max_us);
+	read_calldata_int(&cd, "stagesurface_map_count", preview.stagesurface_map_count);
+	read_calldata_int(&cd, "stagesurface_map_failure_count", preview.stagesurface_map_failure_count);
+	read_calldata_int(&cd, "last_stagesurface_map_us", preview.stagesurface_map_last_us);
+	read_calldata_int(&cd, "max_stagesurface_map_us", preview.stagesurface_map_max_us);
 	uint64_t value = 0;
 	if (read_calldata_int(&cd, "state", value))
 		preview.state = static_cast<uint32_t>(value);
@@ -1455,6 +1463,12 @@ void FTDock::updateState()
 						safe_preview.render_thread_tracker_work_last_us;
 					sample.max_render_thread_tracker_work_microseconds =
 						safe_preview.render_thread_tracker_work_max_us;
+					sample.stagesurface_map_count = safe_preview.stagesurface_map_count;
+					sample.stagesurface_map_failure_count =
+						safe_preview.stagesurface_map_failure_count;
+					sample.last_stagesurface_map_microseconds =
+						safe_preview.stagesurface_map_last_us;
+					sample.max_stagesurface_map_microseconds = safe_preview.stagesurface_map_max_us;
 					if (!performanceSpool || !performanceSpool->append(sample)) {
 						performanceRecording = false;
 						operatorNotice =
@@ -1501,8 +1515,9 @@ void FTDock::updateState()
 			QString diagnostics_text =
 				QString("OBS process: CPU %1, memory %2\nSnapshot: %3 | queue: %4 / %5, oldest pending %6 µs | "
 					"wait: %7 / %8 µs | policy: %9 / %10 µs | "
-					"render-thread capture/dispatch: %11 / %12 µs | dlib: %13 runs, %14 / %15 µs | "
-					"accepted %16 · rejected %17 · coalesced %18\n%19")
+					"render-thread capture/dispatch: %11 / %12 µs | stage map: %13 / %14 µs "
+					"(%15 maps, %16 failed) | dlib: %17 runs, %18 / %19 µs | "
+					"accepted %20 · rejected %21 · coalesced %22\n%23")
 					.arg(process_cpu)
 					.arg(process_memory)
 					.arg(snapshot_age)
@@ -1515,6 +1530,10 @@ void FTDock::updateState()
 					.arg(static_cast<qulonglong>(safe_preview.executor_max_processing_us))
 					.arg(static_cast<qulonglong>(safe_preview.render_thread_tracker_work_last_us))
 					.arg(static_cast<qulonglong>(safe_preview.render_thread_tracker_work_max_us))
+					.arg(static_cast<qulonglong>(safe_preview.stagesurface_map_last_us))
+					.arg(static_cast<qulonglong>(safe_preview.stagesurface_map_max_us))
+					.arg(static_cast<qulonglong>(safe_preview.stagesurface_map_count))
+					.arg(static_cast<qulonglong>(safe_preview.stagesurface_map_failure_count))
 					.arg(static_cast<qulonglong>(safe_preview.detector_work_count))
 					.arg(static_cast<qulonglong>(safe_preview.detector_last_work_us))
 					.arg(static_cast<qulonglong>(safe_preview.detector_max_work_us))

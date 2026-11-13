@@ -11,7 +11,7 @@
 
 namespace faithfulframe::performance {
 
-inline constexpr uint32_t schema_version = 3;
+inline constexpr uint32_t schema_version = 4;
 inline constexpr size_t max_samples = 12 * 60 * 60;
 
 struct sample
@@ -77,6 +77,10 @@ struct sample
 	uint64_t max_detector_microseconds = 0;
 	uint64_t last_render_thread_tracker_work_microseconds = 0;
 	uint64_t max_render_thread_tracker_work_microseconds = 0;
+	uint64_t stagesurface_map_count = 0;
+	uint64_t stagesurface_map_failure_count = 0;
+	uint64_t last_stagesurface_map_microseconds = 0;
+	uint64_t max_stagesurface_map_microseconds = 0;
 };
 
 inline std::string csv_field(const std::string &value)
@@ -116,7 +120,8 @@ inline std::string csv_header()
 	       "queue_oldest_age_microseconds,accepted_work,rejected_work,coalesced_work,last_queue_wait_microseconds,"
 	       "max_queue_wait_microseconds,last_policy_microseconds,max_policy_microseconds,detector_work_count,"
 	       "last_detector_microseconds,max_detector_microseconds,last_render_thread_tracker_work_microseconds,"
-	       "max_render_thread_tracker_work_microseconds\n";
+	       "max_render_thread_tracker_work_microseconds,stagesurface_map_count,stagesurface_map_failure_count,"
+	       "last_stagesurface_map_microseconds,max_stagesurface_map_microseconds\n";
 }
 
 inline std::string csv_row(const sample &value)
@@ -197,7 +202,9 @@ inline std::string csv_row(const sample &value)
 	    << value.last_policy_microseconds << ',' << value.max_policy_microseconds << ','
 	    << value.detector_work_count << ',' << value.last_detector_microseconds << ','
 	    << value.max_detector_microseconds << ',' << value.last_render_thread_tracker_work_microseconds << ','
-	    << value.max_render_thread_tracker_work_microseconds << '\n';
+	    << value.max_render_thread_tracker_work_microseconds << ',' << value.stagesurface_map_count << ','
+	    << value.stagesurface_map_failure_count << ',' << value.last_stagesurface_map_microseconds << ','
+	    << value.max_stagesurface_map_microseconds << '\n';
 	return row.str();
 }
 

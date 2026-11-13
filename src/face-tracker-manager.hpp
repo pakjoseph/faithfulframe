@@ -77,6 +77,31 @@ public: /* not sure they are necessary to be public */
 	uint64_t next_candidate_handle;
 	std::atomic<uint64_t> detection_epoch{1};
 	std::atomic<uint64_t> detector_input_epoch{0};
+	std::atomic<uint64_t> stagesurface_map_count{0};
+	std::atomic<uint64_t> stagesurface_map_failure_count{0};
+	std::atomic<uint64_t> stagesurface_map_last_us{0};
+	std::atomic<uint64_t> stagesurface_map_max_us{0};
+
+	void record_stagesurface_map_sample(uint64_t duration_us, bool succeeded) noexcept
+	{
+		stagesurface_map_count.fetch_add(1, std::memory_order_relaxed);
+		if (!succeeded)
+			stagesurface_map_failure_count.fetch_add(1, std::memory_order_relaxed);
+		stagesurface_map_last_us.store(duration_us, std::memory_order_relaxed);
+		uint64_t maximum = stagesurface_map_max_us.load(std::memory_order_relaxed);
+		while (maximum < duration_us &&
+		       !stagesurface_map_max_us.compare_exchange_weak(maximum, duration_us, std::memory_order_relaxed,
+								      std::memory_order_relaxed)) {
+		}
+	}
+
+	void reset_stagesurface_map_metrics() noexcept
+	{
+		stagesurface_map_count.store(0, std::memory_order_relaxed);
+		stagesurface_map_failure_count.store(0, std::memory_order_relaxed);
+		stagesurface_map_last_us.store(0, std::memory_order_relaxed);
+		stagesurface_map_max_us.store(0, std::memory_order_relaxed);
+	}
 
 private:
 	int next_tick_stage_to_detector;

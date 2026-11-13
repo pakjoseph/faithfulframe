@@ -19,7 +19,7 @@ def fixture_row(elapsed_ms, cpu, resident, render_frames, render_lag, plugin_ver
     utc_timestamp = timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     row.update(
         {
-            "schema_version": "3",
+            "schema_version": str(analyzer.SCHEMA_VERSION),
             "run_metadata_present": "0",
             "utc_timestamp": utc_timestamp,
             "elapsed_milliseconds": str(elapsed_ms),
@@ -76,6 +76,10 @@ def fixture_row(elapsed_ms, cpu, resident, render_frames, render_lag, plugin_ver
             "max_detector_microseconds": "9000",
             "last_render_thread_tracker_work_microseconds": "250",
             "max_render_thread_tracker_work_microseconds": "700",
+            "stagesurface_map_count": str(elapsed_ms + 100),
+            "stagesurface_map_failure_count": str(elapsed_ms // 10_000),
+            "last_stagesurface_map_microseconds": "450",
+            "max_stagesurface_map_microseconds": "1200",
         }
     )
     if elapsed_ms == 0:
@@ -111,7 +115,7 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
     def test_loads_schema_v2_without_render_thread_metric(self):
         row = fixture_row(0, 10.0, 1_000_000, 1000, 5, "1.0")
         row["schema_version"] = "2"
-        old_columns = analyzer.EXPECTED_COLUMNS[:-2]
+        old_columns = analyzer.EXPECTED_COLUMNS[:-6]
         path = self.root / "schema-v2.csv"
         with path.open("w", encoding="utf-8", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=old_columns)
@@ -122,6 +126,23 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
 
         self.assertEqual(report["schema_version"], 2)
         self.assertEqual(report["metrics"]["last_render_thread_tracker_work_microseconds"]["count"], 0)
+        self.assertEqual(report["metrics"]["last_stagesurface_map_microseconds"]["count"], 0)
+
+    def test_loads_schema_v3_without_stagesurface_metrics(self):
+        row = fixture_row(0, 10.0, 1_000_000, 1000, 5, "1.0")
+        row["schema_version"] = "3"
+        old_columns = analyzer.EXPECTED_COLUMNS[:-4]
+        path = self.root / "schema-v3.csv"
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=old_columns)
+            writer.writeheader()
+            writer.writerow({column: row[column] for column in old_columns})
+
+        report = analyzer.load_log(path)
+
+        self.assertEqual(report["schema_version"], 3)
+        self.assertEqual(report["metrics"]["last_render_thread_tracker_work_microseconds"]["count"], 1)
+        self.assertEqual(report["metrics"]["last_stagesurface_map_microseconds"]["count"], 0)
 
     def test_summarizes_metrics_and_counter_deltas(self):
         path = self.write_log(
@@ -140,6 +161,10 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         self.assertTrue(report["obs_video_configuration_stable"])
         self.assertEqual(report["metrics"]["process_cpu_percent"]["p95"], 12.0)
         self.assertEqual(report["metrics"]["last_render_thread_tracker_work_microseconds"]["p95"], 250.0)
+        self.assertEqual(report["metrics"]["last_stagesurface_map_microseconds"]["p95"], 450.0)
+        self.assertEqual(report["metrics"]["max_stagesurface_map_microseconds"]["p95"], 1200.0)
+        self.assertEqual(report["counter_deltas"]["stagesurface_map_count"], 3600000)
+        self.assertEqual(report["counter_deltas"]["stagesurface_map_failure_count"], 360)
         self.assertEqual(report["counter_deltas"]["render_frames"], 1000)
         self.assertAlmostEqual(report["frame_drop_rates_percent"]["render_lag_percent"], 1.0)
         self.assertAlmostEqual(report["memory_growth_bytes_per_hour"]["resident"], 100_000)

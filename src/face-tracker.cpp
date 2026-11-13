@@ -1542,6 +1542,8 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 {
 	if (!source_width || !source_height || !binding || !binding->target)
 		return false;
+	if (s->ftm)
+		s->ftm->reset_stagesurface_map_metrics();
 	s->known_width = source_width;
 	s->known_height = source_height;
 	calculate_aspect(s);
@@ -2405,7 +2407,14 @@ static inline std::shared_ptr<texture_object> surface_to_cvtex(struct face_track
 {
 	uint8_t *video_data = NULL;
 	uint32_t video_linesize;
-	if (!gs_stagesurface_map(s->stagesurface, &video_data, &video_linesize))
+	const uint64_t map_started_at_ns = os_gettime_ns();
+	const bool map_succeeded = gs_stagesurface_map(s->stagesurface, &video_data, &video_linesize);
+	const uint64_t map_finished_at_ns = os_gettime_ns();
+	const uint64_t map_duration_us =
+		map_finished_at_ns >= map_started_at_ns ? (map_finished_at_ns - map_started_at_ns) / 1000ULL : 0;
+	if (s->ftm)
+		s->ftm->record_stagesurface_map_sample(map_duration_us, map_succeeded);
+	if (!map_succeeded)
 		return NULL;
 
 	uint32_t width = gs_stagesurface_get_width(s->stagesurface);
@@ -3071,6 +3080,16 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	calldata_set_bool(cd, "available", false);
 	calldata_set_int(cd, "candidate_count", 0);
 	calldata_set_int(cd, "status_snapshot_age_ms", -1);
+	if (s->ftm) {
+		calldata_set_int(cd, "stagesurface_map_count",
+				 ffi_integer(s->ftm->stagesurface_map_count.load(std::memory_order_relaxed)));
+		calldata_set_int(cd, "stagesurface_map_failure_count",
+				 ffi_integer(s->ftm->stagesurface_map_failure_count.load(std::memory_order_relaxed)));
+		calldata_set_int(cd, "last_stagesurface_map_us",
+				 ffi_integer(s->ftm->stagesurface_map_last_us.load(std::memory_order_relaxed)));
+		calldata_set_int(cd, "max_stagesurface_map_us",
+				 ffi_integer(s->ftm->stagesurface_map_max_us.load(std::memory_order_relaxed)));
+	}
 	if (!enabled)
 		return;
 	if (s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire))

@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 EXPECTED_COLUMNS = [
     "schema_version",
     "run_metadata_present",
@@ -81,9 +81,14 @@ EXPECTED_COLUMNS = [
     "max_detector_microseconds",
     "last_render_thread_tracker_work_microseconds",
     "max_render_thread_tracker_work_microseconds",
+    "stagesurface_map_count",
+    "stagesurface_map_failure_count",
+    "last_stagesurface_map_microseconds",
+    "max_stagesurface_map_microseconds",
 ]
 SUPPORTED_SCHEMAS = {
-    2: EXPECTED_COLUMNS[:-2],
+    2: EXPECTED_COLUMNS[:-6],
+    3: EXPECTED_COLUMNS[:-4],
     SCHEMA_VERSION: EXPECTED_COLUMNS,
 }
 
@@ -105,6 +110,8 @@ METRIC_COLUMNS = {
     "max_detector_microseconds": "microseconds",
     "last_render_thread_tracker_work_microseconds": "microseconds",
     "max_render_thread_tracker_work_microseconds": "microseconds",
+    "last_stagesurface_map_microseconds": "microseconds",
+    "max_stagesurface_map_microseconds": "microseconds",
 }
 
 COUNTER_COLUMNS = (
@@ -118,6 +125,8 @@ COUNTER_COLUMNS = (
     "rejected_work",
     "coalesced_work",
     "detector_work_count",
+    "stagesurface_map_count",
+    "stagesurface_map_failure_count",
 )
 
 STATE_NAMES = {
@@ -403,7 +412,7 @@ def load_log(path: str | Path) -> dict:
             if sample[column] is not None and sample[column] < 0:
                 raise PerformanceLogError(f"{path}: row {row_number} has a negative {column}")
         for column in COUNTER_COLUMNS:
-            sample[column] = _number(raw[column], column, row_number, integer=True)
+            sample[column] = _number(raw.get(column), column, row_number, integer=True)
             if sample[column] is not None and sample[column] < 0:
                 raise PerformanceLogError(f"{path}: row {row_number} has a negative {column}")
         samples.append(sample)
