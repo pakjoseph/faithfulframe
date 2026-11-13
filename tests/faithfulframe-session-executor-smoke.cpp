@@ -65,9 +65,12 @@ struct shared_reaper_cleanup_test_context
 	std::atomic<bool> ran_off_caller{false};
 };
 
+std::atomic<uint64_t> reaper_join_started{0};
+
 void count_reaper_join(void *context)
 {
-	static_cast<std::atomic<uint64_t> *>(context)->fetch_add(1, std::memory_order_relaxed);
+	(void)context;
+	reaper_join_started.fetch_add(1, std::memory_order_relaxed);
 }
 
 void mark_reaper_cleanup_complete(void *context)
@@ -642,8 +645,7 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 	std::weak_ptr<faithfulframe_session_executor> paused_weak = paused_executor;
 	std::weak_ptr<faithfulframe_session_executor> contended_weak = contended_executor;
 	std::weak_ptr<faithfulframe_session_executor> teardown_weak = teardown_executor;
-	std::atomic<uint64_t> reaper_join_started{0};
-	faithfulframe_test_set_reaper_join_hook(count_reaper_join, &reaper_join_started);
+	faithfulframe_test_set_reaper_join_hook(count_reaper_join, nullptr);
 	reaper_queue_lock_test_gate gate;
 	faithfulframe_test_set_reaper_queue_lock_hook(pause_reaper_queue_lock, &gate);
 	std::atomic<bool> paused_accepted{false};
