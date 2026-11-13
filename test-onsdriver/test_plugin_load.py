@@ -293,7 +293,9 @@ class PluginLoadTest(obstest.OBSTest):
         suffix = uuid.uuid4().hex
         scene_name = f'FaithfulFrame lifecycle {suffix}'
         camera_name = f'FaithfulFrame synthetic camera {suffix}'
+        other_camera_name = f'FaithfulFrame unrelated camera {suffix}'
         adapter_name = f'FaithfulFrame safe adapter {suffix}'
+        other_adapter_name = f'FaithfulFrame competing adapter {suffix}'
         original_scene = None
         scene_created = False
 
@@ -326,19 +328,42 @@ class PluginLoadTest(obstest.OBSTest):
             })
             client.send('CreateInput', {
                 'sceneName': scene_name,
+                'inputName': other_camera_name,
+                'inputKind': color_kind,
+                'inputSettings': {'color': 0xFF00FF00, 'width': 320, 'height': 180},
+            })
+            client.send('CreateInput', {
+                'sceneName': scene_name,
                 'inputName': adapter_name,
                 'inputKind': 'face_tracker_source',
                 'inputSettings': {'target_name': camera_name, 'safe_tracking_enabled': True},
             })
-
             adapter_settings = client.send('GetInputSettings', {'inputName': adapter_name})
             self.assertEqual(adapter_settings.input_kind, 'face_tracker_source')
             self.assertEqual(adapter_settings.input_settings.get('target_name'), camera_name)
             self.assertTrue(adapter_settings.input_settings.get('safe_tracking_enabled'))
 
             camera_image = self._wait_for_screenshot(client, camera_name, bool)
+            other_camera_image = self._wait_for_screenshot(client, other_camera_name, bool)
             bound_image = self._wait_for_screenshot(
                 client, adapter_name, lambda image: image == camera_image
+            )
+
+            # Establish the first adapter's lease before attempting a competing
+            # one, so this assertion does not depend on OBS tick ordering.
+            client.send('CreateInput', {
+                'sceneName': scene_name,
+                'inputName': other_adapter_name,
+                'inputKind': 'face_tracker_source',
+                'inputSettings': {'target_name': other_camera_name, 'safe_tracking_enabled': True},
+            })
+            other_adapter_image = self._wait_for_screenshot(
+                client, other_adapter_name, lambda image: image != other_camera_image
+            )
+            self.assertNotEqual(
+                other_adapter_image,
+                other_camera_image,
+                'A competing safe adapter must not acquire the other camera',
             )
 
             client.send('RemoveInput', {'inputName': camera_name})
@@ -359,6 +384,8 @@ class PluginLoadTest(obstest.OBSTest):
             self.assertNotEqual(replacement_image, camera_image)
             for _ in range(3):
                 self.assertEqual(self._screenshot(client, adapter_name), unavailable_image)
+                self.assertEqual(self._screenshot(client, other_camera_name), other_camera_image)
+                self.assertEqual(self._screenshot(client, other_adapter_name), other_adapter_image)
                 time.sleep(0.1)
 
             client.send('RemoveInput', {'inputName': adapter_name})
@@ -368,14 +395,15 @@ class PluginLoadTest(obstest.OBSTest):
                 self._input_names(client),
                 'Removing the adapter must leave its camera intact',
             )
+            self.assertEqual(self._screenshot(client, other_camera_name), other_camera_image)
+            self.assertEqual(self._screenshot(client, other_adapter_name), other_adapter_image)
         finally:
             # Keep this test isolated from the next OBS test even when an assertion fails.
             names = self._input_names(client)
-            if adapter_name in names:
-                client.send('RemoveInput', {'inputName': adapter_name})
-            names = self._input_names(client)
-            if camera_name in names:
-                client.send('RemoveInput', {'inputName': camera_name})
+            for input_name in (adapter_name, other_adapter_name, camera_name, other_camera_name):
+                if input_name in names:
+                    client.send('RemoveInput', {'inputName': input_name})
+                    names.remove(input_name)
             if original_scene:
                 client.send('SetCurrentProgramScene', {'sceneName': original_scene})
             if scene_created:
