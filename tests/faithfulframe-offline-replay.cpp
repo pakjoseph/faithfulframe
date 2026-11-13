@@ -22,6 +22,7 @@
 #include "texture-object.h"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <ctime>
@@ -37,6 +38,11 @@
 #include <system_error>
 #include <thread>
 #include <vector>
+#ifdef _WIN32
+#include <cstdio>
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 namespace {
 
@@ -139,13 +145,15 @@ bool signed_difference(uint64_t end, uint64_t start, int64_t &difference)
 
 void print_usage(std::ostream &output)
 {
-	output << "Usage: faithfulframe-offline-replay --model <frontal_face_detector.dat> --manifest <frames.tsv> "
-		  "[--csv <output.csv>]\n"
+	output << "Usage: faithfulframe-offline-replay --model <frontal_face_detector.dat> "
+		  "(--manifest <frames.tsv> | --ppm-stdin [--fps <1..120>]) [--csv <output.csv>]\n"
 	       << "Manifest format: monotonic_ms<TAB>relative-or-absolute-frame-path\n"
-	       << "Frames must be binary P6 PPM files with max value 255. One image per file.\n"
+	       << "Frames must be binary P6 PPM files with max value 255. Use one file per manifest entry, or "
+		  "concatenate frames on stdin.\n"
 	       << "This tool benchmarks the production dlib HOG detector only; it does not validate OBS capture, "
 		  "target selection, or tracking policy. Frames are processed serially as fast as detection completes; "
-		  "timestamps are recorded but do not pace replay. Completion latency includes up to 1 ms polling delay. "
+		  "manifest timestamps are recorded but do not pace replay. In PPM stdin mode, timestamps are synthesized "
+		  "from --fps (default 5), which does not pace replay. Completion latency includes up to 1 ms polling delay. "
 		  "CSV rows include process CPU and resident/peak memory samples; CPU time uses std::clock and memory "
 		  "sampling is platform-specific. process_cpu_percent is process CPU time divided by wall time, where 100% "
 		  "equals one logical CPU and multithreaded use can exceed 100%. These process-wide measurements are "
@@ -154,13 +162,17 @@ void print_usage(std::ostream &output)
 }
 
 bool parse_arguments(int argc, char **argv, std::filesystem::path &model_path, std::filesystem::path &manifest_path,
-		     std::filesystem::path &csv_path)
+		     std::filesystem::path &csv_path, bool &ppm_stdin, uint32_t &fps)
 {
 	for (int i = 1; i < argc; ++i) {
 		const std::string option(argv[i]);
 		if (option == "--help" || option == "-h") {
 			print_usage(std::cout);
 			return false;
+		}
+		if (option == "--ppm-stdin") {
+			ppm_stdin = true;
+			continue;
 		}
 		if (i + 1 >= argc) {
 			std::cerr << "Missing value for " << option << '\n';
@@ -173,15 +185,38 @@ bool parse_arguments(int argc, char **argv, std::filesystem::path &model_path, s
 			manifest_path = value;
 		else if (option == "--csv")
 			csv_path = value;
-		else {
+		else if (option == "--fps") {
+			uint32_t parsed_fps = 0;
+			const char *begin = value.data();
+			const char *end = begin + value.size();
+			const auto parsed = std::from_chars(begin, end, parsed_fps, 10);
+			if (parsed.ec != std::errc{} || parsed.ptr != end || parsed_fps < 1 || parsed_fps > 120) {
+				std::cerr << "--fps must be an integer from 1 through 120\n";
+				return false;
+			}
+			fps = parsed_fps;
+		} else {
 			std::cerr << "Unknown option: " << option << '\n';
 			return false;
 		}
 	}
-	if (model_path.empty() || manifest_path.empty()) {
+	if (model_path.empty() || ppm_stdin == !manifest_path.empty()) {
 		print_usage(std::cerr);
 		return false;
 	}
+	return true;
+}
+
+bool stream_timestamp_ms(uint64_t frame_index, uint32_t fps, uint64_t &timestamp_ms)
+{
+	const uint64_t whole_seconds = frame_index / fps;
+	const uint64_t fractional_ms = (frame_index % fps) * 1000 / fps;
+	if (whole_seconds > std::numeric_limits<uint64_t>::max() / 1000)
+		return false;
+	const uint64_t whole_ms = whole_seconds * 1000;
+	if (fractional_ms > std::numeric_limits<uint64_t>::max() - whole_ms)
+		return false;
+	timestamp_ms = whole_ms + fractional_ms;
 	return true;
 }
 
@@ -288,7 +323,9 @@ int main(int argc, char **argv)
 	std::filesystem::path model_path;
 	std::filesystem::path manifest_path;
 	std::filesystem::path csv_path_value;
-	if (!parse_arguments(argc, argv, model_path, manifest_path, csv_path_value))
+	bool ppm_stdin = false;
+	uint32_t fps = 5;
+	if (!parse_arguments(argc, argv, model_path, manifest_path, csv_path_value, ppm_stdin, fps))
 		return argc > 1 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h") ? 0 : 2;
 	if (!std::filesystem::is_regular_file(model_path)) {
 		std::cerr << "Model file does not exist: " << model_path << '\n';
@@ -299,18 +336,29 @@ int main(int argc, char **argv)
 		std::cerr << error << '\n';
 		return 2;
 	}
-	std::ifstream manifest_input(manifest_path);
-	if (!manifest_input) {
-		std::cerr << "Cannot open manifest: " << manifest_path << '\n';
-		return 2;
-	}
 	std::vector<frame_spec> frames;
-	if (!faithfulframe::offline::read_manifest(manifest_input, manifest_path.parent_path(), frames, error)) {
-		std::cerr << error << '\n';
-		return 2;
+	if (!ppm_stdin) {
+		std::ifstream manifest_input(manifest_path);
+		if (!manifest_input) {
+			std::cerr << "Cannot open manifest: " << manifest_path << '\n';
+			return 2;
+		}
+		if (!faithfulframe::offline::read_manifest(manifest_input, manifest_path.parent_path(), frames,
+							   error)) {
+			std::cerr << error << '\n';
+			return 2;
+		}
+	} else {
+#ifdef _WIN32
+		if (_setmode(_fileno(stdin), _O_BINARY) == -1) {
+			std::cerr << "Could not switch stdin to binary mode\n";
+			return 2;
+		}
+#endif
 	}
 	if (!csv_path_value.empty()) {
-		if (same_file_or_path(csv_path_value, model_path) || same_file_or_path(csv_path_value, manifest_path)) {
+		if (same_file_or_path(csv_path_value, model_path) ||
+		    (!ppm_stdin && same_file_or_path(csv_path_value, manifest_path))) {
 			std::cerr << "CSV output must not replace the model or frame manifest\n";
 			return 2;
 		}
@@ -349,21 +397,46 @@ int main(int argc, char **argv)
 	}
 	std::vector<uint64_t> work_durations;
 	uint64_t total_detections = 0;
-	for (size_t frame_index = 0; frame_index < frames.size(); ++frame_index) {
+	uint64_t frame_index = 0;
+	size_t manifest_index = 0;
+	while (true) {
+		frame_spec current_frame;
 		rgb_frame image;
 		uint64_t decode_us = 0;
-		if (!load_frame(frames[frame_index], image, decode_us, error)) {
-			std::cerr << error << '\n';
-			return 2;
+		if (ppm_stdin) {
+			const auto decode_started = steady_clock::now();
+			const auto result = faithfulframe::offline::read_ppm_stream_frame(std::cin, image, error);
+			decode_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+								  steady_clock::now() - decode_started)
+								  .count());
+			if (result == faithfulframe::offline::ppm_stream_result::end_of_stream)
+				break;
+			if (result == faithfulframe::offline::ppm_stream_result::error) {
+				std::cerr << error << '\n';
+				return 2;
+			}
+			if (!stream_timestamp_ms(frame_index, fps, current_frame.monotonic_ms)) {
+				std::cerr << "Frame count exceeded the supported timestamp range\n";
+				return 2;
+			}
+			current_frame.path = "stdin";
+		} else {
+			if (manifest_index >= frames.size())
+				break;
+			current_frame = frames[manifest_index++];
+			if (!load_frame(current_frame, image, decode_us, error)) {
+				std::cerr << error << '\n';
+				return 2;
+			}
 		}
 		if (image.width < 80 || image.height < 80) {
-			std::cerr << "dlib HOG requires frames of at least 80x80 pixels: " << frames[frame_index].path
+			std::cerr << "dlib HOG requires frames of at least 80x80 pixels: " << current_frame.path
 				  << '\n';
 			return 2;
 		}
-		auto texture = make_texture(image, frames[frame_index].monotonic_ms);
+		auto texture = make_texture(image, current_frame.monotonic_ms);
 		if (!texture) {
-			std::cerr << "Could not prepare frame " << frames[frame_index].path << '\n';
+			std::cerr << "Could not prepare frame " << current_frame.path << '\n';
 			return 2;
 		}
 		const uint64_t expected_count = detector.completed_work_count() + 1;
@@ -395,9 +468,9 @@ int main(int argc, char **argv)
 		work_durations.push_back(detector_work_us);
 		total_detections += detections.size();
 		if (detections.empty()) {
-			*csv << frame_index << ',' << frames[frame_index].monotonic_ms << ','
-			     << csv_path(frames[frame_index].path) << ',' << image.width << ',' << image.height << ','
-			     << decode_us << ',' << queue_latency_us << ',' << detector_work_us << ','
+			*csv << frame_index << ',' << current_frame.monotonic_ms << ',' << csv_path(current_frame.path)
+			     << ',' << image.width << ',' << image.height << ',' << decode_us << ',' << queue_latency_us
+			     << ',' << detector_work_us << ','
 			     << (cpu_valid ? std::to_string(process_cpu_us) : std::string{}) << ','
 			     << (cpu_valid ? std::to_string(process_cpu_percent) : std::string{}) << ','
 			     << (cpu_valid ? 1 : 0) << ','
@@ -410,9 +483,9 @@ int main(int argc, char **argv)
 		} else {
 			for (size_t detection_index = 0; detection_index < detections.size(); ++detection_index) {
 				const rect_s &rect = detections[detection_index];
-				*csv << frame_index << ',' << frames[frame_index].monotonic_ms << ','
-				     << csv_path(frames[frame_index].path) << ',' << image.width << ',' << image.height
-				     << ',' << decode_us << ',' << queue_latency_us << ',' << detector_work_us << ','
+				*csv << frame_index << ',' << current_frame.monotonic_ms << ','
+				     << csv_path(current_frame.path) << ',' << image.width << ',' << image.height << ','
+				     << decode_us << ',' << queue_latency_us << ',' << detector_work_us << ','
 				     << (cpu_valid ? std::to_string(process_cpu_us) : std::string{}) << ','
 				     << (cpu_valid ? std::to_string(process_cpu_percent) : std::string{}) << ','
 				     << (cpu_valid ? 1 : 0) << ','
@@ -431,8 +504,13 @@ int main(int argc, char **argv)
 			std::cerr << "Failed while writing detector output\n";
 			return 2;
 		}
+		++frame_index;
 	}
 	detector.stop();
+	if (frame_index == 0) {
+		std::cerr << (ppm_stdin ? "PPM stdin contains no frames\n" : "Manifest contains no frames\n");
+		return 2;
+	}
 	const process_sample process_finished = sample_process();
 	std::sort(work_durations.begin(), work_durations.end());
 	const uint64_t total_work_us = std::accumulate(work_durations.begin(), work_durations.end(), uint64_t{0});
@@ -445,7 +523,7 @@ int main(int argc, char **argv)
 	uint64_t total_process_cpu_us = 0;
 	const bool total_cpu_valid =
 		elapsed_cpu_microseconds(process_started.cpu_time, process_finished.cpu_time, total_process_cpu_us);
-	std::cerr << "frames=" << frames.size() << " detections=" << total_detections
+	std::cerr << "frames=" << frame_index << " detections=" << total_detections
 		  << " replay_wall_us=" << replay_wall_us
 		  << " detector_mean_us=" << (total_work_us / work_durations.size())
 		  << " detector_p50_us=" << percentile(0.50) << " detector_p95_us=" << percentile(0.95)

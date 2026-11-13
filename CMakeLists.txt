@@ -323,6 +323,11 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_test(NAME faithfulframe-tracker-worker-budget-smoke COMMAND faithfulframe-tracker-worker-budget-smoke)
 	add_test(NAME faithfulframe-offline-frame-sequence-smoke
 		COMMAND faithfulframe-offline-frame-sequence-smoke)
+	find_package(Python3 3.8 COMPONENTS Interpreter QUIET)
+	if (Python3_Interpreter_FOUND)
+		add_test(NAME faithfulframe-video-replay-wrapper
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_faithfulframe_video_replay.py)
+	endif()
 	add_test(NAME faithfulframe-offline-replay-help COMMAND faithfulframe-offline-replay --help)
 	add_test(NAME faithfulframe-dlib-tracker-lifetime-smoke
 		COMMAND faithfulframe-dlib-tracker-lifetime-smoke)

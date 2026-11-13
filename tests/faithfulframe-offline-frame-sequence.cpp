@@ -155,7 +155,9 @@ bool read_manifest(std::istream &input, const std::filesystem::path &manifest_di
 	return true;
 }
 
-bool read_ppm(std::istream &input, rgb_frame &frame, std::string &error)
+namespace {
+
+bool read_ppm_impl(std::istream &input, rgb_frame &frame, std::string &error, bool require_end_of_stream)
 {
 	std::string magic;
 	std::string width_token;
@@ -190,13 +192,35 @@ bool read_ppm(std::istream &input, rgb_frame &frame, std::string &error)
 		error = "PPM pixel data is truncated";
 		return false;
 	}
-	if (input.peek() != EOF) {
+	if (require_end_of_stream && input.peek() != EOF) {
 		error = "PPM contains trailing data; provide one frame per file";
 		return false;
 	}
 	frame = std::move(parsed_frame);
 	error.clear();
 	return true;
+}
+
+} // namespace
+
+bool read_ppm(std::istream &input, rgb_frame &frame, std::string &error)
+{
+	return read_ppm_impl(input, frame, error, true);
+}
+
+ppm_stream_result read_ppm_stream_frame(std::istream &input, rgb_frame &frame, std::string &error)
+{
+	if (input.peek() == EOF) {
+		if (input.eof() && !input.bad()) {
+			error.clear();
+			return ppm_stream_result::end_of_stream;
+		}
+		error = "failed while reading the PPM frame stream";
+		return ppm_stream_result::error;
+	}
+	if (!read_ppm_impl(input, frame, error, false))
+		return ppm_stream_result::error;
+	return ppm_stream_result::frame;
 }
 
 } // namespace faithfulframe::offline

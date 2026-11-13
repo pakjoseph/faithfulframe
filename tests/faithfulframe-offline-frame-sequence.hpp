@@ -25,4 +25,12 @@ bool read_manifest(std::istream &input, const std::filesystem::path &manifest_di
 		   std::vector<frame_spec> &frames, std::string &error);
 bool read_ppm(std::istream &input, rgb_frame &frame, std::string &error);
 
+enum class ppm_stream_result {
+	frame,
+	end_of_stream,
+	error,
+};
+
+ppm_stream_result read_ppm_stream_frame(std::istream &input, rgb_frame &frame, std::string &error);
+
 } // namespace faithfulframe::offline

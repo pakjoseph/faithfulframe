@@ -59,12 +59,48 @@ bool malformed_ppms_fail_closed()
 	return !faithfulframe::offline::read_ppm(unreasonable_dimensions, frame, error) && !error.empty();
 }
 
+bool ppm_stream_reads_concatenated_frames_and_clean_eof()
+{
+	std::string contents = "P6\n1 1\n255\n";
+	contents.append("\x0a\x20\x23", 3);
+	contents += "P6\n1 1\n255\n";
+	contents.append("\x04\x05\x06", 3);
+	std::istringstream input(contents, std::ios::binary);
+	faithfulframe::offline::rgb_frame frame;
+	std::string error;
+	if (faithfulframe::offline::read_ppm_stream_frame(input, frame, error) !=
+		    faithfulframe::offline::ppm_stream_result::frame ||
+	    frame.width != 1 || frame.height != 1 || frame.pixels != std::vector<uint8_t>({10, 32, 35}))
+		return false;
+	if (faithfulframe::offline::read_ppm_stream_frame(input, frame, error) !=
+		    faithfulframe::offline::ppm_stream_result::frame ||
+	    frame.width != 1 || frame.height != 1 || frame.pixels != std::vector<uint8_t>({4, 5, 6}))
+		return false;
+	return faithfulframe::offline::read_ppm_stream_frame(input, frame, error) ==
+		       faithfulframe::offline::ppm_stream_result::end_of_stream &&
+	       error.empty() && frame.pixels == std::vector<uint8_t>({4, 5, 6});
+}
+
+bool malformed_ppm_stream_fails_without_replacing_frame()
+{
+	std::string contents = "P6\n1 1\n255\n";
+	contents.append("\x01\x02", 2);
+	std::istringstream input(contents, std::ios::binary);
+	faithfulframe::offline::rgb_frame frame{1, 1, {9, 8, 7}};
+	std::string error;
+	return faithfulframe::offline::read_ppm_stream_frame(input, frame, error) ==
+		       faithfulframe::offline::ppm_stream_result::error &&
+	       !error.empty() && frame.pixels == std::vector<uint8_t>({9, 8, 7});
+}
+
 } // namespace
 
 int main()
 {
 	return manifest_order_and_paths() && invalid_manifest_is_rejected_without_replacing_output() &&
-			       ppm_reads_binary_pixels_and_comments() && malformed_ppms_fail_closed()
+			       ppm_reads_binary_pixels_and_comments() && malformed_ppms_fail_closed() &&
+			       ppm_stream_reads_concatenated_frames_and_clean_eof() &&
+			       malformed_ppm_stream_fails_without_replacing_frame()
 		       ? 0
 		       : 1;
 }
