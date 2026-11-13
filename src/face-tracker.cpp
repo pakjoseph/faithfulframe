@@ -1986,7 +1986,11 @@ static void fts_tick(void *data, float second)
 		if (settings) {
 			// Updating the detector engine stops and joins its worker. Only apply
 			// deferred settings while that worker is idle so a slow CNN frame can
-			// never stall OBS's graphics tick while teardown waits for it.
+			// never stall OBS's graphics tick while teardown waits for it. The
+			// idle check is only a snapshot: libobs serializes source video_tick and
+			// video_render callbacks on its graphics thread, and post_render is the
+			// only producer of detector work. Keep this check and replacement on
+			// that thread; another executor would need an explicit submission gate.
 			bool detector_idle = true;
 			if (s->ftm->detect)
 				detector_idle = s->ftm->detect->try_idle();

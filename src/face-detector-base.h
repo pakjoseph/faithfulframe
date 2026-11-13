@@ -66,7 +66,8 @@ public:
 
 	bool start();
 	void stop();
-	/// Nonblocking readiness check; false means active or queued work owns the worker.
+	/// Nonblocking point-in-time readiness check; this does not reserve the worker.
+	/// Callers that replace it must serialize work submission until replacement.
 	bool try_idle();
 	uint64_t last_work_duration_us() const { return last_work_us.load(std::memory_order_relaxed); }
 	uint64_t max_work_duration_us() const { return max_work_us.load(std::memory_order_relaxed); }
