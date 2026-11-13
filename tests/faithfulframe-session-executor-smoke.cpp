@@ -101,10 +101,15 @@ bool enqueue_shared_reaper_cleanup(const std::shared_ptr<shared_reaper_cleanup_t
 
 bool defer_shared_reaper_cleanup(const std::shared_ptr<shared_reaper_cleanup_test_context> &state)
 {
-	if (!enqueue_shared_reaper_cleanup(state))
-		return false;
-	faithfulframe_activate_reap_task(&state->task);
-	return true;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	do {
+		if (enqueue_shared_reaper_cleanup(state)) {
+			faithfulframe_activate_reap_task(&state->task);
+			return true;
+		}
+		std::this_thread::yield();
+	} while (std::chrono::steady_clock::now() < deadline);
+	return false;
 }
 
 bool enqueue_reap_task_when_available(faithfulframe_reap_task *task, void (*callback)(void *), void *context)
@@ -711,10 +716,11 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 	blocking_executor_handoff.join();
 	blocking_cleanup_handoff.join();
 	faithfulframe_test_set_reaper_queue_lock_hook(nullptr, nullptr);
+	const bool contended_owner_retained = static_cast<bool>(contended_executor);
 	const bool handoff_checks_passed =
 		first_holds_queue_lock && cleanup_handoff_was_nonblocking && contended_returned &&
 		paused_accepted.load(std::memory_order_acquire) && !paused_executor &&
-		!contended_accepted.load(std::memory_order_acquire) && contended_executor &&
+		!contended_accepted.load(std::memory_order_acquire) && contended_owner_retained &&
 		teardown_handoffs_waited_for_queue && blocking_executor_accepted.load(std::memory_order_acquire) &&
 		!teardown_executor && blocking_cleanup_accepted.load(std::memory_order_acquire);
 
@@ -763,13 +769,13 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 		std::fprintf(stderr,
 			     "reaper handoff checks failed: first_lock=%d nonblocking_rejected=%d "
 			     "contended_returned=%d paused_accepted=%d paused_owner=%d "
-			     "contended_accepted=%d contended_owner=%d blocking_waited=%d "
+			     "contended_accepted=%d contended_owner_retained=%d blocking_waited=%d "
 			     "blocking_executor_accepted=%d teardown_owner=%d blocking_cleanup_accepted=%d "
 			     "cleanup(teardown_accepted,teardown_done,cleanup_accepted,cleanup_done)=%d,%d,%d,%d "
 			     "reaped(teardown,contended,paused)=%d,%d,%d\n",
 			     first_holds_queue_lock, cleanup_handoff_was_nonblocking, contended_returned,
 			     paused_accepted.load(std::memory_order_acquire), static_cast<bool>(paused_executor),
-			     contended_accepted.load(std::memory_order_acquire), static_cast<bool>(contended_executor),
+			     contended_accepted.load(std::memory_order_acquire), contended_owner_retained,
 			     teardown_handoffs_waited_for_queue,
 			     blocking_executor_accepted.load(std::memory_order_acquire),
 			     static_cast<bool>(teardown_executor),
