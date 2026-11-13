@@ -381,10 +381,10 @@ class PluginLoadTest(obstest.OBSTest):
                 'inputSettings': {'color': 0xFF00FF00, 'width': 320, 'height': 180},
             })
             created_inputs.append(fallback_name)
+            client.send('SetCurrentProgramScene', {'sceneName': fallback_scene})
             fallback_image = self._wait_for_screenshot(client, fallback_name, bool)
 
-            for _ in range(3):
-                client.send('SetCurrentProgramScene', {'sceneName': fallback_scene})
+            for cycle in range(3):
                 inactive_image = self._wait_for_screenshot(
                     client, adapter_name, lambda image: bool(image) and image != camera_image
                 )
@@ -409,6 +409,8 @@ class PluginLoadTest(obstest.OBSTest):
                     'Returning to the bound scene must restore only its original camera view',
                 )
                 self.assertEqual(self._screenshot(client, camera_name), camera_image)
+                if cycle < 2:
+                    client.send('SetCurrentProgramScene', {'sceneName': fallback_scene})
 
             self.assertEqual(self._screenshot(client, fallback_name), fallback_image)
         finally:
