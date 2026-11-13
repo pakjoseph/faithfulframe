@@ -47,6 +47,18 @@ int main()
 	const ff_preview_rect_d invalid_hit_candidates[] = {{0.25, 0.25, 0.5, 0.5}, {NAN, 0.0, 0.5, 0.5}};
 	check(ff_preview_unique_hit(invalid_hit_candidates, 2, 0.5, 0.5, hit_index) == ff_preview_hit_result::no_hit);
 	check(ff_preview_unique_hit(nullptr, 1, 0.5, 0.5, hit_index) == ff_preview_hit_result::no_hit);
+	const ff_preview_rect_d malformed_candidates[] = {
+		{-0.1, 0.25, 0.5, 0.5},  {0.75, 0.25, 0.5, 0.5}, {0.25, 0.25, 0.0, 0.5},
+		{0.25, 0.25, 0.5, -0.1}, {0.25, 1.1, 0.1, 0.1},  {0.25, 0.25, INFINITY, 0.5},
+	};
+	for (const ff_preview_rect_d &malformed : malformed_candidates) {
+		hit_index = 77;
+		check(ff_preview_unique_hit(&malformed, 1, 0.5, 0.5, hit_index) == ff_preview_hit_result::no_hit);
+		check(hit_index == 77);
+	}
+	check(ff_preview_unique_hit(unique_candidate, 1, -0.1, 0.5, hit_index) == ff_preview_hit_result::no_hit);
+	check(ff_preview_unique_hit(unique_candidate, 1, 1.1, 0.5, hit_index) == ff_preview_hit_result::no_hit);
+	check(ff_preview_unique_hit(unique_candidate, 1, NAN, 0.5, hit_index) == ff_preview_hit_result::no_hit);
 	check(ff_preview_unique_hit(unique_candidate, 1, INFINITY, 0.5, hit_index) == ff_preview_hit_result::no_hit);
 
 	double x = -1.0, y = -1.0;
