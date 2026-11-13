@@ -45,6 +45,33 @@ class PackageAssetVerificationTests(unittest.TestCase):
                 )
                 restricted.unlink()
 
+    def test_rejects_unreviewed_model_assets(self):
+        model_directory = self.root / "nested" / "dlib_face_recognition_model"
+        model_directory.mkdir(parents=True)
+        for name in (
+            "unreviewed.dat",
+            "unreviewed.dat.bz2",
+            "unreviewed.onnx",
+            "unreviewed.pt",
+        ):
+            with self.subTest(name=name):
+                model = model_directory / name
+                model.write_bytes(b"unreviewed fixture")
+                self.assertIn(
+                    f"unreviewed model asset is packaged: nested/dlib_face_recognition_model/{name}",
+                    verify_package_assets.package_errors(self.root),
+                )
+                model.unlink()
+
+    def test_allows_reviewed_model_asset_names(self):
+        model_directory = self.root / "nested" / "dlib_face_landmark_model"
+        model_directory.mkdir(parents=True)
+        model = model_directory / "shape_predictor_5_face_landmarks.dat"
+        model.write_bytes(b"reviewed fixture")
+        self.assertFalse(
+            any("model asset is packaged" in error for error in verify_package_assets.package_errors(self.root))
+        )
+
     def test_rejects_empty_required_files(self):
         (self.root / "LICENSE").write_bytes(b"")
         self.assertIn(

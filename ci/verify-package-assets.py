@@ -23,6 +23,48 @@ REQUIRED_LICENSE_MARKERS = {
     "LICENSE-dlib-models": b"CC0 1.0 Universal",
 }
 
+# Model binaries are a distinct licensing/reproducibility surface. Adding a
+# model is an explicit review gate: record its provenance/license here and add
+# a fixture that proves it is packaged intentionally. Match by filename so
+# this remains effective regardless of whether a platform installer nests the
+# data directory under a plugin bundle or a package-specific prefix. Values
+# record the upstream provenance and matching packaged notice.
+ALLOWED_MODEL_ASSETS = {
+    "frontal_face_detector.dat": (
+        "norihiro/obs-face-tracker 0.7.0-hogdata",
+        "LICENSE-dlib",
+    ),
+    "mmod_human_face_detector.dat": (
+        "davisking/dlib-models fd81b6308a6a73d4ce08859eb2f4b628a21e27a2",
+        "LICENSE-dlib-models",
+    ),
+    "shape_predictor_5_face_landmarks.dat": (
+        "davisking/dlib-models fd81b6308a6a73d4ce08859eb2f4b628a21e27a2",
+        "LICENSE-dlib-models",
+    ),
+}
+
+MODEL_FILE_SUFFIXES = {
+    ".dat",
+    ".onnx",
+    ".pb",
+    ".pt",
+    ".pth",
+    ".tflite",
+    ".weights",
+    ".engine",
+    ".bin",
+    ".dnn",
+    ".gguf",
+    ".h5",
+    ".hdf5",
+    ".keras",
+    ".mlmodel",
+    ".model",
+    ".plan",
+    ".safetensors",
+}
+
 RESTRICTED_FILES = {
     "shape_predictor_68_face_landmarks.dat",
     "shape_predictor_68_face_landmarks.dat.bz2",
@@ -41,6 +83,15 @@ def package_errors(root: Path) -> list[str]:
     errors = [f"missing required package file: {name}" for name in sorted(REQUIRED_FILES - names)]
     errors.extend(f"restricted model asset is packaged: {path.relative_to(root)}"
                   for path in files if path.name in RESTRICTED_FILES)
+    for path in files:
+        relative_path = path.relative_to(root)
+        # Compressed model archives are also model assets. Release packages
+        # currently contain only the unpacked, allowlisted dlib files.
+        is_model_asset = path.suffix.lower() in MODEL_FILE_SUFFIXES or path.name.lower().endswith(
+            ".dat.bz2"
+        )
+        if is_model_asset and path.name not in ALLOWED_MODEL_ASSETS and path.name not in RESTRICTED_FILES:
+            errors.append(f"unreviewed model asset is packaged: {relative_path}")
     errors.extend(f"required package file is empty: {path.relative_to(root)}"
                   for path in files if path.name in REQUIRED_FILES and path.stat().st_size == 0)
     for name, marker in REQUIRED_LICENSE_MARKERS.items():
