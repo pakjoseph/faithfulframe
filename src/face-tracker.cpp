@@ -753,10 +753,13 @@ static obs_properties_t *fts_properties(void *data)
 	obs_property_t *safe_options_group = obs_properties_add_group(props, "safe_tracking_options",
 								      "Safe tracking source, motion and recovery",
 								      OBS_GROUP_NORMAL, safe_options);
+	obs_property_t *legacy_input_group = obs_properties_get(props, "input");
 	obs_data_t *current_settings = obs_source_get_settings(s->context);
 	if (current_settings) {
-		obs_property_set_visible(safe_options_group,
-					 obs_data_get_bool(current_settings, "safe_tracking_enabled"));
+		const bool safe_enabled = obs_data_get_bool(current_settings, "safe_tracking_enabled");
+		obs_property_set_visible(safe_options_group, safe_enabled);
+		if (legacy_input_group)
+			obs_property_set_visible(legacy_input_group, !safe_enabled);
 		obs_data_release(current_settings);
 	} else {
 		obs_property_set_visible(safe_options_group, false);
