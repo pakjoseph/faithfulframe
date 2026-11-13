@@ -550,9 +550,9 @@ static void fts_update(void *data, obs_data_t *settings)
 #endif
 	if (!defer_tracker_update)
 		ftf_update(data, settings);
-	// Source adapters with the Rust bridge keep their display name in the
-	// runtime configuration protected above. Preserve the legacy field only for
-	// builds that do not provide that runtime.
+		// Source adapters with the Rust bridge keep their display name in the
+		// runtime configuration protected above. Preserve the legacy field only for
+		// builds that do not provide that runtime.
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	if (s->safe_runtime)
 		return;
