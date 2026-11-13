@@ -96,7 +96,7 @@ public:
 	bool enqueue_candidates(uint64_t monotonic_ms, const ff_candidate *candidates, size_t count);
 	bool enqueue_candidate_clear(uint64_t monotonic_ms, const ff_identity &identity,
 				     const ff_generations &generations, uint64_t observation_version);
-	bool enqueue_command(uint64_t monotonic_ms, const ff_command &command);
+	bool enqueue_command(uint64_t monotonic_ms, const ff_command &command, bool *queue_full = nullptr);
 	bool enqueue_lifecycle(uint64_t monotonic_ms, const ff_lifecycle &lifecycle);
 	/// True while the worker can accept work; false after startup failure or shutdown.
 	bool worker_available() const
@@ -150,7 +150,7 @@ private:
 		bool try_read(ff_snapshot &snapshot, uint64_t *published_at_ms) const;
 	};
 
-	bool enqueue(work_item item, bool coalesce);
+	bool enqueue(work_item item, bool coalesce, bool *queue_full = nullptr);
 	void update_oldest_queue_timestamp_locked();
 	void run();
 

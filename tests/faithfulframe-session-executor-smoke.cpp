@@ -822,6 +822,13 @@ bool control_work_is_admitted_during_detector_backlog(const ff_session_config &c
 	const ff_command freeze{
 		FF_COMMAND_FREEZE, initial.identity, initial.status_version, inactive_generations, 0, 0};
 	const bool freeze_admitted = executor.enqueue_command(34, freeze);
+	const ff_command extra_control{
+		FF_COMMAND_FREEZE, initial.identity, initial.status_version, inactive_generations, 0, 0};
+	const bool second_extra_control_admitted = executor.enqueue_command(35, extra_control);
+	const bool third_extra_control_admitted = executor.enqueue_command(36, extra_control);
+	bool queue_full_reported = false;
+	const bool excess_control_rejected = !executor.enqueue_command(37, extra_control, &queue_full_reported) &&
+					     queue_full_reported;
 	const ff_executor_diagnostics queued_diagnostics = executor.diagnostics();
 
 	{
@@ -831,17 +838,34 @@ bool control_work_is_admitted_during_detector_backlog(const ff_session_config &c
 	gate.condition.notify_all();
 	faithfulframe_test_set_session_work_hook(nullptr, nullptr);
 	ff_snapshot final_snapshot{};
-	const bool freeze_applied = await_snapshot(
+	const bool freeze_preserved_after_rejected_controls = await_snapshot(
 		executor,
 		[](const ff_snapshot &value) {
-			return value.state == FF_STATE_FROZEN && value.command_result == FF_COMMAND_APPLIED;
+			return value.state == FF_STATE_FROZEN && value.command_result == FF_COMMAND_REJECTED;
 		},
 		final_snapshot);
 	const ff_executor_diagnostics completed_diagnostics = executor.diagnostics();
 	executor.shutdown();
-	return background_queued && excess_background_rejected && lifecycle_admitted && freeze_admitted &&
-	       queued_diagnostics.queue_depth == faithfulframe_session_executor::max_queued_background_work + 2 &&
-	       queued_diagnostics.rejected_work == 1 && freeze_applied && completed_diagnostics.rejected_work == 1;
+	const bool passed = background_queued && excess_background_rejected && lifecycle_admitted && freeze_admitted &&
+			    second_extra_control_admitted && third_extra_control_admitted && excess_control_rejected &&
+			    queued_diagnostics.queue_depth == faithfulframe_session_executor::max_queued_work &&
+			    queued_diagnostics.rejected_work == 2 && freeze_preserved_after_rejected_controls &&
+			    final_snapshot.rejection_reason == FF_REJECTION_INVALID_COMMAND &&
+			    completed_diagnostics.rejected_work == 2;
+	if (!passed)
+		std::fprintf(stderr,
+			     "control queue: background=%d excess_background_rejected=%d lifecycle=%d freeze=%d "
+			     "extra_controls=%d/%d excess_control_rejected=%d queue_depth=%llu rejected_queued=%llu "
+			     "freeze_preserved=%d final_state=%u final_command=%u final_rejection=%u "
+			     "rejected_completed=%llu\n",
+			     background_queued, excess_background_rejected, lifecycle_admitted, freeze_admitted,
+			     second_extra_control_admitted, third_extra_control_admitted, excess_control_rejected,
+			     static_cast<unsigned long long>(queued_diagnostics.queue_depth),
+			     static_cast<unsigned long long>(queued_diagnostics.rejected_work),
+			     freeze_preserved_after_rejected_controls, final_snapshot.state,
+			     final_snapshot.command_result, final_snapshot.rejection_reason,
+			     static_cast<unsigned long long>(completed_diagnostics.rejected_work));
+	return passed;
 }
 } // namespace
 

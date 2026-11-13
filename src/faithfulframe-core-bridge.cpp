@@ -309,13 +309,13 @@ bool faithfulframe_session_executor::enqueue_candidate_clear(uint64_t monotonic_
 	return enqueue(item, true);
 }
 
-bool faithfulframe_session_executor::enqueue_command(uint64_t monotonic_ms, const ff_command &command)
+bool faithfulframe_session_executor::enqueue_command(uint64_t monotonic_ms, const ff_command &command, bool *queue_full)
 {
 	work_item item;
 	item.kind = work_kind::command;
 	item.monotonic_ms = monotonic_ms;
 	item.command = command;
-	return enqueue(item, false);
+	return enqueue(item, false, queue_full);
 }
 
 bool faithfulframe_session_executor::enqueue_lifecycle(uint64_t monotonic_ms, const ff_lifecycle &lifecycle)
@@ -327,8 +327,10 @@ bool faithfulframe_session_executor::enqueue_lifecycle(uint64_t monotonic_ms, co
 	return enqueue(item, false);
 }
 
-bool faithfulframe_session_executor::enqueue(work_item item, bool coalesce)
+bool faithfulframe_session_executor::enqueue(work_item item, bool coalesce, bool *queue_full)
 {
+	if (queue_full)
+		*queue_full = false;
 	if (!worker_started.load(std::memory_order_acquire)) {
 		rejected_work.fetch_add(1, std::memory_order_relaxed);
 		return false;
@@ -373,11 +375,15 @@ bool faithfulframe_session_executor::enqueue(work_item item, bool coalesce)
 		// Bound the tick/candidate backlog below total capacity so operator and
 		// lifecycle events have reserved queue space under detector load.
 		if (queued_background_work >= max_queued_background_work) {
+			if (queue_full)
+				*queue_full = true;
 			rejected_work.fetch_add(1, std::memory_order_relaxed);
 			return false;
 		}
 	}
 	if (queue_size == max_queued_work) {
+		if (queue_full)
+			*queue_full = true;
 		rejected_work.fetch_add(1, std::memory_order_relaxed);
 		return false;
 	}

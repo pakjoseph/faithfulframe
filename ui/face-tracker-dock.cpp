@@ -485,8 +485,10 @@ static void use_full_source_preview_transform(faithfulframe_safe_preview &previe
 }
 
 static bool enqueue_safe_command(obs_source_t *source, const faithfulframe_safe_preview &preview, uint32_t kind,
-				 const QVariantMap *candidate = nullptr)
+				 const QVariantMap *candidate = nullptr, QString *failure = nullptr)
 {
+	if (failure)
+		*failure = "Command was unavailable; wait for status to refresh and try again";
 	if (!source || !preview.enabled || !preview.available)
 		return false;
 	if (candidate) {
@@ -500,13 +502,20 @@ static bool enqueue_safe_command(obs_source_t *source, const faithfulframe_safe_
 		    candidate->value("session_generation").toULongLong() != preview.session_generation ||
 		    candidate->value("stream_generation").toULongLong() != preview.stream_generation ||
 		    candidate->value("geometry_generation").toULongLong() != preview.geometry_generation ||
-		    candidate->value("tracker_generation").toULongLong() != preview.tracker_generation)
+		    candidate->value("tracker_generation").toULongLong() != preview.tracker_generation) {
+			if (failure)
+				*failure =
+					"Selection expired or changed. Choose the face again from the current preview.";
 			return false;
+		}
 	}
 
 	proc_handler_t *handler = obs_source_get_proc_handler(source);
-	if (!handler)
+	if (!handler) {
+		if (failure)
+			*failure = "Tracking controls are unavailable; refresh the preview and try again";
 		return false;
+	}
 	calldata_t cd;
 	calldata_init(&cd);
 	calldata_set_int(&cd, "kind", kind);
@@ -523,17 +532,31 @@ static bool enqueue_safe_command(obs_source_t *source, const faithfulframe_safe_
 	calldata_set_int(&cd, "observation_version", static_cast<long long>(preview.observation_version));
 	const bool called = proc_handler_call(handler, "faithfulframe_command", &cd);
 	bool queued = false;
+	bool queue_full = false;
 	calldata_get_bool(&cd, "queued", &queued);
+	calldata_get_bool(&cd, "queue_full", &queue_full);
 	calldata_free(&cd);
-	return called && queued;
+	if (called && queued)
+		return true;
+	if (failure) {
+		if (queue_full)
+			*failure = "Tracking is catching up. Wait a moment, then try the control again.";
+		else
+			*failure = "Command was stale or unavailable; wait for status to refresh and try again";
+	}
+	return false;
 }
 
-static bool send_safe_command(obs_source_t *source, uint32_t kind, const QVariantMap *candidate = nullptr)
+static bool send_safe_command(obs_source_t *source, uint32_t kind, const QVariantMap *candidate = nullptr,
+			      QString *failure = nullptr)
 {
 	faithfulframe_safe_preview preview;
-	if (!read_safe_preview(source, preview))
+	if (!read_safe_preview(source, preview)) {
+		if (failure)
+			*failure = "Tracking status is unavailable; wait for it to refresh and try again";
 		return false;
-	return enqueue_safe_command(source, preview, kind, candidate);
+	}
+	return enqueue_safe_command(source, preview, kind, candidate, failure);
 }
 
 static QString safe_state_text(const faithfulframe_safe_preview &preview)
@@ -1763,9 +1786,9 @@ void FTDock::pauseButtonClicked(bool checked)
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	faithfulframe_safe_preview safe_preview;
 	if (read_safe_preview(target, safe_preview) && safe_preview.enabled) {
-		if (!send_safe_command(target, checked ? FF_COMMAND_FREEZE : FF_COMMAND_RESUME))
-			showOperatorNotice(
-				"Command was stale or unavailable; wait for status to refresh and try again");
+		QString failure;
+		if (!send_safe_command(target, checked ? FF_COMMAND_FREEZE : FF_COMMAND_RESUME, nullptr, &failure))
+			showOperatorNotice(failure);
 		return;
 	}
 #endif
@@ -1797,8 +1820,9 @@ void FTDock::resetButtonClicked(bool checked)
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	faithfulframe_safe_preview safe_preview;
 	if (read_safe_preview(target, safe_preview) && safe_preview.enabled) {
-		if (!send_safe_command(target, FF_COMMAND_RESET_TO_WIDE))
-			showOperatorNotice("Reset command was stale or unavailable; try again");
+		QString failure;
+		if (!send_safe_command(target, FF_COMMAND_RESET_TO_WIDE, nullptr, &failure))
+			showOperatorNotice(failure);
 		return;
 	}
 #endif
@@ -1819,8 +1843,9 @@ void FTDock::autoFollowButtonClicked()
 {
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	OBSSource target = get_source();
-	if (!send_safe_command(target, FF_COMMAND_ENABLE_AUTO_FOLLOW))
-		showOperatorNotice("Auto Follow was stale or unavailable; wait for status to refresh and try again");
+	QString failure;
+	if (!send_safe_command(target, FF_COMMAND_ENABLE_AUTO_FOLLOW, nullptr, &failure))
+		showOperatorNotice(failure);
 #endif
 }
 
@@ -1828,9 +1853,9 @@ void FTDock::manualOverrideButtonClicked()
 {
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	OBSSource target = get_source();
-	if (!send_safe_command(target, FF_COMMAND_MANUAL_OVERRIDE))
-		showOperatorNotice(
-			"Manual Override was stale or unavailable; wait for status to refresh and try again");
+	QString failure;
+	if (!send_safe_command(target, FF_COMMAND_MANUAL_OVERRIDE, nullptr, &failure))
+		showOperatorNotice(failure);
 #endif
 }
 
@@ -1874,8 +1899,9 @@ void FTDock::selectCandidateButtonClicked()
 	// Resolve it against the current preview so routine detector updates do not
 	// make an otherwise current selection command stale.
 	const QVariantMap current_candidate = preview.candidates.at(static_cast<qsizetype>(current_index));
-	if (!enqueue_safe_command(target, preview, FF_COMMAND_SELECT_CANDIDATE, &current_candidate))
-		showOperatorNotice("Selection expired or changed. Choose the face again from the current preview.");
+	QString failure;
+	if (!enqueue_safe_command(target, preview, FF_COMMAND_SELECT_CANDIDATE, &current_candidate, &failure))
+		showOperatorNotice(failure);
 #endif
 }
 
@@ -1933,8 +1959,9 @@ void FTDock::handlePreviewClick(const QPointF &position)
 		return;
 	}
 	const QVariantMap hit = *visible_candidates[hit_index];
-	if (!enqueue_safe_command(target, preview, FF_COMMAND_SELECT_CANDIDATE, &hit))
-		showOperatorNotice("Selection expired or changed. Click the face again in the current preview.");
+	QString failure;
+	if (!enqueue_safe_command(target, preview, FF_COMMAND_SELECT_CANDIDATE, &hit, &failure))
+		showOperatorNotice(failure);
 #else
 	UNUSED_PARAMETER(position);
 #endif

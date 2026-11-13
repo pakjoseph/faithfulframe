@@ -3003,6 +3003,7 @@ static void cb_faithfulframe_command(void *data, calldata_t *cd)
 {
 	auto *s = static_cast<face_tracker_filter *>(data);
 	calldata_set_bool(cd, "queued", false);
+	calldata_set_bool(cd, "queue_full", false);
 	if (!s->safe_runtime || !s->safe_runtime->enabled.load(std::memory_order_acquire) ||
 	    s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire))
 		return;
@@ -3043,8 +3044,10 @@ static void cb_faithfulframe_command(void *data, calldata_t *cd)
 					     geometry_generation, tracker_generation};
 	command.candidate_handle = candidate_handle;
 	command.observation_version = observation_version;
-	if (executor->enqueue_command(source_monotonic_millis(), command))
+	bool queue_full = false;
+	if (executor->enqueue_command(source_monotonic_millis(), command, &queue_full))
 		calldata_set_bool(cd, "queued", true);
+	calldata_set_bool(cd, "queue_full", queue_full);
 }
 #endif
 
