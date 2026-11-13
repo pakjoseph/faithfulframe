@@ -10,6 +10,9 @@ enum class faithfulframe_crop_input : uint8_t {
 	safe_session,
 };
 
+/// Keep automatic safety-policy tracking opt-in until production acceptance gates pass.
+constexpr bool faithfulframe_safety_policy_enabled_by_default = false;
+
 /// Reject malformed normalized rectangles before they reach OBS rendering.
 inline bool faithfulframe_valid_normalized_rect(const ff_rect &rect) noexcept
 {

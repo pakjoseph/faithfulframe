@@ -33,5 +33,9 @@ int main()
 	    faithfulframe_valid_normalized_rect(ff_rect{0.0f, 0.0f, std::numeric_limits<float>::quiet_NaN(), 0.5f}) ||
 	    faithfulframe_valid_normalized_rect(ff_rect{0.0f, 0.0f, 0.5f, std::numeric_limits<float>::infinity()}))
 		return 7;
+	if (faithfulframe_safety_policy_enabled_by_default ||
+	    faithfulframe_select_crop_input(faithfulframe_safety_policy_enabled_by_default) !=
+		    faithfulframe_crop_input::legacy_aggregate)
+		return 8;
 	return 0;
 }

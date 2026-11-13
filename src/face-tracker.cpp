@@ -942,7 +942,7 @@ static void fts_get_defaults(obs_data_t *settings)
 {
 	ftf_get_defaults(settings);
 #ifdef ENABLE_RUST_CORE_BRIDGE
-	obs_data_set_default_bool(settings, "safe_tracking_enabled", false);
+	obs_data_set_default_bool(settings, "safe_tracking_enabled", faithfulframe_safety_policy_enabled_by_default);
 #endif
 }
 
