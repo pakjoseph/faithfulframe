@@ -2407,6 +2407,54 @@ mod tests {
     }
 
     #[test]
+    fn candidate_cache_stays_bounded_during_a_long_session_replay() {
+        const OBSERVATION_COUNT: u64 = 100_000;
+        let mut session = TrackingSession::new(
+            Config {
+                max_evidence_age_ms: 10,
+                max_candidates: MAX_SESSION_CANDIDATES,
+                ..Config::default()
+            },
+            identity(),
+            generations(),
+        )
+        .unwrap();
+
+        for version in 1..=OBSERVATION_COUNT {
+            let result = session.apply(Event::Candidate {
+                at: version,
+                candidate: candidate(version, version, version, version),
+            });
+
+            assert_eq!(result.command_result, CommandResult::NotACommand);
+            assert!(session.latest.len() <= MAX_SESSION_CANDIDATES);
+            assert_eq!(session.highest_candidate_handle, version);
+        }
+
+        let before_stale_selection = session.snapshot();
+        let oldest_evicted_handle = 1;
+        assert!(!session.latest.contains_key(&oldest_evicted_handle));
+        let after_stale_selection = session.apply(Event::Command {
+            at: OBSERVATION_COUNT + 1,
+            envelope: CommandEnvelope {
+                identity: before_stale_selection.identity,
+                status_version: before_stale_selection.status_version,
+                generations: before_stale_selection.generations,
+                command: Command::SelectCandidate {
+                    handle: oldest_evicted_handle,
+                    observation_version: before_stale_selection.observation_version,
+                },
+            },
+        });
+
+        assert_eq!(
+            after_stale_selection.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        assert_policy_no_op(after_stale_selection, before_stale_selection);
+    }
+
+    #[test]
     fn engine_converts_selected_face_to_bounded_crop() {
         let mut engine = TrackingEngine::new(
             Config::default(),
