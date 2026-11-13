@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -570,9 +571,9 @@ static void fts_update(void *data, obs_data_t *settings)
 #endif
 	if (!defer_tracker_update)
 		ftf_update(data, settings);
-		// Source adapters with the Rust bridge keep their display name in the
-		// runtime configuration protected above. Preserve the legacy field only for
-		// builds that do not provide that runtime.
+	// Source adapters with the Rust bridge keep their display name in the
+	// runtime configuration protected above. Preserve the legacy field only for
+	// builds that do not provide that runtime.
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	if (s->safe_runtime)
 		return;
@@ -604,18 +605,40 @@ static void emit_state_changed(struct face_tracker_filter *);
 static void *ftf_create_internal(obs_data_t *settings, obs_source_t *context, bool source_adapter)
 {
 	auto *s = (struct face_tracker_filter *)bzalloc(sizeof(struct face_tracker_filter));
+	if (!s)
+		return nullptr;
+	// This callback is entered through libobs's C ABI. Catch construction
+	// failures before they can escape that boundary and strand the caller's
+	// source-instance reservation. Keep the zero-initialized OBS-owned wrapper
+	// valid until both C++ owners have been constructed successfully.
+	try {
 #ifdef ENABLE_RUST_CORE_BRIDGE
-	if (source_adapter) {
-		s->safe_runtime = new (std::nothrow) faithfulframe_source_runtime();
-		if (!s->safe_runtime) {
-			bfree(s);
-			return nullptr;
+		if (source_adapter) {
+			s->safe_runtime = new (std::nothrow) faithfulframe_source_runtime();
+			if (!s->safe_runtime) {
+				bfree(s);
+				return nullptr;
+			}
 		}
-	}
 #else
-	UNUSED_PARAMETER(source_adapter);
+		UNUSED_PARAMETER(source_adapter);
 #endif
-	s->ftm = new ft_manager_for_ftf(s);
+		s->ftm = new ft_manager_for_ftf(s);
+	} catch (const std::exception &error) {
+		blog(LOG_ERROR, "FaithfulFrame could not construct a tracking instance: %s", error.what());
+#ifdef ENABLE_RUST_CORE_BRIDGE
+		delete s->safe_runtime;
+#endif
+		bfree(s);
+		return nullptr;
+	} catch (...) {
+		blog(LOG_ERROR, "FaithfulFrame could not construct a tracking instance");
+#ifdef ENABLE_RUST_CORE_BRIDGE
+		delete s->safe_runtime;
+#endif
+		bfree(s);
+		return nullptr;
+	}
 	s->ftm->crop_cur.x1 = s->ftm->crop_cur.y1 = -2;
 	s->context = context;
 	s->ftm->scale = 2.0f;
