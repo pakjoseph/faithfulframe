@@ -1,4 +1,5 @@
 #include "faithfulframe-offline-frame-sequence.hpp"
+#include "faithfulframe-offline-duration-sample.hpp"
 
 #include <sstream>
 #include <string>
@@ -93,6 +94,28 @@ bool malformed_ppm_stream_fails_without_replacing_frame()
 	       !error.empty() && frame.pixels == std::vector<uint8_t>({9, 8, 7});
 }
 
+bool detector_duration_samples_are_bounded_and_deterministic()
+{
+	faithfulframe::offline::duration_sample first(3);
+	faithfulframe::offline::duration_sample second(3);
+	for (uint64_t value = 1; value <= 100; ++value) {
+		first.add(value);
+		second.add(value);
+	}
+	if (first.exact() || first.seen() != 100 || first.capacity() != 3 || first.values().size() != 3 ||
+	    first.values() != second.values())
+		return false;
+	for (uint64_t value : first.values()) {
+		if (value == 0 || value > 100)
+			return false;
+	}
+
+	faithfulframe::offline::duration_sample exact(3);
+	exact.add(10);
+	exact.add(20);
+	return exact.exact() && exact.values() == std::vector<uint64_t>({10, 20});
+}
+
 } // namespace
 
 int main()
@@ -100,7 +123,8 @@ int main()
 	return manifest_order_and_paths() && invalid_manifest_is_rejected_without_replacing_output() &&
 			       ppm_reads_binary_pixels_and_comments() && malformed_ppms_fail_closed() &&
 			       ppm_stream_reads_concatenated_frames_and_clean_eof() &&
-			       malformed_ppm_stream_fails_without_replacing_frame()
+			       malformed_ppm_stream_fails_without_replacing_frame() &&
+			       detector_duration_samples_are_bounded_and_deterministic()
 		       ? 0
 		       : 1;
 }

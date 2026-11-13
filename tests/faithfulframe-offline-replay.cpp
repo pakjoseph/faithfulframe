@@ -13,6 +13,7 @@
 #endif
 
 #include "faithfulframe-offline-frame-sequence.hpp"
+#include "faithfulframe-offline-duration-sample.hpp"
 
 #include <obs-module.h>
 #include <dlib/image_processing/frontal_face_detector.h>
@@ -32,7 +33,6 @@
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <numeric>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -154,6 +154,8 @@ void print_usage(std::ostream &output)
 		  "target selection, or tracking policy. Frames are processed serially as fast as detection completes; "
 		  "manifest timestamps are recorded but do not pace replay. In PPM stdin mode, timestamps are synthesized "
 		  "from --fps (default 5), which does not pace replay. Completion latency includes up to 1 ms polling delay. "
+		  "Detector latency percentiles use exact samples through 65536 frames, then a deterministic reservoir "
+		  "sample with fixed memory use. "
 		  "CSV rows include process CPU and resident/peak memory samples; CPU time uses std::clock and memory "
 		  "sampling is platform-specific. process_cpu_percent is process CPU time divided by wall time, where 100% "
 		  "equals one logical CPU and multithreaded use can exceed 100%. These process-wide measurements are "
@@ -389,13 +391,19 @@ int main(int argc, char **argv)
 
 	face_detector_dlib_hog detector;
 	detector.set_model(model_path.string().c_str());
+	const size_t sample_capacity =
+		ppm_stdin ? faithfulframe::offline::duration_sample::default_capacity
+			  : std::min(frames.size(), faithfulframe::offline::duration_sample::default_capacity);
+	faithfulframe::offline::duration_sample work_durations(sample_capacity);
+	uint64_t total_work_us = 0;
+	uint64_t max_work_us = 0;
+	bool total_work_valid = true;
 	const auto replay_started = steady_clock::now();
 	const process_sample process_started = sample_process();
 	if (!detector.start()) {
 		std::cerr << "Could not start the dlib detector worker\n";
 		return 2;
 	}
-	std::vector<uint64_t> work_durations;
 	uint64_t total_detections = 0;
 	uint64_t frame_index = 0;
 	size_t manifest_index = 0;
@@ -455,6 +463,7 @@ int main(int argc, char **argv)
 		detector.unlock();
 		const uint64_t detector_work_us = detector.last_work_duration_us();
 		const process_sample current_process = sample_process();
+		max_work_us = std::max(max_work_us, detector_work_us);
 		uint64_t process_cpu_us = 0;
 		const bool cpu_valid =
 			elapsed_cpu_microseconds(process_started.cpu_time, current_process.cpu_time, process_cpu_us);
@@ -465,7 +474,11 @@ int main(int argc, char **argv)
 			cpu_valid && wall_elapsed_us > 0
 				? 100.0 * static_cast<double>(process_cpu_us) / static_cast<double>(wall_elapsed_us)
 				: 0.0;
-		work_durations.push_back(detector_work_us);
+		work_durations.add(detector_work_us);
+		if (detector_work_us > std::numeric_limits<uint64_t>::max() - total_work_us)
+			total_work_valid = false;
+		else if (total_work_valid)
+			total_work_us += detector_work_us;
 		total_detections += detections.size();
 		if (detections.empty()) {
 			*csv << frame_index << ',' << current_frame.monotonic_ms << ',' << csv_path(current_frame.path)
@@ -512,11 +525,11 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	const process_sample process_finished = sample_process();
-	std::sort(work_durations.begin(), work_durations.end());
-	const uint64_t total_work_us = std::accumulate(work_durations.begin(), work_durations.end(), uint64_t{0});
-	const auto percentile = [&work_durations](double fraction) {
-		const size_t index = static_cast<size_t>(fraction * static_cast<double>(work_durations.size() - 1));
-		return work_durations[index];
+	work_durations.sort();
+	const auto &duration_values = work_durations.values();
+	const auto percentile = [&duration_values](double fraction) {
+		const size_t index = static_cast<size_t>(fraction * static_cast<double>(duration_values.size() - 1));
+		return duration_values[index];
 	};
 	const uint64_t replay_wall_us = static_cast<uint64_t>(
 		std::chrono::duration_cast<std::chrono::microseconds>(steady_clock::now() - replay_started).count());
@@ -524,10 +537,14 @@ int main(int argc, char **argv)
 	const bool total_cpu_valid =
 		elapsed_cpu_microseconds(process_started.cpu_time, process_finished.cpu_time, total_process_cpu_us);
 	std::cerr << "frames=" << frame_index << " detections=" << total_detections
-		  << " replay_wall_us=" << replay_wall_us
-		  << " detector_mean_us=" << (total_work_us / work_durations.size())
-		  << " detector_p50_us=" << percentile(0.50) << " detector_p95_us=" << percentile(0.95)
-		  << " detector_max_us=" << work_durations.back();
+		  << " replay_wall_us=" << replay_wall_us << " detector_mean_us=";
+	if (total_work_valid)
+		std::cerr << (total_work_us / frame_index);
+	else
+		std::cerr << "unavailable";
+	std::cerr << " detector_p50_us=" << percentile(0.50) << " detector_p95_us=" << percentile(0.95)
+		  << " detector_max_us=" << max_work_us << " detector_percentile_samples=" << duration_values.size()
+		  << " detector_percentiles_exact=" << (work_durations.exact() ? 1 : 0);
 	if (total_cpu_valid && replay_wall_us > 0)
 		std::cerr << " process_cpu_us=" << total_process_cpu_us << " process_cpu_percent="
 			  << 100.0 * static_cast<double>(total_process_cpu_us) / static_cast<double>(replay_wall_us);

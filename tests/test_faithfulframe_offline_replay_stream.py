@@ -38,6 +38,8 @@ def main():
         raise SystemExit(f"replay did not emit both synthetic frames: {frame_times}")
     if b"frames=2" not in replay.stderr:
         raise SystemExit(f"replay summary did not report two frames: {replay.stderr!r}")
+    if b"detector_percentile_samples=2 detector_percentiles_exact=1" not in replay.stderr:
+        raise SystemExit(f"short replay did not report exact latency percentiles: {replay.stderr!r}")
 
     malformed = run(args.binary, args.model, frame + b"invalid")
     if malformed.returncode != 2 or b"PPM" not in malformed.stderr:
