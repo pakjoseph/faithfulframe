@@ -486,14 +486,20 @@ bool retirement_handoffs_are_concurrent(const ff_session_config &config, const f
 	paused_handoff.join();
 	contended_handoff.join();
 	faithfulframe_test_set_reaper_enqueue_hook(nullptr, nullptr);
-	if (!paused_inside_enqueue || !contended_returned_while_first_paused ||
-	    !paused_accepted.load(std::memory_order_acquire) || paused_executor ||
+	const bool paused_first_attempt_accepted = paused_accepted.load(std::memory_order_acquire);
+	const bool paused_owner_retained_after_rejection = static_cast<bool>(paused_executor);
+	const bool paused_retry_accepted = !paused_first_attempt_accepted && paused_owner_retained_after_rejection &&
+					   faithfulframe_retire_session_executor(paused_executor);
+	const bool paused_retired = paused_first_attempt_accepted || paused_retry_accepted;
+	if (!paused_inside_enqueue || !contended_returned_while_first_paused || !paused_retired || paused_executor ||
 	    !contended_accepted.load(std::memory_order_acquire) || contended_executor) {
 		std::fprintf(stderr,
 			     "concurrent retirement: paused_inside=%d contended_returned=%d paused_accepted=%d "
+			     "paused_retry_accepted=%d paused_owner_retained=%d "
 			     "paused_owner=%d contended_accepted=%d contended_owner=%d\n",
 			     paused_inside_enqueue, contended_returned_while_first_paused,
-			     paused_accepted.load(std::memory_order_acquire), static_cast<bool>(paused_executor),
+			     paused_first_attempt_accepted, paused_retry_accepted,
+			     paused_owner_retained_after_rejection, static_cast<bool>(paused_executor),
 			     contended_accepted.load(std::memory_order_acquire), static_cast<bool>(contended_executor));
 		return false;
 	}
