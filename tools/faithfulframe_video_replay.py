@@ -12,9 +12,12 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 
-def ffmpeg_command(ffmpeg_bin: str, video: Path, fps: int, max_width: int) -> list[str]:
+def ffmpeg_command(
+    ffmpeg_bin: str, video: Path, fps: int, max_width: int, max_height: int = 1080
+) -> list[str]:
     video_filter = (
-        f"fps={fps},scale=w='min({max_width},iw)':h=-2:force_original_aspect_ratio=decrease"
+        f"fps={fps},scale=w='min({max_width},iw)':h='min({max_height},ih)':"
+        "force_original_aspect_ratio=decrease"
     )
     return [
         ffmpeg_bin,
@@ -94,12 +97,15 @@ def run_pipeline(
     fps: int,
     max_width: int,
     csv: Path | None,
+    max_height: int = 1080,
     popen: Callable[..., subprocess.Popen] = subprocess.Popen,
 ) -> int:
     ffmpeg_process = None
     replay_process = None
     try:
-        ffmpeg_process = popen(ffmpeg_command(ffmpeg_bin, video, fps, max_width), stdout=subprocess.PIPE)
+        ffmpeg_process = popen(
+            ffmpeg_command(ffmpeg_bin, video, fps, max_width, max_height), stdout=subprocess.PIPE
+        )
         try:
             replay_process = popen(
                 replay_command(replay_bin, model, fps, csv),
@@ -140,12 +146,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ffmpeg-bin", default="ffmpeg", help="FFmpeg executable")
     parser.add_argument("--fps", type=int, default=5, help="sample rate from 1 through 120 frames per second")
     parser.add_argument("--max-width", type=int, default=1920, help="maximum sampled frame width (default: 1920)")
+    parser.add_argument("--max-height", type=int, default=1080, help="maximum sampled frame height (default: 1080)")
     parser.add_argument("--csv", type=Path, help="write detector results to this CSV file")
     args = parser.parse_args(argv)
     if not 1 <= args.fps <= 120:
         parser.error("--fps must be between 1 and 120")
     if args.max_width < 80:
         parser.error("--max-width must be at least 80 pixels")
+    if args.max_height < 80:
+        parser.error("--max-height must be at least 80 pixels")
     return args
 
 
@@ -174,6 +183,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         fps=args.fps,
         max_width=args.max_width,
         csv=args.csv,
+        max_height=args.max_height,
     )
 
 

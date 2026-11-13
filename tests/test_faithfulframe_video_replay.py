@@ -86,9 +86,27 @@ class VideoReplayTests(unittest.TestCase):
         command = video_replay.ffmpeg_command("ffmpeg", Path("service recording.mov"), 7, 1440)
         self.assertEqual(command[0], "ffmpeg")
         self.assertIn("service recording.mov", command)
-        self.assertIn("fps=7,scale=w='min(1440,iw)':h=-2:force_original_aspect_ratio=decrease", command)
+        self.assertIn(
+            "fps=7,scale=w='min(1440,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease",
+            command,
+        )
         self.assertEqual(command[-1], "pipe:1")
         self.assertNotIn("shell", command)
+
+    def test_ffmpeg_command_caps_portrait_height_without_upscaling(self):
+        command = video_replay.ffmpeg_command("ffmpeg", Path("portrait.mov"), 5, 1920, 1080)
+        filter_arg = command[command.index("-vf") + 1]
+        self.assertIn("scale=w='min(1920,iw)':h='min(1080,ih)'", filter_arg)
+
+    def test_cli_requires_minimum_sampled_height(self):
+        args = video_replay.parse_args(
+            ["--video", "input.mp4", "--model", "model.dat", "--max-height", "720"]
+        )
+        self.assertEqual(args.max_height, 720)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            video_replay.parse_args(
+                ["--video", "input.mp4", "--model", "model.dat", "--max-height", "79"]
+            )
 
     def test_replay_command_passes_stream_mode_fps_and_optional_csv(self):
         command = video_replay.replay_command("replay", Path("model.dat"), 5, Path("results.csv"))
