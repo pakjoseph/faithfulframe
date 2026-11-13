@@ -311,6 +311,9 @@ bool same_file_or_path(const std::filesystem::path &left, const std::filesystem:
 	if (left.lexically_normal() == right.lexically_normal())
 		return true;
 	std::error_code error;
+	if (std::filesystem::equivalent(left, right, error) && !error)
+		return true;
+	error.clear();
 	const auto left_canonical = std::filesystem::weakly_canonical(left, error);
 	if (error)
 		return false;

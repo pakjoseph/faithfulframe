@@ -1,8 +1,11 @@
 import argparse
 import csv
 import io
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -45,6 +48,40 @@ def main():
             f"replay accepted or damaged its executable as CSV output: "
             f"status={overwrite.returncode}, stderr={overwrite.stderr!r}"
         )
+
+    with tempfile.TemporaryDirectory() as directory:
+        copied_model = Path(directory) / "model.dat"
+        linked_output = Path(directory) / "output.csv"
+        shutil.copyfile(args.model, copied_model)
+        try:
+            os.link(copied_model, linked_output)
+        except OSError:
+            pass
+        else:
+            model_bytes = copied_model.read_bytes()
+            hardlink_overwrite = subprocess.run(
+                [
+                    args.binary,
+                    "--model",
+                    str(copied_model),
+                    "--ppm-stdin",
+                    "--csv",
+                    str(linked_output),
+                ],
+                input=b"",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if (
+                hardlink_overwrite.returncode != 2
+                or b"must not replace the model or frame manifest" not in hardlink_overwrite.stderr
+                or copied_model.read_bytes() != model_bytes
+            ):
+                raise SystemExit(
+                    "replay accepted or damaged a model through a hard-link alias: "
+                    f"status={hardlink_overwrite.returncode}, stderr={hardlink_overwrite.stderr!r}"
+                )
 
     frame = frame_bytes()
     replay = run(args.binary, args.model, frame + frame)
