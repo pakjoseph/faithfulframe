@@ -2,6 +2,7 @@
 #include <util/config-file.h>
 #include <obs-frontend-api.h>
 #include "plugin-macros.generated.h"
+#include "faithfulframe-source-registration.h"
 #include "faithfulframe-worker-log.hpp"
 #ifdef WITH_DOCK
 #include "../ui/face-tracker-dock.hpp"
@@ -20,6 +21,16 @@ int faithfulframe_executor_reaper_start(void);
 void faithfulframe_teardown_begin_module_unload(void);
 #endif
 
+static bool source_type_is_registered(const char *id)
+{
+	obs_data_t *defaults = obs_get_source_defaults(id);
+	if (!defaults)
+		return false;
+
+	obs_data_release(defaults);
+	return true;
+}
+
 const char *obs_module_name(void)
 {
 	return obs_module_text("Module.Name");
@@ -27,6 +38,15 @@ const char *obs_module_name(void)
 
 bool obs_module_load(void)
 {
+	const char *conflict = faithfulframe_first_registered_source_type(source_type_is_registered);
+	if (conflict) {
+		blog(LOG_ERROR,
+		     "FaithfulFrame refused to load: OBS source type '%s' is already registered. "
+		     "Remove the competing Face Tracker plugin and restart OBS.",
+		     conflict);
+		return false;
+	}
+
 	faithfulframe_worker_log_start();
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	if (!faithfulframe_executor_reaper_start()) {

@@ -204,6 +204,9 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	endif()
 	add_executable(faithfulframe-rust-bridge-smoke
 		tests/faithfulframe-core-bridge-smoke.cpp src/faithfulframe-core-bridge.cpp)
+	add_executable(faithfulframe-source-registration-smoke
+		tests/faithfulframe-source-registration-smoke.c)
+	target_include_directories(faithfulframe-source-registration-smoke PRIVATE src)
 	add_executable(faithfulframe-session-executor-smoke
 		tests/faithfulframe-session-executor-smoke.cpp src/faithfulframe-core-bridge.cpp)
 	target_compile_definitions(faithfulframe-session-executor-smoke PRIVATE
@@ -313,6 +316,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	add_test(NAME faithfulframe-deferred-pending-smoke COMMAND faithfulframe-deferred-pending-smoke)
 	add_test(NAME faithfulframe-rust-bridge-smoke COMMAND faithfulframe-rust-bridge-smoke)
 	add_test(NAME faithfulframe-session-executor-smoke COMMAND faithfulframe-session-executor-smoke)
+	add_test(NAME faithfulframe-source-registration-smoke COMMAND faithfulframe-source-registration-smoke)
 	add_test(NAME faithfulframe-macos-minimum-version-parser
 		COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/VerifyMacOSMinimumVersions.cmake)
 	add_test(NAME faithfulframe-detector-worker-smoke COMMAND faithfulframe-detector-worker-smoke)
