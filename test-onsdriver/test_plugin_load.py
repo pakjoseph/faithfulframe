@@ -613,6 +613,83 @@ class PluginLoadTest(obstest.OBSTest):
                 client, adapter_name, lambda image: image == restored_camera_image
             )
             self.assertEqual(rebound_image, restored_camera_image)
+
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'safe_tracking_enabled': False},
+                'overlay': True,
+            })
+            disabled_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image == restored_camera_image
+            )
+            self.assertEqual(disabled_image, restored_camera_image)
+
+            # Existing disabled filters remain incompatible: enabling safety
+            # must not bind until the filter is removed and the operator retries.
+            client.send('CreateSourceFilter', {
+                'sourceName': camera_name,
+                'filterName': legacy_filter_name,
+                'filterKind': 'face_tracker_filter',
+                'filterSettings': {},
+            })
+            filter_created = True
+            client.send('SetSourceFilterEnabled', {
+                'sourceName': camera_name,
+                'filterName': legacy_filter_name,
+                'filterEnabled': False,
+            })
+            filter_info = client.send('GetSourceFilter', {
+                'sourceName': camera_name,
+                'filterName': legacy_filter_name,
+            })
+            self.assertFalse(filter_info.filter_enabled)
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'safe_tracking_enabled': True},
+                'overlay': True,
+            })
+            self._wait_for_log_text('FaithfulFrame rejected an invalid, filtered, or unavailable source binding')
+            rejected_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image != restored_camera_image
+            )
+            self.assertNotEqual(
+                rejected_image,
+                restored_camera_image,
+                'A pre-existing disabled tracker filter must reject the safe source binding',
+            )
+
+            client.send('RemoveSourceFilter', {
+                'sourceName': camera_name,
+                'filterName': legacy_filter_name,
+            })
+            filter_created = False
+            self.assertEqual(self._screenshot(client, camera_name), restored_camera_image)
+            for _ in range(3):
+                self.assertNotEqual(
+                    self._screenshot(client, adapter_name),
+                    restored_camera_image,
+                    'Removing an existing filter must not silently create a safe binding',
+                )
+                time.sleep(0.1)
+
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'safe_tracking_enabled': False},
+                'overlay': True,
+            })
+            disabled_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image == restored_camera_image
+            )
+            self.assertEqual(disabled_image, restored_camera_image)
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'safe_tracking_enabled': True},
+                'overlay': True,
+            })
+            rebound_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image == restored_camera_image
+            )
+            self.assertEqual(rebound_image, restored_camera_image)
         finally:
             names = self._input_names(client)
             if filter_created and camera_name in names:

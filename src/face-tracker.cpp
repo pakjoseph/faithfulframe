@@ -2528,8 +2528,13 @@ static void fts_render(void *data, gs_effect_t *)
 			draw_safe_source_frame(s, binding, s->safe_runtime, true);
 			return;
 		}
-		if (!binding)
+		if (!binding) {
+			// Safe mode has no authorized source session. Keep the adapter's last
+			// known output dimensions and fail closed instead of exposing stale or
+			// implicit legacy output.
+			draw_safe_source_frame(s, nullptr, s->safe_runtime, true);
 			return;
+		}
 		obs_source_t *safe_target = binding && binding->target ? obs_weak_source_get_source(binding->target)
 								       : nullptr;
 		if (!s->rendered) {
