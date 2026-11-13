@@ -339,10 +339,20 @@ if (ENABLE_RUST_CORE_BRIDGE)
 			COMMAND faithfulframe-offline-replay
 				--model "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}"
 				--manifest "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/offline-smoke.tsv")
+		if (Python3_Interpreter_FOUND)
+			add_test(NAME faithfulframe-offline-replay-stream-smoke
+				COMMAND ${Python3_EXECUTABLE}
+					${CMAKE_CURRENT_SOURCE_DIR}/tests/test_faithfulframe_offline_replay_stream.py
+					--binary $<TARGET_FILE:faithfulframe-offline-replay>
+					--model "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}")
+		endif()
 		set_tests_properties(faithfulframe-offline-replay-detector-smoke PROPERTIES
 			TIMEOUT 30
 			PASS_REGULAR_EXPRESSION
 				"process_cpu_us=[0-9]+ process_cpu_percent=[0-9.]+ resident_bytes=[0-9]+ peak_resident_bytes=[0-9]+")
+		if (Python3_Interpreter_FOUND)
+			set_tests_properties(faithfulframe-offline-replay-stream-smoke PROPERTIES TIMEOUT 30)
+		endif()
 	endif()
 	set_tests_properties(faithfulframe-detector-worker-smoke faithfulframe-tracker-worker-smoke
 		faithfulframe-worker-log-gate-smoke
