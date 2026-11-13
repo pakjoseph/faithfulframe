@@ -1076,8 +1076,13 @@ int run_smoke()
 	if (faithfulframe_teardown_register_instance() != 1)
 		return 94;
 	faithfulframe_teardown_instance_created();
+	// Even an accidental early shutdown request must not close the reaper while
+	// a source is live: its destroy callback still needs a safe executor handoff.
+	faithfulframe_executor_reaper_shutdown();
 	auto last_source_executor = std::make_shared<faithfulframe_session_executor>(config, ff_identity{109, 209},
 										     ff_generations{1, 1, 1, 1, 1});
+	if (!last_source_executor->worker_available())
+		return 120;
 	ff_snapshot last_source_snapshot{};
 	if (!await_snapshot(
 		    *last_source_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },

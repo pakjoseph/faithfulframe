@@ -760,7 +760,17 @@ extern "C" void faithfulframe_executor_reaper_shutdown()
 {
 	std::shared_ptr<faithfulframe_executor_reaper> reaper;
 	{
-		std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
+		// Keep the reaper accepting work for the full lifetime of every OBS
+		// source instance. A source destroy callback must be able to hand off its
+		// executor before dropping the instance reservation; closing the reaper
+		// early would make the binding destructor join that worker inline.
+		std::lock_guard<std::mutex> owner_lock(faithfulframe_reaper_owner_mutex);
+		{
+			std::lock_guard<std::mutex> lifecycle_lock(faithfulframe_module_lifecycle_mutex);
+			if (!faithfulframe_module_unloading || faithfulframe_live_instances != 0 ||
+			    faithfulframe_pending_creates != 0 || !faithfulframe_reaper_shutdown_started)
+				return;
+		}
 		faithfulframe_reaper_closed = true;
 		reaper = std::move(faithfulframe_reaper);
 	}
