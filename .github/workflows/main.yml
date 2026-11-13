@@ -570,3 +570,56 @@ jobs:
         run: >-
           ctest --test-dir build-tsan --output-on-failure --timeout 30
           -R '^faithfulframe-(session-executor|active-slot|single-adapter-lease|deferred-pending|detector-worker|tracker-worker|worker-log-gate)-smoke$'
+
+  address_sanitizer_tests:
+    name: C++ lifetime tests with AddressSanitizer and UBSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install Rust 1.98.0
+        uses: dtolnay/rust-toolchain@1.98.0
+
+      - name: Download OBS development environment
+        id: obsdeps
+        uses: norihiro/obs-studio-devel-action@v3
+        with:
+          obs: 31
+          verbose: true
+
+      - name: Configure AddressSanitizer and UBSan build
+        run: |
+          sudo apt-get install -y libopenblas-dev libopenblas0
+          export OPENBLAS_HOME=/lib/x86_64-linux-gnu/
+          cmake -S . -B build-asan \
+            -D CMAKE_BUILD_TYPE=Debug \
+            -D ENABLE_RUST_CORE_BRIDGE=ON \
+            -D WITH_DOCK=OFF \
+            -D WITH_PTZ_TCP=OFF \
+            -D CMAKE_C_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' \
+            -D CMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' \
+            -D CMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined' \
+            ${{ steps.obsdeps.outputs.PLUGIN_CMAKE_OPTIONS }}
+
+      - name: Build concurrency and teardown smoke tests
+        run: |
+          cmake --build build-asan --parallel 4 --target \
+            faithfulframe-session-executor-smoke \
+            faithfulframe-active-slot-smoke \
+            faithfulframe-single-adapter-lease-smoke \
+            faithfulframe-deferred-pending-smoke \
+            faithfulframe-detector-worker-smoke \
+            faithfulframe-tracker-worker-smoke \
+            faithfulframe-worker-log-gate-smoke
+
+      - name: Run AddressSanitizer and UBSan checks
+        env:
+          ASAN_OPTIONS: halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: >-
+          ctest --test-dir build-asan --output-on-failure --timeout 30
+          -R '^faithfulframe-(session-executor|active-slot|single-adapter-lease|deferred-pending|detector-worker|tracker-worker|worker-log-gate)-smoke$'
