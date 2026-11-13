@@ -1677,7 +1677,7 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::invalid_source_binding),
 			std::memory_order_release);
 		if (!binding->closed.load(std::memory_order_acquire)) {
-			blog(LOG_ERROR,
+			blog(LOG_WARNING,
 			     "FaithfulFrame safe tracking stopped: remove the added legacy tracker filter, then rebind the source");
 			fail_source_binding_closed(binding);
 		}
@@ -2748,10 +2748,13 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 
 	auto binding_lease = s->safe_runtime->active.read();
 	auto *binding = binding_lease.get();
-	calldata_set_bool(cd, "session_closed", binding && binding->closed.load(std::memory_order_acquire));
+	calldata_set_bool(cd, "session_closed",
+			  binding && (binding->closed.load(std::memory_order_acquire) ||
+				      has_conflicting_legacy_filter(binding)));
 	auto executor = binding ? std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)
 				: std::shared_ptr<faithfulframe_session_executor>{};
-	if (!binding || !executor || binding->closed.load(std::memory_order_acquire) ||
+	if (!binding || !executor || has_conflicting_legacy_filter(binding) ||
+	    binding->closed.load(std::memory_order_acquire) ||
 	    binding->transition_pending.load(std::memory_order_acquire))
 		return;
 	const ff_executor_diagnostics diagnostics = executor->diagnostics();
@@ -2876,7 +2879,8 @@ static bool enqueue_safe_operator_command(face_tracker_filter *s, uint32_t kind)
 	auto *binding = binding_lease.get();
 	auto executor = binding ? std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)
 				: std::shared_ptr<faithfulframe_session_executor>{};
-	if (!binding || !executor || binding->closed.load(std::memory_order_acquire) ||
+	if (!binding || !executor || has_conflicting_legacy_filter(binding) ||
+	    binding->closed.load(std::memory_order_acquire) ||
 	    binding->transition_pending.load(std::memory_order_acquire) ||
 	    binding->source_settings_updated.load(std::memory_order_acquire) ||
 	    !binding->effective_active.load(std::memory_order_acquire) ||
@@ -2907,7 +2911,8 @@ static void cb_faithfulframe_command(void *data, calldata_t *cd)
 	auto *binding = binding_lease.get();
 	auto executor = binding ? std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)
 				: std::shared_ptr<faithfulframe_session_executor>{};
-	if (!binding || !executor || binding->closed.load(std::memory_order_acquire) ||
+	if (!binding || !executor || has_conflicting_legacy_filter(binding) ||
+	    binding->closed.load(std::memory_order_acquire) ||
 	    binding->transition_pending.load(std::memory_order_acquire) ||
 	    binding->source_settings_updated.load(std::memory_order_acquire) ||
 	    !binding->effective_active.load(std::memory_order_acquire) ||

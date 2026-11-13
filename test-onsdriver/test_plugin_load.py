@@ -560,6 +560,7 @@ class PluginLoadTest(obstest.OBSTest):
                 'filterSettings': {},
             })
             filter_created = True
+            camera_with_legacy_filter = self._wait_for_screenshot(client, camera_name, bool)
             self._wait_for_log_text(
                 'FaithfulFrame safe tracking stopped: remove the added legacy tracker filter, then rebind the source'
             )
@@ -570,6 +571,11 @@ class PluginLoadTest(obstest.OBSTest):
                 closed_image,
                 bound_image,
                 'Adding a legacy crop filter must stop the protected output instead of applying its crop',
+            )
+            self.assertNotEqual(
+                closed_image,
+                camera_with_legacy_filter,
+                'The stopped adapter must not pass through the newly filtered camera image',
             )
 
             client.send('RemoveSourceFilter', {
