@@ -1,10 +1,12 @@
+import argparse
+from contextlib import redirect_stderr
 import io
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import faithfulframe_video_replay as video_replay  # noqa: E402
@@ -55,6 +57,30 @@ class VideoReplayTests(unittest.TestCase):
 
     def test_resolves_executable_from_path_or_explicit_file(self):
         self.assertEqual(video_replay.executable_path(sys.executable), Path(sys.executable))
+
+    def test_main_rejects_csv_that_would_replace_replay_executable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "input.mp4"
+            model = Path(directory) / "model.dat"
+            video.touch()
+            model.touch()
+            args = argparse.Namespace(
+                video=video,
+                model=model,
+                replay_bin=sys.executable,
+                ffmpeg_bin="ffmpeg",
+                fps=5,
+                max_width=1920,
+                csv=Path(sys.executable),
+            )
+            run = Mock()
+            with patch.object(video_replay, "parse_args", return_value=args), patch.object(
+                video_replay, "run_pipeline", run
+            ), redirect_stderr(io.StringIO()):
+                status = video_replay.main([])
+
+            self.assertEqual(status, 2)
+            run.assert_not_called()
 
     def test_ffmpeg_command_samples_without_shell_or_upscaling(self):
         command = video_replay.ffmpeg_command("ffmpeg", Path("service recording.mov"), 7, 1440)
