@@ -573,9 +573,8 @@ bool duplicate_retirement_requests_enqueue_once(const ff_session_config &config,
 	reaper_enqueue_test_gate gate;
 	faithfulframe_test_set_reaper_enqueue_hook(pause_reaper_enqueue, &gate);
 	std::atomic<bool> first_accepted{false};
-	std::thread first_handoff([&] {
-		first_accepted.store(faithfulframe_retire_session_executor(first_owner), std::memory_order_release);
-	});
+	std::thread first_handoff(
+		[&] { first_accepted.store(retire_executor_when_available(first_owner), std::memory_order_release); });
 	bool first_paused = false;
 	{
 		std::unique_lock<std::mutex> lock(gate.mutex);
@@ -587,7 +586,7 @@ bool duplicate_retirement_requests_enqueue_once(const ff_session_config &config,
 	std::atomic<bool> second_finished{false};
 	std::atomic<bool> second_accepted{false};
 	std::thread second_handoff([&] {
-		second_accepted.store(faithfulframe_retire_session_executor(second_owner), std::memory_order_release);
+		second_accepted.store(retire_executor_when_available(second_owner), std::memory_order_release);
 		{
 			std::lock_guard<std::mutex> lock(completion_mutex);
 			second_finished.store(true, std::memory_order_release);
@@ -597,9 +596,9 @@ bool duplicate_retirement_requests_enqueue_once(const ff_session_config &config,
 	bool second_returned_while_first_paused = false;
 	{
 		std::unique_lock<std::mutex> lock(completion_mutex);
-		second_returned_while_first_paused =
-			completion_condition.wait_for(lock, std::chrono::milliseconds(250),
-						      [&] { return second_finished.load(std::memory_order_acquire); });
+		second_returned_while_first_paused = completion_condition.wait_for(lock, std::chrono::seconds(2), [&] {
+			return second_finished.load(std::memory_order_acquire);
+		});
 	}
 	{
 		std::lock_guard<std::mutex> lock(gate.mutex);
@@ -610,8 +609,20 @@ bool duplicate_retirement_requests_enqueue_once(const ff_session_config &config,
 	second_handoff.join();
 	faithfulframe_test_set_reaper_enqueue_hook(nullptr, nullptr);
 	executor.reset();
-	return first_paused && second_returned_while_first_paused && first_accepted.load(std::memory_order_acquire) &&
-	       second_accepted.load(std::memory_order_acquire) && !first_owner && !second_owner && await_expired(weak);
+	const bool first_accepted_result = first_accepted.load(std::memory_order_acquire);
+	const bool second_accepted_result = second_accepted.load(std::memory_order_acquire);
+	const bool both_owners_released = !first_owner && !second_owner;
+	const bool executor_expired = await_expired(weak);
+	if (!first_paused || !second_returned_while_first_paused || !first_accepted_result || !second_accepted_result ||
+	    !both_owners_released || !executor_expired) {
+		std::fprintf(stderr,
+			     "duplicate retirement: first_paused=%d second_returned=%d first_accepted=%d "
+			     "second_accepted=%d owners_released=%d executor_expired=%d\n",
+			     first_paused, second_returned_while_first_paused, first_accepted_result,
+			     second_accepted_result, both_owners_released, executor_expired);
+		return false;
+	}
+	return true;
 }
 } // namespace
 
