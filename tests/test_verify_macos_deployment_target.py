@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import pathlib
 import plistlib
 import tempfile
@@ -44,6 +46,15 @@ class BundleDeploymentTargetTests(unittest.TestCase):
 
 
 class MachOMinimumVersionTests(unittest.TestCase):
+    def make_bundle(self, minimum_version):
+        temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        info_path = pathlib.Path(temporary_directory.name) / "Contents" / "Info.plist"
+        info_path.parent.mkdir(parents=True)
+        with info_path.open("wb") as info_file:
+            plistlib.dump({"LSMinimumSystemVersion": minimum_version}, info_file)
+        return pathlib.Path(temporary_directory.name)
+
     def test_reads_each_modern_build_version_slice(self):
         load_commands = """\
 Load command 0
@@ -126,6 +137,46 @@ Load command 0
 
         self.assertIsNone(versions)
         run.assert_called_once()
+
+    def run_package_check(self, minimum_versions):
+        bundle = self.make_bundle("13.0")
+        binary = bundle / "Contents" / "MacOS" / "FaithfulFrame"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"Mach-O fixture")
+        cache = bundle.parent / "CMakeCache.txt"
+        cache.write_text("CMAKE_OSX_DEPLOYMENT_TARGET:STRING=13.0\n", encoding="utf-8")
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        with (
+            patch.object(
+                VERIFY.sys,
+                "argv",
+                [str(SCRIPT_PATH), "--root", str(bundle), "--cmake-cache", str(cache)],
+            ),
+            patch.object(VERIFY, "macho_minimum_versions", return_value=minimum_versions),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            result = VERIFY.main()
+        return result, stderr.getvalue(), binary
+
+    def test_package_gate_accepts_matching_binary_minimum(self):
+        result, error, _ = self.run_package_check([("LC_BUILD_VERSION", "13.0")])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(error, "")
+
+    def test_package_gate_rejects_binary_above_configured_minimum(self):
+        result, error, binary = self.run_package_check([("LC_BUILD_VERSION", "13.1")])
+
+        self.assertEqual(result, 1)
+        self.assertIn(f"{binary}: LC_BUILD_VERSION requires macOS 13.1 (target 13.0)", error)
+
+    def test_package_gate_rejects_macho_without_minimum_metadata(self):
+        result, error, binary = self.run_package_check([])
+
+        self.assertEqual(result, 1)
+        self.assertIn(f"{binary}: no macOS minimum-version load command found", error)
 
 
 if __name__ == "__main__":
