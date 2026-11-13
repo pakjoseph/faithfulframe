@@ -116,7 +116,8 @@ public:
 
 private:
 	friend class faithfulframe_executor_reaper;
-	friend bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
+	friend bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor,
+							  bool wait_for_reaper);
 
 	enum class work_kind : uint8_t { tick, candidates, command, lifecycle, stop };
 	struct work_item
@@ -188,14 +189,17 @@ private:
 	faithfulframe_reap_task reap_task{};
 };
 
-/// Nonblocking, allocation-free handoff of a stopped executor to its pinned
-/// module reaper. False means the queue was contended, no reaper is available,
-/// or it has closed; ownership stays with the caller for later retry.
-bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
+/// Allocation-free handoff of a stopped executor to its pinned module reaper.
+/// By default this is nonblocking for OBS callbacks; controlled teardown may
+/// wait briefly for the reaper queue lock. False leaves ownership with caller.
+bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor,
+					   bool wait_for_reaper = false);
 /// Enqueue a single-use cleanup task without making it executable. The caller
 /// must release its ownership, then activate the task before its lifetime ends.
-/// Returns false without taking ownership if the queue is contended or closed.
-bool faithfulframe_defer_reap_task(faithfulframe_reap_task *task, void (*callback)(void *), void *context);
+/// By default returns false without taking ownership if the queue is contended
+/// or closed. Controlled teardown may wait briefly for the queue lock.
+bool faithfulframe_defer_reap_task(faithfulframe_reap_task *task, void (*callback)(void *), void *context,
+				   bool wait_for_reaper = false);
 /// Publish the ownership transfer and allow the reaper to execute the task.
 void faithfulframe_activate_reap_task(faithfulframe_reap_task *task);
 std::shared_ptr<faithfulframe_executor_reaper> faithfulframe_acquire_executor_reaper();

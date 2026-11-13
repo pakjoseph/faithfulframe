@@ -468,12 +468,23 @@ bool retirement_handoffs_are_concurrent(const ff_session_config &config, const f
 	faithfulframe_test_set_reaper_enqueue_hook(nullptr, nullptr);
 	if (!paused_inside_enqueue || !contended_returned_while_first_paused ||
 	    !paused_accepted.load(std::memory_order_acquire) || paused_executor ||
-	    !contended_accepted.load(std::memory_order_acquire) || contended_executor)
+	    !contended_accepted.load(std::memory_order_acquire) || contended_executor) {
+		std::fprintf(stderr,
+			     "concurrent retirement: paused_inside=%d contended_returned=%d paused_accepted=%d "
+			     "paused_owner=%d contended_accepted=%d contended_owner=%d\n",
+			     paused_inside_enqueue, contended_returned_while_first_paused,
+			     paused_accepted.load(std::memory_order_acquire), static_cast<bool>(paused_executor),
+			     contended_accepted.load(std::memory_order_acquire), static_cast<bool>(contended_executor));
 		return false;
+	}
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
 	while ((!paused_weak.expired() || !contended_weak.expired()) && std::chrono::steady_clock::now() < deadline)
 		std::this_thread::yield();
-	return paused_weak.expired() && contended_weak.expired();
+	const bool both_reaped = paused_weak.expired() && contended_weak.expired();
+	if (!both_reaped)
+		std::fprintf(stderr, "concurrent retirement: paused_reaped=%d contended_reaped=%d\n",
+			     paused_weak.expired(), contended_weak.expired());
+	return both_reaped;
 }
 
 bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config, const ff_generations &generations)
@@ -482,19 +493,27 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 		std::make_shared<faithfulframe_session_executor>(config, ff_identity{153, 253}, generations);
 	auto contended_executor =
 		std::make_shared<faithfulframe_session_executor>(config, ff_identity{154, 254}, generations);
+	auto teardown_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{155, 255}, generations);
 	ff_snapshot paused_snapshot{};
 	ff_snapshot contended_snapshot{};
+	ff_snapshot teardown_snapshot{};
 	if (!await_snapshot(
 		    *paused_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
 		    paused_snapshot) ||
 	    !await_snapshot(
 		    *contended_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
-		    contended_snapshot))
+		    contended_snapshot) ||
+	    !await_snapshot(
+		    *teardown_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    teardown_snapshot))
 		return false;
 	paused_executor->request_shutdown();
 	contended_executor->request_shutdown();
+	teardown_executor->request_shutdown();
 	std::weak_ptr<faithfulframe_session_executor> paused_weak = paused_executor;
 	std::weak_ptr<faithfulframe_session_executor> contended_weak = contended_executor;
+	std::weak_ptr<faithfulframe_session_executor> teardown_weak = teardown_executor;
 	reaper_queue_lock_test_gate gate;
 	faithfulframe_test_set_reaper_queue_lock_hook(pause_reaper_queue_lock, &gate);
 	std::atomic<bool> paused_accepted{false};
@@ -513,6 +532,24 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 	const bool cleanup_handoff_was_nonblocking =
 		first_holds_queue_lock &&
 		!faithfulframe_defer_reap_task(&cleanup.task, mark_reaper_cleanup_complete, &cleanup);
+	reaper_cleanup_test_context teardown_cleanup;
+	teardown_cleanup.caller_thread = std::this_thread::get_id();
+	std::atomic<bool> blocking_executor_finished{false};
+	std::atomic<bool> blocking_executor_accepted{false};
+	std::atomic<bool> blocking_cleanup_finished{false};
+	std::atomic<bool> blocking_cleanup_accepted{false};
+	std::thread blocking_executor_handoff([&] {
+		blocking_executor_accepted.store(faithfulframe_retire_session_executor(teardown_executor, true),
+						 std::memory_order_release);
+		blocking_executor_finished.store(true, std::memory_order_release);
+	});
+	std::thread blocking_cleanup_handoff([&] {
+		blocking_cleanup_accepted.store(faithfulframe_defer_reap_task(&teardown_cleanup.task,
+									      mark_reaper_cleanup_complete,
+									      &teardown_cleanup, true),
+						std::memory_order_release);
+		blocking_cleanup_finished.store(true, std::memory_order_release);
+	});
 	std::mutex completion_mutex;
 	std::condition_variable completion_condition;
 	std::atomic<bool> contended_finished{false};
@@ -533,6 +570,9 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 			return contended_finished.load(std::memory_order_acquire);
 		});
 	}
+	std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	const bool teardown_handoffs_waited_for_queue = !blocking_executor_finished.load(std::memory_order_acquire) &&
+							!blocking_cleanup_finished.load(std::memory_order_acquire);
 	{
 		std::lock_guard<std::mutex> lock(gate.mutex);
 		gate.release_queue_lock = true;
@@ -540,11 +580,16 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 	gate.condition.notify_all();
 	paused_handoff.join();
 	contended_handoff.join();
+	blocking_executor_handoff.join();
+	blocking_cleanup_handoff.join();
 	faithfulframe_test_set_reaper_queue_lock_hook(nullptr, nullptr);
 	if (!first_holds_queue_lock || !cleanup_handoff_was_nonblocking || !contended_returned ||
 	    !paused_accepted.load(std::memory_order_acquire) || paused_executor ||
-	    contended_accepted.load(std::memory_order_acquire) || !contended_executor)
+	    contended_accepted.load(std::memory_order_acquire) || !contended_executor ||
+	    !teardown_handoffs_waited_for_queue || !blocking_executor_accepted.load(std::memory_order_acquire) ||
+	    teardown_executor || !blocking_cleanup_accepted.load(std::memory_order_acquire))
 		return false;
+	faithfulframe_activate_reap_task(&teardown_cleanup.task);
 	if (!defer_reap_task_when_available(&cleanup.task, mark_reaper_cleanup_complete, &cleanup))
 		return false;
 	const auto cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -552,7 +597,14 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 	       std::chrono::steady_clock::now() < cleanup_deadline)
 		std::this_thread::yield();
 	if (!cleanup.completed.load(std::memory_order_acquire) ||
-	    !cleanup.ran_off_caller.load(std::memory_order_acquire))
+	    !cleanup.ran_off_caller.load(std::memory_order_acquire) || !await_expired(teardown_weak))
+		return false;
+	const auto teardown_cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (!teardown_cleanup.completed.load(std::memory_order_acquire) &&
+	       std::chrono::steady_clock::now() < teardown_cleanup_deadline)
+		std::this_thread::yield();
+	if (!teardown_cleanup.completed.load(std::memory_order_acquire) ||
+	    !teardown_cleanup.ran_off_caller.load(std::memory_order_acquire))
 		return false;
 	if (!retire_executor_when_available(contended_executor) || contended_executor)
 		return false;

@@ -160,15 +160,15 @@ struct faithfulframe_source_binding
 		return added;
 	}
 
-	bool handoff_binding_for_reclamation()
+	bool handoff_binding_for_reclamation(bool wait_for_reaper = false)
 	{
 		if (!closed.load(std::memory_order_acquire))
 			return false;
 		auto session = std::atomic_load_explicit(&executor, std::memory_order_acquire);
-		if (session && !faithfulframe_retire_session_executor(session))
+		if (session && !faithfulframe_retire_session_executor(session, wait_for_reaper))
 			return false;
 		executor_handed_to_reaper.store(true, std::memory_order_release);
-		return faithfulframe_defer_reap_task(&reap_task, destroy_reaped_binding, this);
+		return faithfulframe_defer_reap_task(&reap_task, destroy_reaped_binding, this, wait_for_reaper);
 	}
 
 	~faithfulframe_source_binding()
@@ -277,22 +277,45 @@ struct faithfulframe_source_runtime
 			if (auto executor = std::atomic_load_explicit(&deferred->executor, std::memory_order_acquire))
 				executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
 		}
-		std::lock_guard<std::mutex> bindings_lock(bindings_mutex);
-		for (const auto &owned_binding : bindings) {
-			if (!owned_binding)
-				continue;
-			auto *binding = owned_binding.get();
-			binding->set_active_child(false);
-			binding->transition_pending.store(true, std::memory_order_release);
-			binding->closed.store(true, std::memory_order_release);
-			binding->render_executor.store(nullptr, std::memory_order_release);
-			auto executor = std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
-			if (executor)
-				executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+		if (deferred) {
+			if (deferred->handoff_binding_for_reclamation(true)) {
+				auto *task = &deferred->reap_task;
+				faithfulframe_activate_reap_task(task);
+			} else {
+				blog(LOG_ERROR, "FaithfulFrame could not hand off a deferred binding during teardown");
+				delete deferred;
+			}
 		}
-		bindings.clear();
-		if (deferred)
-			delete deferred;
+		{
+			std::lock_guard<std::mutex> bindings_lock(bindings_mutex);
+			for (auto &owned_binding : bindings) {
+				if (!owned_binding)
+					continue;
+				auto *binding = owned_binding.get();
+				binding->set_active_child(false);
+				binding->transition_pending.store(true, std::memory_order_release);
+				binding->closed.store(true, std::memory_order_release);
+				binding->render_executor.store(nullptr, std::memory_order_release);
+				auto executor =
+					std::atomic_load_explicit(&binding->executor, std::memory_order_acquire);
+				if (executor)
+					executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+			}
+			for (auto &owned_binding : bindings) {
+				if (!owned_binding)
+					continue;
+				auto *binding = owned_binding.get();
+				if (binding->handoff_binding_for_reclamation(true)) {
+					auto *task = &binding->reap_task;
+					owned_binding.release();
+					faithfulframe_activate_reap_task(task);
+				} else {
+					blog(LOG_ERROR,
+					     "FaithfulFrame could not hand off a source binding during teardown");
+				}
+			}
+			bindings.clear();
+		}
 		if (pending_settings)
 			obs_data_release(pending_settings);
 		faithfulframe::single_adapter_lease::release(this);

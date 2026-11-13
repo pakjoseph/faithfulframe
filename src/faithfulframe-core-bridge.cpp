@@ -460,18 +460,20 @@ public:
 
 	bool available() const { return accepting.load(std::memory_order_acquire); }
 
-	bool enqueue(const std::shared_ptr<faithfulframe_session_executor> &executor)
+	bool enqueue(const std::shared_ptr<faithfulframe_session_executor> &executor, bool wait_for_lock = false)
 	{
 		if (!executor)
 			return false;
-			// Keep the test gate outside the queue critical section. A delayed caller
-			// must not prevent independent sessions from handing off their workers.
+		// Keep the test gate outside the queue critical section. A delayed caller
+		// must not prevent independent sessions from handing off their workers.
 #ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
 		faithfulframe_test_run_reaper_enqueue_hook();
 #endif
 		{
-			std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
-			if (!lock.owns_lock())
+			std::unique_lock<std::mutex> lock(mutex, std::defer_lock);
+			if (wait_for_lock)
+				lock.lock();
+			else if (!lock.try_lock())
 				return false;
 			if (!accepting.load(std::memory_order_acquire))
 				return false;
@@ -490,13 +492,18 @@ public:
 		return true;
 	}
 
-	bool enqueue_cleanup(faithfulframe_reap_task *task, void (*callback)(void *), void *context)
+	bool enqueue_cleanup(faithfulframe_reap_task *task, void (*callback)(void *), void *context,
+			     bool wait_for_lock = false)
 	{
 		if (!task || !callback)
 			return false;
 		{
-			std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
-			if (!lock.owns_lock() || !accepting.load(std::memory_order_acquire) || task->queued)
+			std::unique_lock<std::mutex> lock(mutex, std::defer_lock);
+			if (wait_for_lock)
+				lock.lock();
+			else if (!lock.try_lock())
+				return false;
+			if (!accepting.load(std::memory_order_acquire) || task->queued)
 				return false;
 			task->callback = callback;
 			task->context = context;
@@ -613,10 +620,18 @@ std::shared_ptr<faithfulframe_executor_reaper> faithfulframe_acquire_executor_re
 	return faithfulframe_reaper;
 }
 
-bool faithfulframe_defer_reap_task(faithfulframe_reap_task *task, void (*callback)(void *), void *context)
+bool faithfulframe_defer_reap_task(faithfulframe_reap_task *task, void (*callback)(void *), void *context,
+				   bool wait_for_reaper)
 {
-	auto reaper = faithfulframe_acquire_executor_reaper();
-	return reaper && reaper->enqueue_cleanup(task, callback, context);
+	std::shared_ptr<faithfulframe_executor_reaper> reaper;
+	if (wait_for_reaper) {
+		std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
+		if (!faithfulframe_reaper_closed && faithfulframe_reaper && faithfulframe_reaper->available())
+			reaper = faithfulframe_reaper;
+	} else {
+		reaper = faithfulframe_acquire_executor_reaper();
+	}
+	return reaper && reaper->enqueue_cleanup(task, callback, context, wait_for_reaper);
 }
 
 void faithfulframe_activate_reap_task(faithfulframe_reap_task *task)
@@ -632,11 +647,12 @@ void faithfulframe_activate_reap_task(faithfulframe_reap_task *task)
 		wake(wake_context);
 }
 
-bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor)
+bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor,
+					   bool wait_for_reaper)
 {
 	if (!executor)
 		return true;
-	if (!executor->reaper || !executor->reaper->enqueue(executor))
+	if (!executor->reaper || !executor->reaper->enqueue(executor, wait_for_reaper))
 		return false;
 	executor.reset();
 	return true;
