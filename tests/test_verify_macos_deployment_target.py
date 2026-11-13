@@ -153,27 +153,32 @@ Load command 0
                 "argv",
                 [str(SCRIPT_PATH), "--root", str(bundle), "--cmake-cache", str(cache)],
             ),
-            patch.object(VERIFY, "macho_minimum_versions", return_value=minimum_versions),
+            patch.object(
+                VERIFY,
+                "macho_minimum_versions",
+                side_effect=lambda path: minimum_versions if path == binary else None,
+            ),
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
         ):
             result = VERIFY.main()
-        return result, stderr.getvalue(), binary
+        return result, stdout.getvalue(), stderr.getvalue(), binary
 
     def test_package_gate_accepts_matching_binary_minimum(self):
-        result, error, _ = self.run_package_check([("LC_BUILD_VERSION", "13.0")])
+        result, output, error, _ = self.run_package_check([("LC_BUILD_VERSION", "13.0")])
 
         self.assertEqual(result, 0)
+        self.assertIn("Verified 1 Mach-O files", output)
         self.assertEqual(error, "")
 
     def test_package_gate_rejects_binary_above_configured_minimum(self):
-        result, error, binary = self.run_package_check([("LC_BUILD_VERSION", "13.1")])
+        result, _, error, binary = self.run_package_check([("LC_BUILD_VERSION", "13.1")])
 
         self.assertEqual(result, 1)
         self.assertIn(f"{binary}: LC_BUILD_VERSION requires macOS 13.1 (target 13.0)", error)
 
     def test_package_gate_rejects_macho_without_minimum_metadata(self):
-        result, error, binary = self.run_package_check([])
+        result, _, error, binary = self.run_package_check([])
 
         self.assertEqual(result, 1)
         self.assertIn(f"{binary}: no macOS minimum-version load command found", error)
