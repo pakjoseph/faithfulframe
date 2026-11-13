@@ -458,6 +458,10 @@ jobs:
           path: package/*
 
       - name: 'Setup with onsdriver'
+        # Windows ARM64 builds are useful compile/package coverage, but the
+        # onsdriver bootstrap cannot install its helper plugin under ProgramData
+        # on the Windows ARM runner. Keep OBS runtime validation on production x64.
+        if: ${{ matrix.arch == 'x64' }}
         uses: noris-plugins-for-obs/onsdriver@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -468,12 +472,13 @@ jobs:
           graphics-size: ${{ matrix.graphics-size }}
 
       - name: 'Test with onsdriver'
+        if: ${{ matrix.arch == 'x64' }}
         timeout-minutes: 3
         run: |
           python -m unittest discover test-onsdriver/
 
       - name: 'Upload logs of onsdriver'
-        if: always()
+        if: ${{ always() && matrix.arch == 'x64' }}
         timeout-minutes: 3
         continue-on-error: true
         uses: actions/upload-artifact@v7
