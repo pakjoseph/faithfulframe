@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <limits>
 
 static void check_impl(bool condition, int line)
@@ -16,12 +17,12 @@ static void check_impl(bool condition, int line)
 
 int main()
 {
-	uint64_t next = 1;
+	std::uint64_t next = 1;
 	check(faithfulframe_allocate_candidate_handle(next) == 1);
 	check(faithfulframe_allocate_candidate_handle(next) == 2);
 	check(faithfulframe_allocate_candidate_handle(next) == 3);
 
-	const uint64_t maximum = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+	const std::uint64_t maximum = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 	next = maximum - 1;
 	check(faithfulframe_allocate_candidate_handle(next) == maximum - 1);
 	check(faithfulframe_allocate_candidate_handle(next) == maximum);

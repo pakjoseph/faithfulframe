@@ -9,12 +9,12 @@ static constexpr std::size_t faithfulframe_max_candidates = 8;
 // Candidate handles travel through OBS's signed integer fields. Exhaust the
 // allocator rather than wrapping or reusing an identity that may still be
 // present in a preview payload or delayed command.
-inline uint64_t faithfulframe_allocate_candidate_handle(uint64_t &next_candidate_handle)
+inline std::uint64_t faithfulframe_allocate_candidate_handle(std::uint64_t &next_candidate_handle)
 {
-	const uint64_t maximum = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+	const std::uint64_t maximum = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 	if (next_candidate_handle == 0 || next_candidate_handle > maximum)
 		return 0;
-	const uint64_t handle = next_candidate_handle;
+	const std::uint64_t handle = next_candidate_handle;
 	next_candidate_handle = handle == maximum ? 0 : handle + 1;
 	return handle;
 }
