@@ -4,6 +4,7 @@
 #include <graphics/vec2.h>
 #include <graphics/graphics.h>
 #include "plugin-macros.generated.h"
+#include "faithfulframe-source-ids.h"
 #include "texture-object.h"
 #include <algorithm>
 #include <atomic>
@@ -3254,7 +3255,7 @@ static void emit_state_changed(struct face_tracker_filter *s)
 extern "C" void register_face_tracker_filter(bool hide_filter, bool hide_source)
 {
 	struct obs_source_info info = {};
-	info.id = "face_tracker_filter";
+	info.id = FAITHFULFRAME_SOURCE_ID_FILTER;
 	info.type = OBS_SOURCE_TYPE_FILTER;
 	info.output_flags = OBS_SOURCE_VIDEO;
 	if (hide_filter)
@@ -3273,7 +3274,7 @@ extern "C" void register_face_tracker_filter(bool hide_filter, bool hide_source)
 	info.get_height = ftf_height;
 	obs_register_source(&info);
 
-	info.id = "face_tracker_source";
+	info.id = FAITHFULFRAME_SOURCE_ID_SOURCE;
 	info.type = OBS_SOURCE_TYPE_INPUT;
 	info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_DO_NOT_DUPLICATE;
 	if (hide_source)

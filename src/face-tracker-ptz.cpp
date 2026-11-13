@@ -4,6 +4,7 @@
 #include <graphics/vec2.h>
 #include <graphics/graphics.h>
 #include "plugin-macros.generated.h"
+#include "faithfulframe-source-ids.h"
 #include "texture-object.h"
 #include <algorithm>
 #include <graphics/matrix4.h>
@@ -1145,7 +1146,7 @@ static void emit_state_changed(struct face_tracker_ptz *s)
 extern "C" void register_face_tracker_ptz(bool hide_ptz)
 {
 	struct obs_source_info info = {};
-	info.id = "face_tracker_ptz";
+	info.id = FAITHFULFRAME_SOURCE_ID_PTZ;
 	info.type = OBS_SOURCE_TYPE_FILTER;
 	info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_ASYNC;
 	if (hide_ptz)

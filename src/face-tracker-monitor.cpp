@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 #include "plugin-macros.generated.h"
+#include "faithfulframe-source-ids.h"
 #include "helper.hpp"
 #include "faithfulframe-source-identity.hpp"
 
@@ -411,7 +412,7 @@ static void ftmon_video_render(void *data, gs_effect_t *)
 extern "C" void register_face_tracker_monitor(bool hide_monitor)
 {
 	struct obs_source_info info = {};
-	info.id = "face_tracker_monitor";
+	info.id = FAITHFULFRAME_SOURCE_ID_MONITOR;
 	info.type = OBS_SOURCE_TYPE_INPUT;
 	info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_DO_NOT_DUPLICATE;
 	if (hide_monitor)

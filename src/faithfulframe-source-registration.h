@@ -3,14 +3,15 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include "faithfulframe-source-ids.h"
 
 typedef bool (*faithfulframe_source_type_is_registered_fn)(const char *id);
 
 static const char *const faithfulframe_source_type_ids[] = {
-	"face_tracker_filter",
-	"face_tracker_source",
-	"face_tracker_ptz",
-	"face_tracker_monitor",
+	FAITHFULFRAME_SOURCE_ID_FILTER,
+	FAITHFULFRAME_SOURCE_ID_SOURCE,
+	FAITHFULFRAME_SOURCE_ID_PTZ,
+	FAITHFULFRAME_SOURCE_ID_MONITOR,
 };
 
 static inline const char *
