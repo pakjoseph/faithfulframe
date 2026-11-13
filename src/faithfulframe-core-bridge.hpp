@@ -56,6 +56,17 @@ struct ff_executor_diagnostics
 	uint64_t max_processing_us = 0;
 };
 
+/// Intrusive single-use callback executed by the module reaper. The owner must
+/// keep the node alive until enqueue succeeds and then relinquish ownership.
+/// Callbacks run outside the reaper lock and are drained before module unload.
+struct faithfulframe_reap_task
+{
+	faithfulframe_reap_task *next = nullptr;
+	void (*callback)(void *) = nullptr;
+	void *context = nullptr;
+	bool queued = false;
+};
+
 /// Derives the exact next generation vector accepted by the Rust lifecycle
 /// policy. All C++ lifecycle producers use this shared translation.
 bool faithfulframe_next_lifecycle_generations(uint32_t kind, const ff_generations &current, ff_generations &next);
@@ -168,15 +179,18 @@ private:
 	// The module-wide reaper links pending joins through these fields. Keeping
 	// an owning reference in the node makes handoff allocation-free and keeps
 	// the executor alive until the reaper has taken responsibility for it.
-	faithfulframe_session_executor *retirement_next = nullptr;
 	std::shared_ptr<faithfulframe_session_executor> retirement_keepalive;
 	bool retirement_queued = false;
+	faithfulframe_reap_task reap_task{};
 };
 
 /// Nonblocking, allocation-free handoff of a stopped executor to its pinned
 /// module reaper. False means the queue was contended, no reaper is available,
 /// or it has closed; ownership stays with the caller for later retry.
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
+/// Transfer a single-use, lifetime-owned cleanup task to the module reaper.
+/// Returns false without taking ownership if the queue is contended or closed.
+bool faithfulframe_defer_reap_task(faithfulframe_reap_task *task, void (*callback)(void *), void *context);
 std::shared_ptr<faithfulframe_executor_reaper> faithfulframe_acquire_executor_reaper();
 
 /// Starts the asynchronous session-join worker. Module loading must fail if it

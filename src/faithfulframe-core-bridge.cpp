@@ -464,8 +464,8 @@ public:
 	{
 		if (!executor)
 			return false;
-			// Keep the test gate outside the queue critical section. A delayed caller
-			// must not prevent independent sessions from handing off their workers.
+		// Keep the test gate outside the queue critical section. A delayed caller
+		// must not prevent independent sessions from handing off their workers.
 #ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
 		faithfulframe_test_run_reaper_enqueue_hook();
 #endif
@@ -482,12 +482,26 @@ public:
 #endif
 			executor->retirement_keepalive = executor;
 			executor->retirement_queued = true;
-			executor->retirement_next = nullptr;
-			if (tail)
-				tail->retirement_next = executor.get();
-			else
-				head = executor.get();
-			tail = executor.get();
+			executor->reap_task.callback = &faithfulframe_executor_reaper::join_executor;
+			executor->reap_task.context = executor.get();
+			append_locked(&executor->reap_task);
+		}
+		condition.notify_one();
+		return true;
+	}
+
+	bool enqueue_cleanup(faithfulframe_reap_task *task, void (*callback)(void *), void *context)
+	{
+		if (!task || !callback)
+			return false;
+		{
+			std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
+			if (!lock.owns_lock() || !accepting.load(std::memory_order_acquire) || task->queued)
+				return false;
+			task->callback = callback;
+			task->context = context;
+			task->queued = true;
+			append_locked(task);
 		}
 		condition.notify_one();
 		return true;
@@ -510,7 +524,9 @@ private:
 	void run()
 	{
 		for (;;) {
-			std::shared_ptr<faithfulframe_session_executor> executor;
+			faithfulframe_reap_task *task = nullptr;
+			void (*callback)(void *) = nullptr;
+			void *context = nullptr;
 			{
 				std::unique_lock<std::mutex> lock(mutex);
 				condition.wait(lock, [this] { return stopping || head; });
@@ -519,27 +535,50 @@ private:
 						return;
 					continue;
 				}
-				auto *node = head;
-				head = node->retirement_next;
+				task = head;
+				head = task->next;
 				if (!head)
 					tail = nullptr;
-				node->retirement_next = nullptr;
-				executor = std::move(node->retirement_keepalive);
+				task->next = nullptr;
+				callback = task->callback;
+				context = task->context;
 			}
-			if (executor) {
-#ifdef FAITHFULFRAME_TEST_REAPER_JOIN_HOOK
-				faithfulframe_test_run_reaper_join_hook();
-#endif
-				executor->join();
-			}
+			if (callback)
+				callback(context);
 		}
+	}
+
+private:
+	static void join_executor(void *context)
+	{
+		auto *executor = static_cast<faithfulframe_session_executor *>(context);
+		// Keep the embedded task node alive until this callback returns, then drop
+		// the reaper's self-reference after the worker has been joined.
+		auto keepalive = std::move(executor->retirement_keepalive);
+		if (keepalive) {
+#ifdef FAITHFULFRAME_TEST_REAPER_JOIN_HOOK
+			faithfulframe_test_run_reaper_join_hook();
+#endif
+			keepalive->join();
+		}
+	}
+
+	void append_locked(faithfulframe_reap_task *task)
+	{
+		task->next = nullptr;
+		task->queued = true;
+		if (tail)
+			tail->next = task;
+		else
+			head = task;
+		tail = task;
 	}
 
 	std::mutex shutdown_mutex;
 	std::mutex mutex;
 	std::condition_variable condition;
-	faithfulframe_session_executor *head = nullptr;
-	faithfulframe_session_executor *tail = nullptr;
+	faithfulframe_reap_task *head = nullptr;
+	faithfulframe_reap_task *tail = nullptr;
 	bool stopping = false;
 	std::atomic<bool> accepting{false};
 	std::thread worker;
@@ -563,6 +602,12 @@ std::shared_ptr<faithfulframe_executor_reaper> faithfulframe_acquire_executor_re
 	    !faithfulframe_reaper->available())
 		return {};
 	return faithfulframe_reaper;
+}
+
+bool faithfulframe_defer_reap_task(faithfulframe_reap_task *task, void (*callback)(void *), void *context)
+{
+	auto reaper = faithfulframe_acquire_executor_reaper();
+	return reaper && reaper->enqueue_cleanup(task, callback, context);
 }
 
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor)

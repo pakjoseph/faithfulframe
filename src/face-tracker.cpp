@@ -124,6 +124,12 @@ struct faithfulframe_source_binding
 	signal_handler_t *target_update_handler = nullptr;
 	std::mutex preview_mutex;
 	preview_payload preview;
+	faithfulframe_reap_task reap_task{};
+
+	static void destroy_reaped_binding(void *context)
+	{
+		delete static_cast<faithfulframe_source_binding *>(context);
+	}
 
 	bool set_active_child(bool active)
 	{
@@ -154,7 +160,7 @@ struct faithfulframe_source_binding
 		return added;
 	}
 
-	bool handoff_executor_for_reclamation()
+	bool handoff_binding_for_reclamation()
 	{
 		if (!closed.load(std::memory_order_acquire))
 			return false;
@@ -162,7 +168,7 @@ struct faithfulframe_source_binding
 		if (session && !faithfulframe_retire_session_executor(session))
 			return false;
 		executor_handed_to_reaper.store(true, std::memory_order_release);
-		return true;
+		return faithfulframe_defer_reap_task(&reap_task, destroy_reaped_binding, this);
 	}
 
 	~faithfulframe_source_binding()
@@ -298,8 +304,8 @@ struct faithfulframe_source_runtime
 			return;
 		std::unique_ptr<faithfulframe_source_binding> deferred(deferred_reclamation.take());
 		if (deferred) {
-			if (deferred->handoff_executor_for_reclamation())
-				deferred.reset();
+			if (deferred->handoff_binding_for_reclamation())
+				deferred.release();
 			else if (!deferred_reclamation.try_store(deferred))
 				blog(LOG_ERROR, "FaithfulFrame could not restore its deferred binding owner");
 		}
@@ -313,14 +319,14 @@ struct faithfulframe_source_runtime
 				continue;
 			}
 
-			// A binding destructor has a blocking fallback for controlled OBS
-			// teardown. Never reach it from this video-tick reclamation path if
-			// the module reaper cannot accept the worker join. Keep the retired
-			// owner until a later tick can transfer responsibility safely.
-			if (!(*it)->handoff_executor_for_reclamation()) {
+			// Signal disconnection and child-source cleanup can wait for callbacks.
+			// Transfer the whole binding to the module reaper so none of its OBS
+			// resource teardown runs from this graphics-tick callback.
+			if (!(*it)->handoff_binding_for_reclamation()) {
 				++it;
 				continue;
 			}
+			it->release();
 			it = bindings.erase(it);
 		}
 	}
@@ -337,8 +343,8 @@ static void retire_unpublished_binding_on_tick(faithfulframe_source_runtime *run
 	if (!runtime || !binding)
 		return;
 	fail_source_binding_closed(binding.get());
-	if (binding->handoff_executor_for_reclamation()) {
-		binding.reset();
+	if (binding->handoff_binding_for_reclamation()) {
+		binding.release();
 		return;
 	}
 	if (!runtime->deferred_reclamation.try_store(binding))
