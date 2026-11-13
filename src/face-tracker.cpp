@@ -518,7 +518,10 @@ static void fts_update(void *data, obs_data_t *settings)
 			s->safe_runtime->requested_loss_grace_seconds = requested_loss_grace_seconds;
 			const bool enabled = obs_data_get_bool(settings, "safe_tracking_enabled");
 			const bool was_enabled = s->safe_runtime->enabled.load(std::memory_order_acquire);
-			defer_tracker_update = enabled || was_enabled;
+			// Updating a detector can stop and join dlib work. Always marshal
+			// adapter settings through the video-tick idle check, even when the
+			// legacy crop path is selected, so OBS's settings callback never joins it.
+			defer_tracker_update = true;
 			const bool session_config_changed = dead_zone_changed || max_zoom_changed ||
 							    pan_smoothing_changed || zoom_smoothing_changed ||
 							    loss_grace_changed;
