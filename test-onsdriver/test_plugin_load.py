@@ -186,7 +186,10 @@ class PluginLoadTest(obstest.OBSTest):
             'imageWidth': 16,
             'imageHeight': 16,
         })
-        return response.image_data
+        image_data = response.image_data
+        if not image_data:
+            raise AssertionError(f'OBS returned an empty screenshot for source {source_name!r}')
+        return image_data
 
     def _wait_for_screenshot(self, client, source_name, predicate, timeout=5.0):
         deadline = time.monotonic() + timeout
