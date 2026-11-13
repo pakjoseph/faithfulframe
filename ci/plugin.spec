@@ -9,7 +9,7 @@ Source0: %{name}-%{version}.tar.bz2
 Source1: %{name}-%{version}-libvisca.tar.bz2
 Source2: %{name}-%{version}-dlib-models.tar.bz2
 Requires: obs-studio >= @OBS_VERSION@
-BuildRequires: cmake, gcc, gcc-c++
+BuildRequires: cmake, gcc, gcc-c++, rustup
 BuildRequires: obs-studio-devel
 BuildRequires: qt6-qtbase-devel qt6-qtbase-private-devel
 BuildRequires: dlib-devel ffmpeg-free-devel sqlite-devel blas-devel lapack-devel
