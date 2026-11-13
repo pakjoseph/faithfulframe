@@ -72,6 +72,14 @@ class PackageAssetVerificationTests(unittest.TestCase):
             any("model asset is packaged" in error for error in verify_package_assets.package_errors(self.root))
         )
 
+    def test_requires_each_model_asset_declared_license_notice(self):
+        (self.root / "LICENSE-dlib-models").unlink()
+        self.assertIn(
+            "model asset from davisking/dlib-models fd81b6308a6a73d4ce08859eb2f4b628a21e27a2 "
+            "is missing its declared license notice LICENSE-dlib-models",
+            "\n".join(verify_package_assets.package_errors(self.root)),
+        )
+
     def test_rejects_empty_required_files(self):
         (self.root / "LICENSE").write_bytes(b"")
         self.assertIn(

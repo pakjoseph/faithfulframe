@@ -32,7 +32,7 @@ REQUIRED_LICENSE_MARKERS = {
 ALLOWED_MODEL_ASSETS = {
     "frontal_face_detector.dat": (
         "norihiro/obs-face-tracker 0.7.0-hogdata",
-        "LICENSE-dlib",
+        "LICENSE-dlib.txt",
     ),
     "mmod_human_face_detector.dat": (
         "davisking/dlib-models fd81b6308a6a73d4ce08859eb2f4b628a21e27a2",
@@ -90,8 +90,16 @@ def package_errors(root: Path) -> list[str]:
         is_model_asset = path.suffix.lower() in MODEL_FILE_SUFFIXES or path.name.lower().endswith(
             ".dat.bz2"
         )
-        if is_model_asset and path.name not in ALLOWED_MODEL_ASSETS and path.name not in RESTRICTED_FILES:
+        reviewed_asset = ALLOWED_MODEL_ASSETS.get(path.name)
+        if is_model_asset and reviewed_asset is None and path.name not in RESTRICTED_FILES:
             errors.append(f"unreviewed model asset is packaged: {relative_path}")
+        elif is_model_asset and reviewed_asset:
+            provenance, required_notice = reviewed_asset
+            if required_notice not in names:
+                errors.append(
+                    f"model asset from {provenance} is missing its declared license notice "
+                    f"{required_notice}: {relative_path}"
+                )
     errors.extend(f"required package file is empty: {path.relative_to(root)}"
                   for path in files if path.name in REQUIRED_FILES and path.stat().st_size == 0)
     for name, marker in REQUIRED_LICENSE_MARKERS.items():
