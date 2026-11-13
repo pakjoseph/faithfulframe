@@ -441,6 +441,11 @@ class PluginLoadTest(obstest.OBSTest):
                 client, adapter_name, lambda image: image == replacement_image
             )
             self.assertEqual(rebound_image, replacement_image)
+            self.assertEqual(
+                self._screenshot(client, camera_name),
+                replacement_image,
+                'Safe tracking must leave the original camera feed unchanged',
+            )
             rebound_settings = client.send('GetInputSettings', {'inputName': adapter_name})
             self.assertTrue(rebound_settings.input_settings.get('safe_tracking_enabled'))
             self.assertEqual(rebound_settings.input_settings.get('target_name'), camera_name)
@@ -451,6 +456,11 @@ class PluginLoadTest(obstest.OBSTest):
                 camera_name,
                 self._input_names(client),
                 'Removing the adapter must leave its camera intact',
+            )
+            self.assertEqual(
+                self._screenshot(client, camera_name),
+                replacement_image,
+                'Removing the adapter must preserve the original camera feed',
             )
             self.assertEqual(self._screenshot(client, other_camera_name), other_camera_image)
         finally:
