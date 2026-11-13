@@ -146,6 +146,15 @@ class PluginLoadTest(obstest.OBSTest):
         response = client.send('GetInputList', {})
         return {item['inputName'] for item in response.inputs}
 
+    def _wait_for_input_presence(self, client, input_name, expected, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if (input_name in self._input_names(client)) == expected:
+                return
+            time.sleep(0.1)
+        expectation = 'appear' if expected else 'be removed'
+        self.fail(f'Timed out waiting for OBS input {input_name!r} to {expectation}')
+
     def _screenshot(self, client, source_name):
         response = client.send('GetSourceScreenshot', {
             'sourceName': source_name,
@@ -333,7 +342,7 @@ class PluginLoadTest(obstest.OBSTest):
             )
 
             client.send('RemoveInput', {'inputName': camera_name})
-            self.assertNotIn(camera_name, self._input_names(client))
+            self._wait_for_input_presence(client, camera_name, False)
             unavailable_image = self._wait_for_screenshot(
                 client, adapter_name, lambda image: image != bound_image
             )
