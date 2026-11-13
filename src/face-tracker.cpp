@@ -1073,8 +1073,8 @@ static void register_hotkeys(struct face_tracker_filter *s, obs_source_t *target
 	}
 
 	if (s->hotkey_reset == OBS_INVALID_HOTKEY_ID) {
-		s->hotkey_reset = obs_hotkey_register_source(target, "face-tracker.reset",
-							     obs_module_text("Reset FaithfulFrame"), hotkey_cb_reset, s);
+		s->hotkey_reset = obs_hotkey_register_source(
+			target, "face-tracker.reset", obs_module_text("Reset FaithfulFrame"), hotkey_cb_reset, s);
 	}
 }
 
