@@ -87,6 +87,10 @@ int main()
 	check(ff_preview_candidate_rect(crop, viewport, candidate, mapped));
 	check(near(mapped.x, 0.5) && near(mapped.y, 0.3125));
 	check(near(mapped.width, 0.5) && near(mapped.height, 0.375));
+	ff_preview_rect_d mapped_overlap[2]{};
+	check(ff_preview_candidate_rect(crop, viewport, ff_rect{0.35f, 0.35f, 0.3f, 0.3f}, mapped_overlap[0]));
+	check(ff_preview_candidate_rect(crop, viewport, ff_rect{0.45f, 0.45f, 0.25f, 0.25f}, mapped_overlap[1]));
+	check(ff_preview_unique_hit(mapped_overlap, 2, 0.5, 0.5, hit_index) == ff_preview_hit_result::ambiguous);
 
 	const ff_rect edge_candidate{0.0f, 0.25f, 0.375f, 0.25f};
 	check(ff_preview_candidate_rect(crop, viewport, edge_candidate, mapped));
