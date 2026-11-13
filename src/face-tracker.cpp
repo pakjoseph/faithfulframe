@@ -382,8 +382,13 @@ retire_unpublished_binding_on_tick(faithfulframe_source_runtime *runtime,
 		binding.release();
 		return task;
 	}
-	if (!runtime->deferred_reclamation.try_store(binding))
-		blog(LOG_ERROR, "FaithfulFrame deferred binding slot unexpectedly occupied");
+	if (!runtime->deferred_reclamation.try_store(binding)) {
+		// A second binding can fail setup before the next video tick retries the
+		// deferred slot. Keep its OBS resources owned by the runtime so this tick
+		// never falls through to the binding destructor and joins a session worker.
+		std::lock_guard<std::mutex> bindings_lock(runtime->bindings_mutex);
+		runtime->bindings.push_back(std::move(binding));
+	}
 	return nullptr;
 }
 
@@ -1642,6 +1647,8 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 			std::memory_order_release);
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
+		if (auto *task = retire_unpublished_binding_on_tick(runtime, binding))
+			faithfulframe_activate_reap_task(task);
 		clear_reconfiguration();
 		return;
 	}
