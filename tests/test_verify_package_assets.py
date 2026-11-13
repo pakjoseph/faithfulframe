@@ -63,6 +63,17 @@ class PackageAssetVerificationTests(unittest.TestCase):
                 )
                 model.unlink()
 
+    def test_dlib_face_recognition_weights_are_not_shipped_without_review(self):
+        model_directory = self.root / "nested" / "dlib_face_recognition_model"
+        model_directory.mkdir(parents=True)
+        model = model_directory / "dlib_face_recognition_resnet_model_v1.dat"
+        model.write_bytes(b"unreviewed recognition weights")
+        self.assertIn(
+            "unreviewed model asset is packaged: "
+            "nested/dlib_face_recognition_model/dlib_face_recognition_resnet_model_v1.dat",
+            verify_package_assets.package_errors(self.root),
+        )
+
     def test_allows_reviewed_model_asset_names(self):
         model_directory = self.root / "nested" / "dlib_face_landmark_model"
         model_directory.mkdir(parents=True)
