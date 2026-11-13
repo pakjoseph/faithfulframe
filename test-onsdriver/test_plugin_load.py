@@ -146,6 +146,17 @@ class PluginLoadTest(obstest.OBSTest):
         response = client.send('GetInputList', {})
         return {item['inputName'] for item in response.inputs}
 
+    @staticmethod
+    def _input_uuid(client, input_name):
+        response = client.send('GetInputList', {})
+        for item in response.inputs:
+            if item['inputName'] == input_name:
+                source_uuid = item.get('inputUuid')
+                if source_uuid:
+                    return source_uuid
+                break
+        raise AssertionError(f'OBS did not report a UUID for input {input_name!r}')
+
     def _wait_for_input_presence(self, client, input_name, expected, timeout=5.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -345,15 +356,18 @@ class PluginLoadTest(obstest.OBSTest):
                 'inputKind': color_kind,
                 'inputSettings': {'color': 0xFF00FF00, 'width': 320, 'height': 180},
             })
+            camera_uuid = self._input_uuid(client, camera_name)
+            other_camera_uuid = self._input_uuid(client, other_camera_name)
             client.send('CreateInput', {
                 'sceneName': scene_name,
                 'inputName': adapter_name,
                 'inputKind': 'face_tracker_source',
-                'inputSettings': {'target_name': camera_name},
+                'inputSettings': {'target_name': camera_name, 'target_uuid': camera_uuid},
             })
             adapter_settings = client.send('GetInputSettings', {'inputName': adapter_name})
             self.assertEqual(adapter_settings.input_kind, 'face_tracker_source')
             self.assertEqual(adapter_settings.input_settings.get('target_name'), camera_name)
+            self.assertEqual(adapter_settings.input_settings.get('target_uuid'), camera_uuid)
             self.assertFalse(adapter_settings.input_settings.get('safe_tracking_enabled', False))
 
             camera_image = self._wait_for_screenshot(client, camera_name, bool)
@@ -370,6 +384,7 @@ class PluginLoadTest(obstest.OBSTest):
             })
             adapter_settings = client.send('GetInputSettings', {'inputName': adapter_name})
             self.assertTrue(adapter_settings.input_settings.get('safe_tracking_enabled'))
+            self.assertEqual(adapter_settings.input_settings.get('target_uuid'), camera_uuid)
             bound_image = self._wait_for_screenshot(
                 client, adapter_name, lambda image: image == camera_image
             )
@@ -380,7 +395,11 @@ class PluginLoadTest(obstest.OBSTest):
                 'sceneName': scene_name,
                 'inputName': other_adapter_name,
                 'inputKind': 'face_tracker_source',
-                'inputSettings': {'target_name': other_camera_name, 'safe_tracking_enabled': True},
+                'inputSettings': {
+                    'target_name': other_camera_name,
+                    'target_uuid': other_camera_uuid,
+                    'safe_tracking_enabled': True,
+                },
             })
             self._wait_for_log_text(
                 'FaithfulFrame allows safe tracking on one source adapter at a time'
@@ -415,6 +434,8 @@ class PluginLoadTest(obstest.OBSTest):
             replacement_image = self._wait_for_screenshot(
                 client, camera_name, lambda image: image != camera_image
             )
+            replacement_uuid = self._input_uuid(client, camera_name)
+            self.assertNotEqual(replacement_uuid, camera_uuid)
             self.assertNotEqual(replacement_image, camera_image)
             for _ in range(3):
                 self.assertEqual(self._screenshot(client, adapter_name), unavailable_image)
@@ -425,7 +446,7 @@ class PluginLoadTest(obstest.OBSTest):
             self._wait_for_input_presence(client, other_adapter_name, False)
             client.send('SetInputSettings', {
                 'inputName': adapter_name,
-                'inputSettings': {'target_name': other_camera_name},
+                'inputSettings': {'target_name': other_camera_name, 'target_uuid': other_camera_uuid},
                 'overlay': True,
             })
             other_rebound_image = self._wait_for_screenshot(
@@ -434,7 +455,7 @@ class PluginLoadTest(obstest.OBSTest):
             self.assertEqual(other_rebound_image, other_camera_image)
             client.send('SetInputSettings', {
                 'inputName': adapter_name,
-                'inputSettings': {'target_name': camera_name},
+                'inputSettings': {'target_name': camera_name, 'target_uuid': replacement_uuid},
                 'overlay': True,
             })
             rebound_image = self._wait_for_screenshot(

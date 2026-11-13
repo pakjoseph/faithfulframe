@@ -62,6 +62,7 @@ void property_list_add_sources(obs_property_t *prop, obs_source_t *self)
 struct add_video_input_sources_by_uuid_s
 {
 	obs_source_t *self;
+	bool failed = false;
 	std::vector<std::pair<std::string, std::string>> sources;
 };
 
@@ -74,22 +75,36 @@ static bool add_video_input_sources_by_uuid(void *data, obs_source_t *source)
 
 	const char *name = obs_source_get_name(source);
 	const char *uuid = obs_source_get_uuid(source);
-	if (name && *name && uuid && *uuid)
-		ctx.sources.emplace_back(name, uuid);
+	if (name && *name && uuid && *uuid) {
+		try {
+			ctx.sources.emplace_back(name, uuid);
+		} catch (...) {
+			ctx.failed = true;
+			return false;
+		}
+	}
 	return true;
 }
 
 void property_list_add_video_input_sources_by_uuid(obs_property_t *prop, obs_source_t *self)
 {
-	obs_property_list_add_string(prop, obs_module_text("Select a video input"), "");
-	add_video_input_sources_by_uuid_s ctx;
-	ctx.self = self;
-	obs_enum_sources(add_video_input_sources_by_uuid, &ctx);
-	std::sort(ctx.sources.begin(), ctx.sources.end(), [](const auto &left, const auto &right) {
-		return left.first == right.first ? left.second < right.second : left.first < right.first;
-	});
-	for (const auto &source : ctx.sources) {
-		const std::string label = std::string(obs_module_text("Source: ")) + source.first;
-		obs_property_list_add_string(prop, label.c_str(), source.second.c_str());
+	try {
+		obs_property_list_add_string(prop, obs_module_text("Select a video input"), "");
+		add_video_input_sources_by_uuid_s ctx;
+		ctx.self = self;
+		obs_enum_sources(add_video_input_sources_by_uuid, &ctx);
+		if (ctx.failed) {
+			blog(LOG_WARNING, "FaithfulFrame could not enumerate all safety tracking sources");
+			return;
+		}
+		std::sort(ctx.sources.begin(), ctx.sources.end(), [](const auto &left, const auto &right) {
+			return left.first == right.first ? left.second < right.second : left.first < right.first;
+		});
+		for (const auto &source : ctx.sources) {
+			const std::string label = std::string(obs_module_text("Source: ")) + source.first;
+			obs_property_list_add_string(prop, label.c_str(), source.second.c_str());
+		}
+	} catch (...) {
+		blog(LOG_WARNING, "FaithfulFrame could not populate the safety tracking source list");
 	}
 }

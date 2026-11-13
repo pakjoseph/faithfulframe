@@ -542,9 +542,9 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 	case faithfulframe::safe_adapter_availability_issue::another_adapter_owns_tracking:
 		return "Safe tracking is enabled on another camera adapter. Disable it there, then toggle it off and on here";
 	case faithfulframe::safe_adapter_availability_issue::no_source_selected:
-		return "Choose the camera in the filter's Source Settings, then wait for its video signal";
+		return "Choose a camera in the filter's Safe tracking settings, then wait for its video signal";
 	case faithfulframe::safe_adapter_availability_issue::invalid_source_binding:
-		return "The selected source cannot be tracked. Choose an active video input without another face-tracker filter";
+		return "The selected camera is unavailable or cannot be tracked. Re-select it in Safe tracking settings; it must be a video input without another face-tracker filter";
 	case faithfulframe::safe_adapter_availability_issue::waiting_for_video_signal:
 		return "Waiting for video from the selected camera; check that the camera is connected and producing a signal";
 	case faithfulframe::safe_adapter_availability_issue::session_start_failed:
