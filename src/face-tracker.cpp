@@ -109,6 +109,10 @@ struct faithfulframe_source_binding
 	std::atomic<bool> source_settings_updated{false};
 	std::atomic<uint32_t> output_width{0};
 	std::atomic<uint32_t> output_height{0};
+	// Time spent in the render-thread capture, readback, result polling, and
+	// detector/tracker dispatch performed by face_tracker_manager::post_render.
+	std::atomic<uint64_t> render_thread_tracker_work_last_us{0};
+	std::atomic<uint64_t> render_thread_tracker_work_max_us{0};
 	std::atomic<uint64_t> detector_last_work_us{0};
 	std::atomic<uint64_t> detector_max_work_us{0};
 	std::atomic<uint64_t> detector_work_count{0};
@@ -1181,6 +1185,20 @@ static void ftf_tick(void *data, float second)
 static uint64_t source_monotonic_millis()
 {
 	return os_gettime_ns() / 1000000ULL;
+}
+
+static void record_render_thread_tracker_work(faithfulframe_source_binding *binding, uint64_t started_at_ns)
+{
+	if (!binding)
+		return;
+	const uint64_t finished_at_ns = os_gettime_ns();
+	const uint64_t elapsed_us = finished_at_ns >= started_at_ns ? (finished_at_ns - started_at_ns) / 1000ULL : 0;
+	binding->render_thread_tracker_work_last_us.store(elapsed_us, std::memory_order_relaxed);
+	uint64_t maximum = binding->render_thread_tracker_work_max_us.load(std::memory_order_relaxed);
+	while (maximum < elapsed_us &&
+	       !binding->render_thread_tracker_work_max_us.compare_exchange_weak(
+		       maximum, elapsed_us, std::memory_order_relaxed, std::memory_order_relaxed)) {
+	}
 }
 
 static void find_legacy_tracker_filter(obs_source_t *, obs_source_t *filter, void *param)
@@ -2650,7 +2668,9 @@ static void fts_render(void *data, gs_effect_t *)
 			    binding->signal_connected.load(std::memory_order_acquire) &&
 			    binding->source_active.load(std::memory_order_acquire)) {
 				render_target(s, safe_target, NULL);
+				const uint64_t tracker_work_started_at_ns = os_gettime_ns();
 				s->ftm->post_render();
+				record_render_thread_tracker_work(binding, tracker_work_started_at_ns);
 			}
 		}
 		draw_safe_source_frame(s, binding, s->safe_runtime);
@@ -2877,6 +2897,10 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 			 ffi_integer(binding->detector_max_work_us.load(std::memory_order_relaxed)));
 	calldata_set_int(cd, "detector_work_count",
 			 ffi_integer(binding->detector_work_count.load(std::memory_order_relaxed)));
+	calldata_set_int(cd, "last_render_thread_tracker_work_us",
+			 ffi_integer(binding->render_thread_tracker_work_last_us.load(std::memory_order_relaxed)));
+	calldata_set_int(cd, "max_render_thread_tracker_work_us",
+			 ffi_integer(binding->render_thread_tracker_work_max_us.load(std::memory_order_relaxed)));
 
 	ff_snapshot snapshot{};
 	uint64_t snapshot_at = 0;

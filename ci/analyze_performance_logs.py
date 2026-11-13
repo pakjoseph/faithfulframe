@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 EXPECTED_COLUMNS = [
     "schema_version",
     "run_metadata_present",
@@ -79,7 +79,13 @@ EXPECTED_COLUMNS = [
     "detector_work_count",
     "last_detector_microseconds",
     "max_detector_microseconds",
+    "last_render_thread_tracker_work_microseconds",
+    "max_render_thread_tracker_work_microseconds",
 ]
+SUPPORTED_SCHEMAS = {
+    2: EXPECTED_COLUMNS[:-2],
+    SCHEMA_VERSION: EXPECTED_COLUMNS,
+}
 
 METRIC_COLUMNS = {
     "process_cpu_percent": "percent",
@@ -97,6 +103,8 @@ METRIC_COLUMNS = {
     "detector_work_count": "runs",
     "last_detector_microseconds": "microseconds",
     "max_detector_microseconds": "microseconds",
+    "last_render_thread_tracker_work_microseconds": "microseconds",
+    "max_render_thread_tracker_work_microseconds": "microseconds",
 }
 
 COUNTER_COLUMNS = (
@@ -232,9 +240,13 @@ def load_log(path: str | Path) -> dict:
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as stream:
             reader = csv.DictReader(stream)
-            if reader.fieldnames != EXPECTED_COLUMNS:
+            schema_version = next(
+                (version for version, columns in SUPPORTED_SCHEMAS.items() if reader.fieldnames == columns),
+                None,
+            )
+            if schema_version is None:
                 raise PerformanceLogError(
-                    f"{path}: columns do not match performance CSV schema {SCHEMA_VERSION}"
+                    f"{path}: columns do not match a supported performance CSV schema"
                 )
             raw_rows = list(reader)
     except OSError as error:
@@ -250,7 +262,7 @@ def load_log(path: str | Path) -> dict:
     for row_number, raw in enumerate(raw_rows, start=2):
         if None in raw or any(value is None for value in raw.values()):
             raise PerformanceLogError(f"{path}: row {row_number} has missing columns")
-        if _number(raw["schema_version"], "schema_version", row_number, integer=True) != SCHEMA_VERSION:
+        if _number(raw["schema_version"], "schema_version", row_number, integer=True) != schema_version:
             raise PerformanceLogError(f"{path}: row {row_number} has an unsupported schema version")
 
         metadata_flag = _number(raw["run_metadata_present"], "run_metadata_present", row_number, integer=True)
@@ -387,7 +399,7 @@ def load_log(path: str | Path) -> dict:
                 )
             obs_video_configurations.append(None)
         for column in METRIC_COLUMNS:
-            sample[column] = _number(raw[column], column, row_number)
+            sample[column] = _number(raw.get(column), column, row_number)
             if sample[column] is not None and sample[column] < 0:
                 raise PerformanceLogError(f"{path}: row {row_number} has a negative {column}")
         for column in COUNTER_COLUMNS:
@@ -454,7 +466,7 @@ def load_log(path: str | Path) -> dict:
 
     return {
         "path": str(path),
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "metadata": metadata,
         "obs_video_configuration_complete": all(
             configuration is not None for configuration in obs_video_configurations

@@ -128,6 +128,8 @@ struct faithfulframe_safe_preview
 	uint64_t detector_last_work_us = 0;
 	uint64_t detector_max_work_us = 0;
 	uint64_t detector_work_count = 0;
+	uint64_t render_thread_tracker_work_last_us = 0;
+	uint64_t render_thread_tracker_work_max_us = 0;
 	uint64_t source_id = 0;
 	uint64_t session_id = 0;
 	uint64_t status_version = 0;
@@ -359,6 +361,8 @@ static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &
 	read_calldata_int(&cd, "detector_last_work_us", preview.detector_last_work_us);
 	read_calldata_int(&cd, "detector_max_work_us", preview.detector_max_work_us);
 	read_calldata_int(&cd, "detector_work_count", preview.detector_work_count);
+	read_calldata_int(&cd, "last_render_thread_tracker_work_us", preview.render_thread_tracker_work_last_us);
+	read_calldata_int(&cd, "max_render_thread_tracker_work_us", preview.render_thread_tracker_work_max_us);
 	uint64_t value = 0;
 	if (read_calldata_int(&cd, "state", value))
 		preview.state = static_cast<uint32_t>(value);
@@ -1445,6 +1449,10 @@ void FTDock::updateState()
 					sample.detector_work_count = safe_preview.detector_work_count;
 					sample.last_detector_microseconds = safe_preview.detector_last_work_us;
 					sample.max_detector_microseconds = safe_preview.detector_max_work_us;
+					sample.last_render_thread_tracker_work_microseconds =
+						safe_preview.render_thread_tracker_work_last_us;
+					sample.max_render_thread_tracker_work_microseconds =
+						safe_preview.render_thread_tracker_work_max_us;
 					if (!performanceSpool || !performanceSpool->append(sample)) {
 						performanceRecording = false;
 						operatorNotice =
@@ -1490,9 +1498,9 @@ void FTDock::updateState()
 					: QString("%1 ms").arg(safe_preview.status_snapshot_age_ms);
 			QString diagnostics_text =
 				QString("OBS process: CPU %1, memory %2\nSnapshot: %3 | queue: %4 / %5, oldest pending %6 µs | "
-					"wait: %7 / %8 µs | "
-					"policy: %9 / %10 µs | dlib: %11 runs, %12 / %13 µs | accepted %14 · "
-					"rejected %15 · coalesced %16\n%17")
+					"wait: %7 / %8 µs | policy: %9 / %10 µs | "
+					"render-thread capture/dispatch: %11 / %12 µs | dlib: %13 runs, %14 / %15 µs | "
+					"accepted %16 · rejected %17 · coalesced %18\n%19")
 					.arg(process_cpu)
 					.arg(process_memory)
 					.arg(snapshot_age)
@@ -1503,6 +1511,8 @@ void FTDock::updateState()
 					.arg(static_cast<qulonglong>(safe_preview.executor_max_queue_wait_us))
 					.arg(static_cast<qulonglong>(safe_preview.executor_last_processing_us))
 					.arg(static_cast<qulonglong>(safe_preview.executor_max_processing_us))
+					.arg(static_cast<qulonglong>(safe_preview.render_thread_tracker_work_last_us))
+					.arg(static_cast<qulonglong>(safe_preview.render_thread_tracker_work_max_us))
 					.arg(static_cast<qulonglong>(safe_preview.detector_work_count))
 					.arg(static_cast<qulonglong>(safe_preview.detector_last_work_us))
 					.arg(static_cast<qulonglong>(safe_preview.detector_max_work_us))
