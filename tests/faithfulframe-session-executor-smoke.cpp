@@ -6,6 +6,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -56,11 +57,51 @@ struct reaper_cleanup_test_context
 	std::atomic<bool> ran_off_caller{false};
 };
 
+struct shared_reaper_cleanup_test_context
+{
+	faithfulframe_reap_task task{};
+	std::thread::id caller_thread;
+	std::atomic<bool> completed{false};
+	std::atomic<bool> ran_off_caller{false};
+};
+
+void count_reaper_join(void *context)
+{
+	static_cast<std::atomic<uint64_t> *>(context)->fetch_add(1, std::memory_order_relaxed);
+}
+
 void mark_reaper_cleanup_complete(void *context)
 {
 	auto *state = static_cast<reaper_cleanup_test_context *>(context);
 	state->ran_off_caller.store(std::this_thread::get_id() != state->caller_thread, std::memory_order_release);
 	state->completed.store(true, std::memory_order_release);
+}
+
+void mark_shared_reaper_cleanup_complete(void *context)
+{
+	auto *owner = static_cast<std::shared_ptr<shared_reaper_cleanup_test_context> *>(context);
+	std::shared_ptr<shared_reaper_cleanup_test_context> state = std::move(*owner);
+	delete owner;
+	state->ran_off_caller.store(std::this_thread::get_id() != state->caller_thread, std::memory_order_release);
+	state->completed.store(true, std::memory_order_release);
+}
+
+bool enqueue_shared_reaper_cleanup(const std::shared_ptr<shared_reaper_cleanup_test_context> &state,
+				   bool wait_for_reaper = false)
+{
+	auto *owner = new std::shared_ptr<shared_reaper_cleanup_test_context>(state);
+	if (faithfulframe_defer_reap_task(&state->task, mark_shared_reaper_cleanup_complete, owner, wait_for_reaper))
+		return true;
+	delete owner;
+	return false;
+}
+
+bool defer_shared_reaper_cleanup(const std::shared_ptr<shared_reaper_cleanup_test_context> &state)
+{
+	if (!enqueue_shared_reaper_cleanup(state))
+		return false;
+	faithfulframe_activate_reap_task(&state->task);
+	return true;
 }
 
 bool enqueue_reap_task_when_available(faithfulframe_reap_task *task, void (*callback)(void *), void *context)
@@ -601,6 +642,8 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 	std::weak_ptr<faithfulframe_session_executor> paused_weak = paused_executor;
 	std::weak_ptr<faithfulframe_session_executor> contended_weak = contended_executor;
 	std::weak_ptr<faithfulframe_session_executor> teardown_weak = teardown_executor;
+	std::atomic<uint64_t> reaper_join_started{0};
+	faithfulframe_test_set_reaper_join_hook(count_reaper_join, &reaper_join_started);
 	reaper_queue_lock_test_gate gate;
 	faithfulframe_test_set_reaper_queue_lock_hook(pause_reaper_queue_lock, &gate);
 	std::atomic<bool> paused_accepted{false};
@@ -614,13 +657,11 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 		first_holds_queue_lock =
 			gate.condition.wait_for(lock, std::chrono::seconds(2), [&] { return gate.queue_lock_held; });
 	}
-	reaper_cleanup_test_context cleanup;
-	cleanup.caller_thread = std::this_thread::get_id();
-	const bool cleanup_handoff_was_nonblocking =
-		first_holds_queue_lock &&
-		!faithfulframe_defer_reap_task(&cleanup.task, mark_reaper_cleanup_complete, &cleanup);
-	reaper_cleanup_test_context teardown_cleanup;
-	teardown_cleanup.caller_thread = std::this_thread::get_id();
+	auto cleanup = std::make_shared<shared_reaper_cleanup_test_context>();
+	cleanup->caller_thread = std::this_thread::get_id();
+	const bool cleanup_handoff_was_nonblocking = first_holds_queue_lock && !enqueue_shared_reaper_cleanup(cleanup);
+	auto teardown_cleanup = std::make_shared<shared_reaper_cleanup_test_context>();
+	teardown_cleanup->caller_thread = std::this_thread::get_id();
 	std::atomic<bool> blocking_executor_finished{false};
 	std::atomic<bool> blocking_executor_accepted{false};
 	std::atomic<bool> blocking_cleanup_finished{false};
@@ -631,9 +672,7 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 		blocking_executor_finished.store(true, std::memory_order_release);
 	});
 	std::thread blocking_cleanup_handoff([&] {
-		blocking_cleanup_accepted.store(faithfulframe_defer_reap_task(&teardown_cleanup.task,
-									      mark_reaper_cleanup_complete,
-									      &teardown_cleanup, true),
+		blocking_cleanup_accepted.store(enqueue_shared_reaper_cleanup(teardown_cleanup, true),
 						std::memory_order_release);
 		blocking_cleanup_finished.store(true, std::memory_order_release);
 	});
@@ -678,35 +717,43 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 		!teardown_executor && blocking_cleanup_accepted.load(std::memory_order_acquire);
 
 	// Once accepted, a cleanup task remains linked to the reaper until its
-	// callback runs. Always activate and drain accepted stack-backed tasks before
-	// this function can return, including when an earlier assertion failed.
+	// callback runs. Heap-owned callback contexts keep an accepted task safe even
+	// if the reaper fails to make progress and this test must report a timeout.
 	const bool teardown_cleanup_accepted = blocking_cleanup_accepted.load(std::memory_order_acquire);
 	if (teardown_cleanup_accepted)
-		faithfulframe_activate_reap_task(&teardown_cleanup.task);
+		faithfulframe_activate_reap_task(&teardown_cleanup->task);
 
 	bool cleanup_accepted = false;
 	if (handoff_checks_passed)
-		cleanup_accepted =
-			defer_reap_task_when_available(&cleanup.task, mark_reaper_cleanup_complete, &cleanup);
+		cleanup_accepted = defer_shared_reaper_cleanup(cleanup);
 
-	auto drain_cleanup = [](reaper_cleanup_test_context &state) {
+	auto drain_cleanup = [&](const std::shared_ptr<shared_reaper_cleanup_test_context> &state, const char *name) {
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-		while (!state.completed.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+		while (!state->completed.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
 			std::this_thread::yield();
-		const bool completed_before_deadline = state.completed.load(std::memory_order_acquire);
-		// A timeout is a test failure, but returning while the reaper still owns
-		// this stack context would turn that failure into a use-after-return.
-		while (!state.completed.load(std::memory_order_acquire))
-			std::this_thread::yield();
-		return completed_before_deadline && state.ran_off_caller.load(std::memory_order_acquire);
+		const bool completed_before_deadline = state->completed.load(std::memory_order_acquire);
+		if (!completed_before_deadline) {
+			std::fprintf(
+				stderr,
+				"reaper cleanup %s timed out: ready=%d joins_started=%llu "
+				"completed=%d expired(paused,contended,teardown)=%d,%d,%d\n",
+				name, state->task.ready.load(std::memory_order_acquire),
+				static_cast<unsigned long long>(reaper_join_started.load(std::memory_order_relaxed)),
+				state->completed.load(std::memory_order_acquire), paused_weak.expired(),
+				contended_weak.expired(), teardown_weak.expired());
+			std::fflush(stderr);
+		}
+		return completed_before_deadline && state->ran_off_caller.load(std::memory_order_acquire);
 	};
 
-	const bool teardown_cleanup_completed = teardown_cleanup_accepted ? drain_cleanup(teardown_cleanup) : false;
-	const bool cleanup_completed = cleanup_accepted ? drain_cleanup(cleanup) : false;
+	const bool teardown_cleanup_completed = teardown_cleanup_accepted ? drain_cleanup(teardown_cleanup, "teardown")
+									  : false;
+	const bool cleanup_completed = cleanup_accepted ? drain_cleanup(cleanup, "nonblocking") : false;
 	const bool teardown_executor_expired = await_expired(teardown_weak);
 	const bool contended_retired = retire_executor_when_available(contended_executor) && !contended_executor;
 	const bool paused_expired = await_expired(paused_weak);
 	const bool contended_expired = await_expired(contended_weak);
+	faithfulframe_test_set_reaper_join_hook(nullptr, nullptr);
 	return handoff_checks_passed && teardown_cleanup_completed && cleanup_accepted && cleanup_completed &&
 	       teardown_executor_expired && contended_retired && paused_expired && contended_expired;
 }
@@ -1870,7 +1917,13 @@ int run_smoke()
 int main()
 {
 	const int result = run_smoke();
-	if (result != 0)
+	if (result != 0) {
 		std::fprintf(stderr, "faithfulframe-session-executor-smoke failed at step %d\n", result);
+		std::fflush(stderr);
+		// The reaper test can fail precisely because its worker is stuck. Avoid
+		// waiting for the same broken worker in static teardown after reporting it.
+		if (result == 112)
+			std::_Exit(result);
+	}
 	return result;
 }
