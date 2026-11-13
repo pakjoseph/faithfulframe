@@ -29,6 +29,15 @@ struct reaper_enqueue_test_gate
 	bool release_enqueue = false;
 };
 
+struct reaper_queue_lock_test_gate
+{
+	std::mutex mutex;
+	std::condition_variable condition;
+	std::atomic<bool> pause_claimed{false};
+	bool queue_lock_held = false;
+	bool release_queue_lock = false;
+};
+
 void pause_reaper_join(void *context)
 {
 	auto *gate = static_cast<reaper_join_test_gate *>(context);
@@ -47,6 +56,17 @@ void pause_reaper_enqueue(void *context)
 	gate->enqueue_paused = true;
 	gate->condition.notify_all();
 	gate->condition.wait(lock, [gate] { return gate->release_enqueue; });
+}
+
+void pause_reaper_queue_lock(void *context)
+{
+	auto *gate = static_cast<reaper_queue_lock_test_gate *>(context);
+	if (gate->pause_claimed.exchange(true, std::memory_order_acq_rel))
+		return;
+	std::unique_lock<std::mutex> lock(gate->mutex);
+	gate->queue_lock_held = true;
+	gate->condition.notify_all();
+	gate->condition.wait(lock, [gate] { return gate->release_queue_lock; });
 }
 
 template<typename Predicate>
@@ -404,6 +424,74 @@ bool retirement_handoffs_are_concurrent(const ff_session_config &config, const f
 	return paused_weak.expired() && contended_weak.expired();
 }
 
+bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config, const ff_generations &generations)
+{
+	auto paused_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{153, 253}, generations);
+	auto contended_executor =
+		std::make_shared<faithfulframe_session_executor>(config, ff_identity{154, 254}, generations);
+	ff_snapshot paused_snapshot{};
+	ff_snapshot contended_snapshot{};
+	if (!await_snapshot(
+		    *paused_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    paused_snapshot) ||
+	    !await_snapshot(
+		    *contended_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+		    contended_snapshot))
+		return false;
+	paused_executor->request_shutdown();
+	contended_executor->request_shutdown();
+	std::weak_ptr<faithfulframe_session_executor> paused_weak = paused_executor;
+	std::weak_ptr<faithfulframe_session_executor> contended_weak = contended_executor;
+	reaper_queue_lock_test_gate gate;
+	faithfulframe_test_set_reaper_queue_lock_hook(pause_reaper_queue_lock, &gate);
+	std::atomic<bool> paused_accepted{false};
+	std::thread paused_handoff([&] {
+		paused_accepted.store(faithfulframe_retire_session_executor(paused_executor),
+				      std::memory_order_release);
+	});
+	bool first_holds_queue_lock = false;
+	{
+		std::unique_lock<std::mutex> lock(gate.mutex);
+		first_holds_queue_lock =
+			gate.condition.wait_for(lock, std::chrono::seconds(2), [&] { return gate.queue_lock_held; });
+	}
+	std::mutex completion_mutex;
+	std::condition_variable completion_condition;
+	std::atomic<bool> contended_finished{false};
+	std::atomic<bool> contended_accepted{false};
+	std::thread contended_handoff([&] {
+		contended_accepted.store(faithfulframe_retire_session_executor(contended_executor),
+					 std::memory_order_release);
+		{
+			std::lock_guard<std::mutex> lock(completion_mutex);
+			contended_finished.store(true, std::memory_order_release);
+		}
+		completion_condition.notify_all();
+	});
+	bool contended_returned = false;
+	{
+		std::unique_lock<std::mutex> lock(completion_mutex);
+		contended_returned = completion_condition.wait_for(lock, std::chrono::milliseconds(250), [&] {
+			return contended_finished.load(std::memory_order_acquire);
+		});
+	}
+	{
+		std::lock_guard<std::mutex> lock(gate.mutex);
+		gate.release_queue_lock = true;
+	}
+	gate.condition.notify_all();
+	paused_handoff.join();
+	contended_handoff.join();
+	faithfulframe_test_set_reaper_queue_lock_hook(nullptr, nullptr);
+	if (!first_holds_queue_lock || !contended_returned || !paused_accepted.load(std::memory_order_acquire) ||
+	    paused_executor || contended_accepted.load(std::memory_order_acquire) || !contended_executor)
+		return false;
+	if (!retire_executor_when_available(contended_executor) || contended_executor)
+		return false;
+	return await_expired(paused_weak) && await_expired(contended_weak);
+}
+
 bool duplicate_retirement_requests_enqueue_once(const ff_session_config &config, const ff_generations &generations)
 {
 	auto executor = std::make_shared<faithfulframe_session_executor>(config, ff_identity{152, 252}, generations);
@@ -470,6 +558,8 @@ int run_smoke()
 				       1.0f, 4.0f, 0.25f, 0.08f, 0.08f, 0.05f, 0.25f};
 	if (!retirement_handoffs_are_concurrent(config, ff_generations{1, 1, 1, 1, 1}))
 		return 110;
+	if (!reaper_handoff_does_not_wait_for_queue_lock(config, ff_generations{1, 1, 1, 1, 1}))
+		return 112;
 	if (!duplicate_retirement_requests_enqueue_once(config, ff_generations{1, 1, 1, 1, 1}))
 		return 111;
 	if (faithfulframe_teardown_register_instance() != 1)

@@ -26,6 +26,27 @@ void faithfulframe_test_run_reaper_enqueue_hook()
 } // namespace
 #endif
 
+#ifdef FAITHFULFRAME_TEST_REAPER_QUEUE_LOCK_HOOK
+namespace {
+std::mutex faithfulframe_test_reaper_queue_lock_hook_mutex;
+void (*faithfulframe_test_reaper_queue_lock_hook)(void *) = nullptr;
+void *faithfulframe_test_reaper_queue_lock_hook_context = nullptr;
+
+void faithfulframe_test_run_reaper_queue_lock_hook()
+{
+	void (*hook)(void *) = nullptr;
+	void *context = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(faithfulframe_test_reaper_queue_lock_hook_mutex);
+		hook = faithfulframe_test_reaper_queue_lock_hook;
+		context = faithfulframe_test_reaper_queue_lock_hook_context;
+	}
+	if (hook)
+		hook(context);
+}
+} // namespace
+#endif
+
 #ifdef FAITHFULFRAME_TEST_REAPER_JOIN_HOOK
 namespace {
 std::mutex faithfulframe_test_join_hook_mutex;
@@ -443,17 +464,22 @@ public:
 	{
 		if (!executor)
 			return false;
-			// Keep the test gate outside the queue critical section. A delayed caller
-			// must not prevent independent sessions from handing off their workers.
+		// Keep the test gate outside the queue critical section. A delayed caller
+		// must not prevent independent sessions from handing off their workers.
 #ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
 		faithfulframe_test_run_reaper_enqueue_hook();
 #endif
 		{
-			std::lock_guard<std::mutex> lock(mutex);
+			std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
+			if (!lock.owns_lock())
+				return false;
 			if (!accepting.load(std::memory_order_acquire))
 				return false;
 			if (executor->retirement_queued)
 				return true;
+#ifdef FAITHFULFRAME_TEST_REAPER_QUEUE_LOCK_HOOK
+			faithfulframe_test_run_reaper_queue_lock_hook();
+#endif
 			executor->retirement_keepalive = executor;
 			executor->retirement_queued = true;
 			executor->retirement_next = nullptr;
@@ -620,6 +646,15 @@ extern "C" void faithfulframe_test_set_reaper_enqueue_hook(void (*hook)(void *),
 	std::lock_guard<std::mutex> lock(faithfulframe_test_enqueue_hook_mutex);
 	faithfulframe_test_enqueue_hook = hook;
 	faithfulframe_test_enqueue_hook_context = context;
+}
+#endif
+
+#ifdef FAITHFULFRAME_TEST_REAPER_QUEUE_LOCK_HOOK
+extern "C" void faithfulframe_test_set_reaper_queue_lock_hook(void (*hook)(void *), void *context)
+{
+	std::lock_guard<std::mutex> lock(faithfulframe_test_reaper_queue_lock_hook_mutex);
+	faithfulframe_test_reaper_queue_lock_hook = hook;
+	faithfulframe_test_reaper_queue_lock_hook_context = context;
 }
 #endif
 

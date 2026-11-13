@@ -306,6 +306,25 @@ struct faithfulframe_source_runtime
 	}
 };
 
+// Setup can discover a legacy filter after it has already started a session.
+// This helper runs on the OBS video tick, where the binding destructor's
+// shutdown fallback must not join a session worker. Retire immediately when
+// possible; if the nonblocking handoff is refused, retain the closed binding
+// in the runtime so a later tick or controlled destroy callback can retry.
+static void retire_unpublished_binding_on_tick(faithfulframe_source_runtime *runtime,
+					       std::unique_ptr<faithfulframe_source_binding> &binding)
+{
+	if (!runtime || !binding)
+		return;
+	fail_source_binding_closed(binding.get());
+	if (binding->handoff_executor_for_reclamation()) {
+		binding.reset();
+		return;
+	}
+	std::lock_guard<std::mutex> bindings_lock(runtime->bindings_mutex);
+	runtime->bindings.push_back(std::move(binding));
+}
+
 static std::atomic<uint64_t> faithfulframe_next_identity{1};
 static_assert(std::atomic<faithfulframe_session_executor *>::is_always_lock_free,
 	      "OBS rendering requires a lock-free executor view");
@@ -1512,6 +1531,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		blog(LOG_WARNING, "FaithfulFrame rejected a source after an incompatible tracker filter was added");
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
+		retire_unpublished_binding_on_tick(runtime, binding);
 		clear_reconfiguration();
 		return;
 	}

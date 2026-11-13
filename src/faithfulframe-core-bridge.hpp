@@ -173,10 +173,9 @@ private:
 	bool retirement_queued = false;
 };
 
-/// Allocation-free handoff of a stopped executor to its pinned module reaper.
-/// The queue lock protects only intrusive-list updates; the reaper performs
-/// joins after releasing it. False means the executor has no live reaper or
-/// the reaper has closed; ownership stays with the caller.
+/// Nonblocking, allocation-free handoff of a stopped executor to its pinned
+/// module reaper. False means the queue was contended, no reaper is available,
+/// or it has closed; ownership stays with the caller for later retry.
 bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
 std::shared_ptr<faithfulframe_executor_reaper> faithfulframe_acquire_executor_reaper();
 
@@ -199,4 +198,7 @@ extern "C" void faithfulframe_test_set_reaper_join_hook(void (*hook)(void *), vo
 #endif
 #ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
 extern "C" void faithfulframe_test_set_reaper_enqueue_hook(void (*hook)(void *), void *context);
+#endif
+#ifdef FAITHFULFRAME_TEST_REAPER_QUEUE_LOCK_HOOK
+extern "C" void faithfulframe_test_set_reaper_queue_lock_hook(void (*hook)(void *), void *context);
 #endif
