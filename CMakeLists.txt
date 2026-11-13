@@ -64,7 +64,7 @@ option(ENABLE_DEBUG_DATA "Enable property to save error and control data" OFF)
 option(WITH_DOCK "Enable dock" ON)
 option(ENABLE_DATAGEN "Enable generating data" OFF)
 option(ENABLE_RUST_CORE_TESTS "Enable pure FaithfulFrame Rust core tests" OFF)
-option(ENABLE_RUST_CORE_BRIDGE "Link the Rust core bridge and build its smoke test" OFF)
+option(ENABLE_RUST_CORE_BRIDGE "Build the Rust core bridge and its smoke test" ON)
 
 set(CMAKE_PREFIX_PATH "${QTDIR}")
 
