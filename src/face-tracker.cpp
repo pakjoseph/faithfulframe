@@ -109,8 +109,8 @@ struct faithfulframe_source_binding
 	std::atomic<bool> source_settings_updated{false};
 	std::atomic<uint32_t> output_width{0};
 	std::atomic<uint32_t> output_height{0};
-	// Time spent in the render-thread capture, readback, result polling, and
-	// detector/tracker dispatch performed by face_tracker_manager::post_render.
+	// Time spent rendering the bound source into the tracking texture, then
+	// capturing, reading back, polling, and dispatching it in post_render.
 	std::atomic<uint64_t> render_thread_tracker_work_last_us{0};
 	std::atomic<uint64_t> render_thread_tracker_work_max_us{0};
 	std::atomic<uint64_t> detector_last_work_us{0};
@@ -2674,8 +2674,8 @@ static void fts_render(void *data, gs_effect_t *)
 			    binding->adapter_active.load(std::memory_order_acquire) && obs_source_active(safe_target) &&
 			    binding->signal_connected.load(std::memory_order_acquire) &&
 			    binding->source_active.load(std::memory_order_acquire)) {
-				render_target(s, safe_target, NULL);
 				const uint64_t tracker_work_started_at_ns = os_gettime_ns();
+				render_target(s, safe_target, NULL);
 				s->ftm->post_render();
 				record_render_thread_tracker_work(binding, tracker_work_started_at_ns);
 			}
