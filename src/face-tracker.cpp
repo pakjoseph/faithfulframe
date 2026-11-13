@@ -61,8 +61,11 @@ public:
 static constexpr uint64_t safe_preview_max_snapshot_age_ms = 500;
 static constexpr uint64_t safe_candidate_max_age_ms = 500;
 
+struct faithfulframe_source_binding;
 static void faithfulframe_bound_source_updated(void *data, calldata_t *params);
+static void faithfulframe_bound_source_filter_added(void *data, calldata_t *params);
 static void set_safe_adapter_activation(face_tracker_filter *s, bool active);
+static void fail_source_binding_closed(faithfulframe_source_binding *binding);
 
 struct faithfulframe_source_binding
 {
@@ -114,6 +117,7 @@ struct faithfulframe_source_binding
 	std::atomic<bool> effective_active{false};
 	std::atomic<bool> closed{false};
 	std::atomic<bool> transition_pending{false};
+	std::atomic<bool> conflicting_legacy_filter{false};
 	// connect_ref keeps the source signal handler alive. Disconnect serializes
 	// with an in-flight callback before this binding can be destroyed.
 	signal_handler_t *target_update_handler = nullptr;
@@ -167,6 +171,8 @@ struct faithfulframe_source_binding
 		if (target_update_handler) {
 			signal_handler_disconnect(target_update_handler, "update", faithfulframe_bound_source_updated,
 						  this);
+			signal_handler_disconnect(target_update_handler, "filter_add",
+						  faithfulframe_bound_source_filter_added, this);
 			target_update_handler = nullptr;
 		}
 		render_executor.store(nullptr, std::memory_order_release);
@@ -192,6 +198,30 @@ static void faithfulframe_bound_source_updated(void *data, calldata_t *params)
 		binding->transition_pending.store(true, std::memory_order_release);
 		binding->source_settings_updated.store(true, std::memory_order_release);
 	}
+}
+
+static void faithfulframe_bound_source_filter_added(void *data, calldata_t *params)
+{
+	auto *binding = static_cast<faithfulframe_source_binding *>(data);
+	void *filter_data = nullptr;
+	if (!binding || binding->closed.load(std::memory_order_acquire) ||
+	    !calldata_get_ptr(params, "filter", &filter_data) || !filter_data)
+		return;
+
+	auto *filter = static_cast<obs_source_t *>(filter_data);
+	const char *id = obs_source_get_id(filter);
+	if (id && (!strcmp(id, "face_tracker_filter") || !strcmp(id, "face_tracker_ptz"))) {
+		// A legacy crop filter added after safe binding could alter the selected
+		// camera before the Rust-authorized output sees it. Black the adapter now;
+		// the serialized video tick will close the session and publish the reason.
+		binding->conflicting_legacy_filter.store(true, std::memory_order_release);
+		binding->transition_pending.store(true, std::memory_order_release);
+	}
+}
+
+static bool has_conflicting_legacy_filter(const faithfulframe_source_binding *binding)
+{
+	return binding && binding->conflicting_legacy_filter.load(std::memory_order_acquire);
 }
 
 struct faithfulframe_source_runtime
@@ -769,6 +799,9 @@ static obs_properties_t *fts_properties(void *data)
 		obs_property_t *group = obs_properties_get(properties, "safe_tracking_options");
 		if (group)
 			obs_property_set_visible(group, obs_data_get_bool(settings, "safe_tracking_enabled"));
+		obs_property_t *legacy_group = obs_properties_get(properties, "input");
+		if (legacy_group)
+			obs_property_set_visible(legacy_group, !obs_data_get_bool(settings, "safe_tracking_enabled"));
 		return true;
 	});
 #endif
@@ -1062,7 +1095,7 @@ static void find_legacy_tracker_filter(obs_source_t *, obs_source_t *filter, voi
 {
 	auto *found = static_cast<bool *>(param);
 	const char *id = obs_source_get_id(filter);
-	if (obs_source_enabled(filter) && id && (!strcmp(id, "face_tracker_filter") || !strcmp(id, "face_tracker_ptz")))
+	if (id && (!strcmp(id, "face_tracker_filter") || !strcmp(id, "face_tracker_ptz")))
 		*found = true;
 }
 
@@ -1183,6 +1216,11 @@ static void set_safe_adapter_activation(face_tracker_filter *s, bool active)
 	auto *binding = binding_lease.get();
 	if (!binding)
 		return;
+	if (has_conflicting_legacy_filter(binding)) {
+		if (!binding->closed.load(std::memory_order_acquire))
+			fail_source_binding_closed(binding);
+		return;
+	}
 	if (binding->closed.load(std::memory_order_acquire)) {
 		binding->set_active_child(false);
 		return;
@@ -1436,7 +1474,23 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 					std::memory_order_release);
 	if (signal_handler_t *handler = obs_source_get_signal_handler(target)) {
 		signal_handler_connect_ref(handler, "update", faithfulframe_bound_source_updated, binding.get());
+		signal_handler_connect_ref(handler, "filter_add", faithfulframe_bound_source_filter_added,
+					   binding.get());
 		binding->target_update_handler = handler;
+	}
+	// Close the gap between the first filter enumeration and registering the
+	// signal callback. Any later legacy tracker is caught by filter_add.
+	bool late_legacy_tracker = false;
+	obs_source_enum_filters(target, find_legacy_tracker_filter, &late_legacy_tracker);
+	if (!binding->target_update_handler || late_legacy_tracker || has_conflicting_legacy_filter(binding.get())) {
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::invalid_source_binding),
+			std::memory_order_release);
+		blog(LOG_WARNING, "FaithfulFrame rejected a source with an incompatible tracker filter");
+		faithfulframe::single_adapter_lease::release(runtime);
+		obs_source_release(target);
+		clear_reconfiguration();
+		return;
 	}
 	if (signal_connected) {
 		if (!initialize_source_session(s, binding.get(), source_width, source_height))
@@ -1451,6 +1505,16 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	}
 	if (!std::atomic_load_explicit(&binding->executor, std::memory_order_acquire) && signal_connected)
 		blog(LOG_WARNING, "FaithfulFrame failed to create a safe tracking session");
+	if (has_conflicting_legacy_filter(binding.get())) {
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::invalid_source_binding),
+			std::memory_order_release);
+		blog(LOG_WARNING, "FaithfulFrame rejected a source after an incompatible tracker filter was added");
+		faithfulframe::single_adapter_lease::release(runtime);
+		obs_source_release(target);
+		clear_reconfiguration();
+		return;
+	}
 	faithfulframe_source_binding *published = binding.get();
 	try {
 		std::lock_guard<std::mutex> bindings_lock(runtime->bindings_mutex);
@@ -1483,7 +1547,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 
 static void publish_source_candidates(face_tracker_filter *s, faithfulframe_source_binding *binding, uint64_t now)
 {
-	if (!binding || binding->closed.load(std::memory_order_acquire) ||
+	if (!binding || binding->closed.load(std::memory_order_acquire) || has_conflicting_legacy_filter(binding) ||
 	    binding->transition_pending.load(std::memory_order_acquire) ||
 	    binding->source_settings_updated.load(std::memory_order_acquire) ||
 	    !binding->signal_connected.load(std::memory_order_acquire) ||
@@ -1606,6 +1670,20 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 	faithfulframe_source_binding *binding = binding_lease.get();
 	if (!binding) {
 		s->target_valid = false;
+		return;
+	}
+	if (has_conflicting_legacy_filter(binding)) {
+		runtime->configuration_issue.store(
+			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::invalid_source_binding),
+			std::memory_order_release);
+		if (!binding->closed.load(std::memory_order_acquire)) {
+			blog(LOG_ERROR,
+			     "FaithfulFrame safe tracking stopped: remove the added legacy tracker filter, then rebind the source");
+			fail_source_binding_closed(binding);
+		}
+		s->ftm->tracker_rects.clear();
+		s->target_valid = binding->output_width.load(std::memory_order_acquire) > 0 &&
+				  binding->output_height.load(std::memory_order_acquire) > 0;
 		return;
 	}
 
@@ -2130,7 +2208,8 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 	ff_snapshot displayed_snapshot{};
 	uint64_t displayed_snapshot_at = 0;
 	bool has_displayed_snapshot = false;
-	if (!force_black && binding && !binding->closed.load(std::memory_order_acquire) &&
+	if (!force_black && binding && !has_conflicting_legacy_filter(binding) &&
+	    !binding->closed.load(std::memory_order_acquire) &&
 	    !binding->transition_pending.load(std::memory_order_acquire) &&
 	    !binding->source_settings_updated.load(std::memory_order_acquire)) {
 		auto *executor = binding->render_executor.load(std::memory_order_acquire);
@@ -2181,6 +2260,7 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 						   obs_source_get_height(bound_source));
 	const bool source_available = !force_black && source_geometry_current && !obs_source_removed(bound_source) &&
 				      obs_source_active(bound_source) && binding &&
+				      !has_conflicting_legacy_filter(binding) &&
 				      !binding->closed.load(std::memory_order_acquire) &&
 				      binding->signal_connected.load(std::memory_order_acquire) &&
 				      binding->effective_active.load(std::memory_order_acquire);
@@ -2211,7 +2291,7 @@ static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, co
 				       uint64_t snapshot_at, const ff_rect &crop, const ff_rect &viewport,
 				       uint32_t output_width, uint32_t output_height)
 {
-	if (!binding || binding->closed.load(std::memory_order_acquire) ||
+	if (!binding || has_conflicting_legacy_filter(binding) || binding->closed.load(std::memory_order_acquire) ||
 	    binding->transition_pending.load(std::memory_order_acquire))
 		return;
 
@@ -2455,7 +2535,7 @@ static void fts_render(void *data, gs_effect_t *)
 		if (!s->rendered) {
 			s->rendered = true;
 			const bool source_geometry_current =
-				safe_target &&
+				safe_target && !has_conflicting_legacy_filter(binding) &&
 				faithfulframe::source_identity_matches(binding->target_uuid.c_str(),
 								       obs_source_get_uuid(safe_target)) &&
 				ff_preview_source_geometry_matches(

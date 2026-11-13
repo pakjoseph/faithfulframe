@@ -496,6 +496,136 @@ class PluginLoadTest(obstest.OBSTest):
             if scene_created:
                 client.send('RemoveScene', {'sceneName': scene_name})
 
+    def test_safe_adapter_stops_when_legacy_tracker_filter_is_added(self):
+        'Fail closed if a legacy crop filter is added to the bound camera'
+        client = self.obs.get_obsws()
+        suffix = uuid.uuid4().hex
+        scene_name = f'FaithfulFrame filter guard {suffix}'
+        camera_name = f'FaithfulFrame filter guard camera {suffix}'
+        adapter_name = f'FaithfulFrame filter guard adapter {suffix}'
+        legacy_filter_name = f'FaithfulFrame legacy tracker {suffix}'
+        original_scene = None
+        scene_created = False
+        filter_created = False
+
+        try:
+            scene_response = client.send('GetCurrentProgramScene', {})
+            original_scene = getattr(scene_response, 'scene_name', None) or getattr(
+                scene_response, 'current_program_scene_name', None
+            )
+            self.assertTrue(original_scene, 'OBS must have an active program scene')
+
+            kinds_response = client.send('GetInputKindList', {'unversioned': False})
+            color_kinds = [
+                kind
+                for kind in kinds_response.input_kinds
+                if kind == 'color_source' or kind.startswith('color_source_v')
+            ]
+            self.assertTrue(color_kinds, 'OBS color source is required for hardware-free lifecycle testing')
+            color_kind = max(
+                color_kinds,
+                key=lambda kind: int(kind.rsplit('_v', 1)[1]) if '_v' in kind else 0,
+            )
+
+            client.send('CreateScene', {'sceneName': scene_name})
+            scene_created = True
+            client.send('SetCurrentProgramScene', {'sceneName': scene_name})
+            client.send('CreateInput', {
+                'sceneName': scene_name,
+                'inputName': camera_name,
+                'inputKind': color_kind,
+                'inputSettings': {'color': 0xFF4A76C4, 'width': 320, 'height': 180},
+            })
+            camera_uuid = self._input_uuid(client, camera_name)
+            client.send('CreateInput', {
+                'sceneName': scene_name,
+                'inputName': adapter_name,
+                'inputKind': 'face_tracker_source',
+                'inputSettings': {
+                    'target_name': camera_name,
+                    'target_uuid': camera_uuid,
+                    'safe_tracking_enabled': True,
+                },
+            })
+            camera_image = self._wait_for_screenshot(client, camera_name, bool)
+            bound_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image == camera_image
+            )
+            self.assertEqual(bound_image, camera_image)
+
+            client.send('CreateSourceFilter', {
+                'sourceName': camera_name,
+                'filterName': legacy_filter_name,
+                'filterKind': 'face_tracker_filter',
+                'filterSettings': {},
+            })
+            filter_created = True
+            self._wait_for_log_text(
+                'FaithfulFrame safe tracking stopped: remove the added legacy tracker filter, then rebind the source'
+            )
+            closed_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image != bound_image
+            )
+            self.assertNotEqual(
+                closed_image,
+                bound_image,
+                'Adding a legacy crop filter must stop the protected output instead of applying its crop',
+            )
+
+            client.send('RemoveSourceFilter', {
+                'sourceName': camera_name,
+                'filterName': legacy_filter_name,
+            })
+            filter_created = False
+            restored_camera_image = self._wait_for_screenshot(
+                client, camera_name, lambda image: image == camera_image
+            )
+            self.assertEqual(restored_camera_image, camera_image)
+            for _ in range(3):
+                self.assertNotEqual(
+                    self._screenshot(client, adapter_name),
+                    bound_image,
+                    'Removing the filter must not silently reopen the closed binding',
+                )
+                time.sleep(0.1)
+
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'safe_tracking_enabled': False},
+                'overlay': True,
+            })
+            disabled_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image == restored_camera_image
+            )
+            self.assertEqual(disabled_image, restored_camera_image)
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'safe_tracking_enabled': True},
+                'overlay': True,
+            })
+            rebound_image = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image == restored_camera_image
+            )
+            self.assertEqual(rebound_image, restored_camera_image)
+        finally:
+            names = self._input_names(client)
+            if filter_created and camera_name in names:
+                try:
+                    client.send('RemoveSourceFilter', {
+                        'sourceName': camera_name,
+                        'filterName': legacy_filter_name,
+                    })
+                except Exception:
+                    pass
+            for input_name in (adapter_name, camera_name):
+                if input_name in names:
+                    client.send('RemoveInput', {'inputName': input_name})
+                    names.remove(input_name)
+            if original_scene:
+                client.send('SetCurrentProgramScene', {'sceneName': original_scene})
+            if scene_created:
+                client.send('RemoveScene', {'sceneName': scene_name})
+
 
 if __name__ == '__main__':
     unittest.main()
