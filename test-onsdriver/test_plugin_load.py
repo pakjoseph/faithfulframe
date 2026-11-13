@@ -362,8 +362,12 @@ class PluginLoadTest(obstest.OBSTest):
                 time.sleep(0.1)
 
             client.send('RemoveInput', {'inputName': adapter_name})
-            self.assertNotIn(adapter_name, self._input_names(client))
-            self.assertIn(camera_name, self._input_names(client), 'Removing the adapter must leave its camera intact')
+            self._wait_for_input_presence(client, adapter_name, False)
+            self.assertIn(
+                camera_name,
+                self._input_names(client),
+                'Removing the adapter must leave its camera intact',
+            )
         finally:
             # Keep this test isolated from the next OBS test even when an assertion fails.
             names = self._input_names(client)
