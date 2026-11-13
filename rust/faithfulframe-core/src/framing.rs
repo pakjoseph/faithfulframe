@@ -5,6 +5,10 @@ use crate::Rect;
 const NOMINAL_SAMPLE_PERIOD_SECONDS: f32 = 1.0 / 30.0;
 const MAX_INTEGRATION_STEP_SECONDS: f32 = 0.1;
 const FULL_SPEED_RAMP_SECONDS: f32 = 0.5;
+/// Hard ceiling shared with the native OBS settings UI. Keeping this check in
+/// the core prevents alternate or malformed callers from requesting extreme
+/// magnification that the product UI would never allow.
+pub const MAX_ZOOM: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FramingConfig {
@@ -87,6 +91,7 @@ impl FramingController {
             || !(0.0 < config.target_coverage && config.target_coverage <= 1.0)
             || config.min_zoom < 1.0
             || config.max_zoom < config.min_zoom
+            || config.max_zoom > MAX_ZOOM
             || !(0.0 < config.pan_smoothing && config.pan_smoothing <= 1.0)
             || !(0.0 < config.zoom_smoothing && config.zoom_smoothing <= 1.0)
             || !(0.0..0.5).contains(&config.dead_zone_fraction)
@@ -985,5 +990,19 @@ mod tests {
             }),
             Err(FramingError::InvalidConfig)
         ));
+        assert!(matches!(
+            FramingController::new(FramingConfig {
+                max_zoom: MAX_ZOOM + 0.01,
+                ..FramingConfig::default()
+            }),
+            Err(FramingError::InvalidConfig)
+        ));
+        assert!(
+            FramingController::new(FramingConfig {
+                max_zoom: MAX_ZOOM,
+                ..FramingConfig::default()
+            })
+            .is_ok()
+        );
     }
 }

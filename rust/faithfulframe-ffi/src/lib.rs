@@ -721,8 +721,8 @@ mod tests {
     }
 
     #[test]
-    fn invalid_dead_zone_config_cannot_create_a_session() {
-        let config = FfSessionConfig {
+    fn framing_config_outside_safety_limits_cannot_create_a_session() {
+        let mut config = FfSessionConfig {
             loss_grace_ms: 5_000,
             max_evidence_age_ms: 500,
             max_candidates: 8,
@@ -754,6 +754,13 @@ mod tests {
 
         let result = unsafe { ff_session_create(&config, &identity, &generations, &mut output) };
 
+        assert_eq!(result, INVALID_ARGUMENT);
+        assert!(output.is_null());
+
+        config.dead_zone_fraction = 0.05;
+        config.max_zoom = 8.25;
+        output = std::ptr::NonNull::<FfSession>::dangling().as_ptr();
+        let result = unsafe { ff_session_create(&config, &identity, &generations, &mut output) };
         assert_eq!(result, INVALID_ARGUMENT);
         assert!(output.is_null());
     }
