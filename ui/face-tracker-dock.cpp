@@ -1884,20 +1884,31 @@ void FTDock::handlePreviewClick(const QPointF &position)
 				     preview.output_width, preview.output_height, x, y))
 		return;
 
-	QVariantMap hit;
-	int hits = 0;
+	std::array<ff_preview_rect_d, 8> visible_rectangles{};
+	std::array<const QVariantMap *, 8> visible_candidates{};
+	std::size_t visible_count = 0;
 	for (const QVariantMap &candidate : preview.candidates) {
 		QRectF visible;
-		if (!candidate_output_rect(preview, candidate, visible) || !visible.contains(QPointF(x, y)))
+		if (!candidate_output_rect(preview, candidate, visible))
 			continue;
-		hit = candidate;
-		++hits;
+		if (visible_count == visible_rectangles.size()) {
+			showOperatorNotice("Candidate list changed. Refresh the preview before selecting a speaker.");
+			return;
+		}
+		visible_rectangles[visible_count] =
+			ff_preview_rect_d{visible.x(), visible.y(), visible.width(), visible.height()};
+		visible_candidates[visible_count++] = &candidate;
 	}
-	if (hits != 1) {
-		showOperatorNotice(hits > 1 ? "Overlapping faces are ambiguous; choose one from the candidate list"
-					    : "Click inside one visible face to select its speaker");
+	std::size_t hit_index = 0;
+	const ff_preview_hit_result hit_result =
+		ff_preview_unique_hit(visible_rectangles.data(), visible_count, x, y, hit_index);
+	if (hit_result != ff_preview_hit_result::unique_hit) {
+		showOperatorNotice(hit_result == ff_preview_hit_result::ambiguous
+					   ? "Overlapping faces are ambiguous; choose one from the candidate list"
+					   : "Click inside one visible face to select its speaker");
 		return;
 	}
+	const QVariantMap hit = *visible_candidates[hit_index];
 	if (!enqueue_safe_command(target, preview, FF_COMMAND_SELECT_CANDIDATE, &hit))
 		showOperatorNotice("Selection expired or changed. Click the face again in the current preview.");
 #else

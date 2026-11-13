@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 #include "faithfulframe_ffi.h"
@@ -13,6 +14,44 @@ struct ff_preview_rect_d
 	double width;
 	double height;
 };
+
+enum class ff_preview_hit_result : std::uint8_t {
+	no_hit,
+	unique_hit,
+	ambiguous,
+};
+
+/// Select exactly one normalized preview rectangle containing a point.
+/// Inclusive edges are intentional: touching or overlapping boxes are
+/// ambiguous at their shared boundary and must not choose arbitrarily. The
+/// output index is changed only when the result is unique.
+inline ff_preview_hit_result ff_preview_unique_hit(const ff_preview_rect_d *rectangles, std::size_t count, double x,
+						   double y, std::size_t &hit_index)
+{
+	if ((count && !rectangles) || !std::isfinite(x) || !std::isfinite(y) || x < 0.0 || x > 1.0 || y < 0.0 ||
+	    y > 1.0)
+		return ff_preview_hit_result::no_hit;
+	std::size_t hits = 0;
+	std::size_t unique_index = 0;
+	for (std::size_t i = 0; i < count; ++i) {
+		const auto &rectangle = rectangles[i];
+		if (!std::isfinite(rectangle.x) || !std::isfinite(rectangle.y) || !std::isfinite(rectangle.width) ||
+		    !std::isfinite(rectangle.height) || rectangle.x < 0.0 || rectangle.y < 0.0 ||
+		    rectangle.width <= 0.0 || rectangle.height <= 0.0 || rectangle.x + rectangle.width > 1.0 ||
+		    rectangle.y + rectangle.height > 1.0)
+			return ff_preview_hit_result::no_hit;
+		if (x >= rectangle.x && x <= rectangle.x + rectangle.width && y >= rectangle.y &&
+		    y <= rectangle.y + rectangle.height) {
+			unique_index = i;
+			if (++hits > 1)
+				return ff_preview_hit_result::ambiguous;
+		}
+	}
+	if (hits != 1)
+		return ff_preview_hit_result::no_hit;
+	hit_index = unique_index;
+	return ff_preview_hit_result::unique_hit;
+}
 
 inline bool ff_preview_valid_rect(const ff_rect &rect)
 {

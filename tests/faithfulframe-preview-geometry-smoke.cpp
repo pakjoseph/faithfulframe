@@ -30,6 +30,25 @@ int main()
 						  3840)); // Rotation or resize awaits a new session tick.
 	check(!ff_preview_source_geometry_matches(0, 2160, 0, 2160));
 
+	std::size_t hit_index = 99;
+	check(ff_preview_unique_hit(nullptr, 0, 0.5, 0.5, hit_index) == ff_preview_hit_result::no_hit);
+	const ff_preview_rect_d unique_candidate[] = {{0.25, 0.25, 0.5, 0.5}};
+	check(ff_preview_unique_hit(unique_candidate, 1, 0.5, 0.5, hit_index) == ff_preview_hit_result::unique_hit);
+	check(hit_index == 0);
+	hit_index = 99;
+	check(ff_preview_unique_hit(unique_candidate, 1, 0.9, 0.9, hit_index) == ff_preview_hit_result::no_hit);
+	check(hit_index == 99);
+	const ff_preview_rect_d overlapping_candidates[] = {{0.1, 0.1, 0.5, 0.5}, {0.4, 0.4, 0.5, 0.5}};
+	check(ff_preview_unique_hit(overlapping_candidates, 2, 0.45, 0.45, hit_index) ==
+	      ff_preview_hit_result::ambiguous);
+	check(hit_index == 99);
+	const ff_preview_rect_d edge_candidates[] = {{0.1, 0.1, 0.3, 0.3}, {0.4, 0.1, 0.3, 0.3}};
+	check(ff_preview_unique_hit(edge_candidates, 2, 0.4, 0.2, hit_index) == ff_preview_hit_result::ambiguous);
+	const ff_preview_rect_d invalid_hit_candidates[] = {{0.25, 0.25, 0.5, 0.5}, {NAN, 0.0, 0.5, 0.5}};
+	check(ff_preview_unique_hit(invalid_hit_candidates, 2, 0.5, 0.5, hit_index) == ff_preview_hit_result::no_hit);
+	check(ff_preview_unique_hit(nullptr, 1, 0.5, 0.5, hit_index) == ff_preview_hit_result::no_hit);
+	check(ff_preview_unique_hit(unique_candidate, 1, INFINITY, 0.5, hit_index) == ff_preview_hit_result::no_hit);
+
 	double x = -1.0, y = -1.0;
 	check(ff_preview_widget_point(128.0, 72.0, 256.0, 144.0, 1920, 1080, x, y));
 	check(near(x, 0.5) && near(y, 0.5));
