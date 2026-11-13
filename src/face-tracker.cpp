@@ -27,6 +27,7 @@
 #include "faithfulframe-adapter-lease.hpp"
 #include "faithfulframe-config-guard.hpp"
 #include "faithfulframe-crop-selector.hpp"
+#include "faithfulframe-deferred-pending.hpp"
 #include "faithfulframe-preview-geometry.hpp"
 #include "faithfulframe-source-identity.hpp"
 #endif
@@ -247,6 +248,7 @@ struct faithfulframe_source_runtime
 	uint64_t processed_configuration_version = 0;
 	uint64_t processed_tracker_configuration_version = 0;
 	faithfulframe_active_slot<faithfulframe_source_binding> active;
+	faithfulframe_deferred_pending<faithfulframe_source_binding> deferred_reclamation;
 	std::mutex bindings_mutex;
 	// Owns the active binding and retired bindings until lock-free readers drain.
 	std::vector<std::unique_ptr<faithfulframe_source_binding>> bindings;
@@ -260,6 +262,15 @@ struct faithfulframe_source_runtime
 		reconfiguration_pending.store(true, std::memory_order_release);
 		active.exchange(nullptr);
 		active.wait_until_drained();
+		auto *deferred = deferred_reclamation.take();
+		if (deferred) {
+			deferred->set_active_child(false);
+			deferred->transition_pending.store(true, std::memory_order_release);
+			deferred->closed.store(true, std::memory_order_release);
+			deferred->render_executor.store(nullptr, std::memory_order_release);
+			if (auto executor = std::atomic_load_explicit(&deferred->executor, std::memory_order_acquire))
+				executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+		}
 		std::lock_guard<std::mutex> bindings_lock(bindings_mutex);
 		for (const auto &owned_binding : bindings) {
 			if (!owned_binding)
@@ -274,6 +285,8 @@ struct faithfulframe_source_runtime
 				executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
 		}
 		bindings.clear();
+		if (deferred)
+			delete deferred;
 		if (pending_settings)
 			obs_data_release(pending_settings);
 		faithfulframe::single_adapter_lease::release(this);
@@ -283,6 +296,13 @@ struct faithfulframe_source_runtime
 	{
 		if (active.reader_count() != 0)
 			return;
+		std::unique_ptr<faithfulframe_source_binding> deferred(deferred_reclamation.take());
+		if (deferred) {
+			if (deferred->handoff_executor_for_reclamation())
+				deferred.reset();
+			else if (!deferred_reclamation.try_store(deferred))
+				blog(LOG_ERROR, "FaithfulFrame could not restore its deferred binding owner");
+		}
 		std::unique_lock<std::mutex> lock(bindings_mutex, std::try_to_lock);
 		if (!lock.owns_lock() || active.reader_count() != 0)
 			return;
@@ -321,8 +341,8 @@ static void retire_unpublished_binding_on_tick(faithfulframe_source_runtime *run
 		binding.reset();
 		return;
 	}
-	std::lock_guard<std::mutex> bindings_lock(runtime->bindings_mutex);
-	runtime->bindings.push_back(std::move(binding));
+	if (!runtime->deferred_reclamation.try_store(binding))
+		blog(LOG_ERROR, "FaithfulFrame deferred binding slot unexpectedly occupied");
 }
 
 static std::atomic<uint64_t> faithfulframe_next_identity{1};
@@ -1358,6 +1378,10 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		std::lock_guard<std::mutex> lock(runtime->configuration_mutex);
 		revision = runtime->configuration_version.load(std::memory_order_acquire);
 		if (revision == runtime->processed_configuration_version)
+			return;
+		// A prior failed handoff owns one closed binding. Drain it before making
+		// another; this keeps the frame-side pending owner bounded and unambiguous.
+		if (runtime->deferred_reclamation.occupied())
 			return;
 		tracker_revision = runtime->tracker_configuration_version.load(std::memory_order_acquire);
 		enabled = runtime->enabled.load(std::memory_order_acquire);

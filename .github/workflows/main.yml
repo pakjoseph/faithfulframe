@@ -554,6 +554,7 @@ jobs:
             faithfulframe-session-executor-smoke \
             faithfulframe-active-slot-smoke \
             faithfulframe-single-adapter-lease-smoke \
+            faithfulframe-deferred-pending-smoke \
             faithfulframe-detector-worker-smoke \
             faithfulframe-tracker-worker-smoke \
             faithfulframe-worker-log-gate-smoke
@@ -563,4 +564,4 @@ jobs:
           TSAN_OPTIONS: halt_on_error=1
         run: >-
           ctest --test-dir build-tsan --output-on-failure --timeout 30
-          -R '^faithfulframe-(session-executor|active-slot|single-adapter-lease|detector-worker|tracker-worker|worker-log-gate)-smoke$'
+          -R '^faithfulframe-(session-executor|active-slot|single-adapter-lease|deferred-pending|detector-worker|tracker-worker|worker-log-gate)-smoke$'
