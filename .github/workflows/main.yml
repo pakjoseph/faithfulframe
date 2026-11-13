@@ -499,6 +499,11 @@ jobs:
       - name: Test performance recording analysis
         run: python -m unittest discover -s tests -p 'test_analyze_performance_logs.py'
 
+      - name: Verify Rust production dependency allowlist
+        run: |
+          python -m unittest discover -s tests -p 'test_verify_rust_runtime_deps.py'
+          python ci/verify-rust-runtime-deps.py --manifest rust/faithfulframe-ffi/Cargo.toml
+
       - name: Check Rust formatting
         run: |
           cargo fmt --manifest-path rust/faithfulframe-core/Cargo.toml -- --check
