@@ -377,7 +377,7 @@ static uint64_t allocate_faithfulframe_identity()
 static const char *ftf_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return obs_module_text("FaithfulFrame");
+	return obs_module_text("Module.Name");
 }
 
 static inline void get_aspect_from_str(struct face_tracker_filter *s, const char *str)
