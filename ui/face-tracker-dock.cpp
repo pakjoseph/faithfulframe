@@ -1515,7 +1515,7 @@ void FTDock::updateState()
 			QString diagnostics_text =
 				QString("OBS process: CPU %1, memory %2\nSnapshot: %3 | queue: %4 / %5, oldest pending %6 µs | "
 					"wait: %7 / %8 µs | policy: %9 / %10 µs | "
-					"render-thread capture/dispatch: %11 / %12 µs | stage map: %13 / %14 µs "
+					"render-thread total: %11 / %12 µs | stage-map call (included): %13 / %14 µs "
 					"(%15 maps, %16 failed) | dlib: %17 runs, %18 / %19 µs | "
 					"accepted %20 · rejected %21 · coalesced %22\n%23")
 					.arg(process_cpu)
