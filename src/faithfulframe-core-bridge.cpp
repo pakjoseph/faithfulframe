@@ -464,8 +464,8 @@ public:
 	{
 		if (!executor)
 			return false;
-		// Keep the test gate outside the queue critical section. A delayed caller
-		// must not prevent independent sessions from handing off their workers.
+			// Keep the test gate outside the queue critical section. A delayed caller
+			// must not prevent independent sessions from handing off their workers.
 #ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
 		faithfulframe_test_run_reaper_enqueue_hook();
 #endif
