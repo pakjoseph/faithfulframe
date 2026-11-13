@@ -467,7 +467,7 @@ static inline void make_tracker_rects(std::vector<face_tracker_manager::tracker_
 
 		float score = trackers[i].rect.score * trackers[i].att;
 
-		if (score <= 0.0f || isnan(score))
+		if (!ff_tracker_score_is_usable(score))
 			continue;
 
 		if (tracker_rects.size() <= n)

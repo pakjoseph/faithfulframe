@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstdio>
+#include <limits>
 
 static void check_impl(bool condition, int line)
 {
@@ -15,6 +16,13 @@ static void check_impl(bool condition, int line)
 
 int main()
 {
+	check(ff_tracker_score_is_usable(0.001f));
+	check(!ff_tracker_score_is_usable(0.0f));
+	check(!ff_tracker_score_is_usable(-0.001f));
+	check(!ff_tracker_score_is_usable(std::numeric_limits<float>::infinity()));
+	check(!ff_tracker_score_is_usable(-std::numeric_limits<float>::infinity()));
+	check(!ff_tracker_score_is_usable(std::numeric_limits<float>::quiet_NaN()));
+
 	const ff_tracker_box_i first{100, 100, 200, 220};
 	check(ff_tracker_boxes_match(first, first));
 	check(ff_tracker_boxes_match(first, ff_tracker_box_i{110, 105, 210, 225}));

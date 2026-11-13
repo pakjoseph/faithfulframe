@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 
@@ -11,6 +12,12 @@ struct ff_tracker_box_i
 	int x1;
 	int y1;
 };
+
+/// Tracker scores are ranking evidence only when they are finite and positive.
+inline bool ff_tracker_score_is_usable(float score)
+{
+	return std::isfinite(score) && score > 0.0f;
+}
 
 /// Conservative overlap check used to avoid creating a new dlib tracker for a
 /// detection already represented by an active candidate. Requiring half of
