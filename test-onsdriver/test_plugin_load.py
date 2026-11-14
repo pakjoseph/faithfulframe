@@ -456,7 +456,7 @@ class PluginLoadTest(obstest.OBSTest):
             source_selector_name = 'Camera source with FaithfulFrame tracking filter'
             self._wait_for_ui_widget(ui, source_selector_name)
             self._invoke_ui_widget(ui, 'accessibleName', source_selector_name, 'setCurrentIndex', arg1=1)
-            self._wait_for_ui_status(ui, f'Tracking source: {adapter_name}')
+            self._wait_for_ui_status(ui, f'Tracking source: {camera_name}')
             self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
 
             # The face list and selection control remain keyboard-addressable
