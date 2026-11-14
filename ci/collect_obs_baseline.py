@@ -328,17 +328,28 @@ def make_csv_row(
     timestamp = now or datetime.now(timezone.utc)
     if timestamp.utcoffset() is None or timestamp.utcoffset().total_seconds() != 0:
         raise ValueError("timestamp must be UTC")
+    metadata_columns = (
+        "operating_system",
+        "cpu_architecture",
+        "obs_version",
+        "plugin_version",
+        "hardware_and_workload_notes",
+    )
     row = {
         "baseline_schema_version": SCHEMA_VERSION,
         "run_metadata_present": 1 if run_metadata_present else 0,
         "utc_timestamp": timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "elapsed_milliseconds": elapsed_milliseconds,
-        **{key: "" for key in (
-            "operating_system", "cpu_architecture", "obs_version", "plugin_version",
-            "hardware_and_workload_notes",
-        )},
         **snapshot,
     }
+    # These fields describe the run, not an individual sample. OBS returns
+    # platform and version data in every snapshot, so explicitly clear them
+    # after merging the per-sample values and write them only on row one.
+    for key in metadata_columns:
+        row[key] = ""
+    for key in ("stream_active", "record_active"):
+        if isinstance(row.get(key), bool):
+            row[key] = int(row[key])
     if run_metadata_present:
         for key, value in metadata.items():
             row[key] = _safe_csv_text(str(value))

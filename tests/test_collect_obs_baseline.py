@@ -1,9 +1,11 @@
 import base64
-from datetime import datetime, timezone
+import csv
+from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import tempfile
 import unittest
 
 
@@ -208,6 +210,51 @@ class BaselineCollectorTests(unittest.TestCase):
         self.assertEqual(row["utc_timestamp"], "2026-11-13T00:00:00.000Z")
         self.assertEqual(row["plugin_version"], "upstream@abc123")
         self.assertNotIn("password", row)
+
+    def test_collector_csv_keeps_run_metadata_on_first_row_only(self):
+        client = self.make_client()
+        client.connect()
+        snapshot = collector.collect_snapshot(client, (3840, 2160))
+        metadata = {
+            "operating_system": "Windows 11",
+            "cpu_architecture": "x86_64",
+            "obs_version": "33.0.1",
+            "plugin_version": "upstream@abc123",
+            "hardware_and_workload_notes": "Church PC; 4K camera to 720p",
+        }
+        first_time = datetime(2026, 11, 13, tzinfo=timezone.utc)
+        rows = [
+            collector.make_csv_row(
+                snapshot,
+                elapsed_milliseconds=elapsed,
+                run_metadata_present=(elapsed == 0),
+                metadata=metadata,
+                now=first_time + timedelta(milliseconds=elapsed),
+            )
+            for elapsed in (0, 1000)
+        ]
+
+        metadata_columns = (
+            "operating_system",
+            "cpu_architecture",
+            "obs_version",
+            "plugin_version",
+            "hardware_and_workload_notes",
+        )
+        self.assertEqual([rows[0][column] for column in metadata_columns], list(metadata.values()))
+        self.assertTrue(all(rows[1][column] == "" for column in metadata_columns))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "upstream.csv"
+            with path.open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=collector.CSV_COLUMNS)
+                writer.writeheader()
+                writer.writerows(rows)
+            report = analyzer.load_log(path)
+
+        self.assertEqual(report["log_kind"], "obs_baseline")
+        self.assertEqual(report["sample_count"], 2)
+        self.assertEqual(report["metadata"]["plugin_version"], "upstream@abc123")
 
 
 if __name__ == "__main__":
