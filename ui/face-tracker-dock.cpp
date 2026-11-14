@@ -19,6 +19,7 @@
 #include <QTimer>
 #include <QSignalBlocker>
 #include <QPointer>
+#include <QWheelEvent>
 #include <QVariantMap>
 #include <QDateTime>
 #include <QFileDialog>
@@ -44,6 +45,14 @@
 
 static bool dock_frontend_shutdown_started = false;
 static bool dock_frontend_closing_docks = false;
+
+class FaithfulFrameNoWheelComboBox final : public QComboBox {
+public:
+	using QComboBox::QComboBox;
+
+protected:
+	void wheelEvent(QWheelEvent *event) override { event->ignore(); }
+};
 
 void FTDock::closeEvent(QCloseEvent *event)
 {
@@ -898,7 +907,7 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 
 	mainLayout = new QVBoxLayout(this);
 
-	targetSelector = new QComboBox(this);
+	targetSelector = new FaithfulFrameNoWheelComboBox(this);
 	targetSelector->setAccessibleName("Camera source with FaithfulFrame tracking filter");
 	targetSelector->setAccessibleDescription(
 		"Use Tab or click to focus this list, then use the arrow keys to choose a camera. Scrolling over the list does not change the selection.");
@@ -951,7 +960,7 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	mainLayout->addWidget(manualOverrideButton);
 	connect(manualOverrideButton, &QPushButton::clicked, this, &FTDock::manualOverrideButtonClicked);
 
-	candidateSelector = new QComboBox(this);
+	candidateSelector = new FaithfulFrameNoWheelComboBox(this);
 	candidateSelector->setAccessibleName("Detected face candidates");
 	candidateSelector->setAccessibleDescription(
 		"Use Tab or click to focus this list, then use the arrow keys to highlight a detected face. "
