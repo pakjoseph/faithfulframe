@@ -232,6 +232,8 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	if (WITH_DOCK)
 		add_executable(faithfulframe-performance-spool-smoke tests/faithfulframe-performance-spool-smoke.cpp)
 		target_include_directories(faithfulframe-performance-spool-smoke PRIVATE ui)
+		add_executable(faithfulframe-candidate-selector-smoke tests/faithfulframe-candidate-selector-smoke.cpp)
+		target_include_directories(faithfulframe-candidate-selector-smoke PRIVATE ui)
 	endif()
 	add_executable(faithfulframe-texture-object-smoke
 		tests/faithfulframe-texture-object-smoke.cpp src/texture-object.cpp)
@@ -574,6 +576,23 @@ if (WITH_DOCK)
 					"$<TARGET_FILE:faithfulframe-performance-spool-smoke>")
 		else()
 			add_test(NAME faithfulframe-performance-spool-smoke COMMAND faithfulframe-performance-spool-smoke)
+		endif()
+	endif()
+	if (TARGET faithfulframe-candidate-selector-smoke)
+		target_link_libraries(faithfulframe-candidate-selector-smoke PRIVATE Qt::Widgets)
+		if (WIN32)
+			set(_qt_core_dir_variable "Qt${QT_VERSION}Core_DIR")
+			get_filename_component(_qt_core_config_dir "${${_qt_core_dir_variable}}" ABSOLUTE)
+			get_filename_component(_qt_core_runtime_dir "${_qt_core_config_dir}/../../../bin" ABSOLUTE)
+			add_test(NAME faithfulframe-candidate-selector-smoke
+				COMMAND ${CMAKE_COMMAND} -E env
+					QT_QPA_PLATFORM=offscreen
+					"PATH=${_qt_core_runtime_dir}$<SEMICOLON>$ENV{PATH}"
+					"$<TARGET_FILE:faithfulframe-candidate-selector-smoke>")
+		else()
+			add_test(NAME faithfulframe-candidate-selector-smoke
+				COMMAND ${CMAKE_COMMAND} -E env QT_QPA_PLATFORM=offscreen
+					"$<TARGET_FILE:faithfulframe-candidate-selector-smoke>")
 		endif()
 	endif()
 	set(plugin_additional_incs ${plugin_additional_incs} src)
