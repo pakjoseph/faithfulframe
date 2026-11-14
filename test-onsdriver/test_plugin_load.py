@@ -12,7 +12,7 @@ import uuid
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
-from onsdriver import obstest
+from onsdriver import obstest, obsui
 
 PLUGIN_NAME = 'face-tracker'
 
@@ -210,6 +210,62 @@ class PluginLoadTest(obstest.OBSTest):
             self.fail(f'Unable to capture {source_name!r}: {last_error}')
         self.fail(f'Timed out waiting for the expected frame from {source_name!r}')
 
+    @staticmethod
+    def _find_ui_widget(widgets, accessible_name):
+        pending = list(widgets)
+        while pending:
+            widget = pending.pop()
+            if widget.get('accessibleName') == accessible_name:
+                return widget
+            pending.extend(widget.get('children', []))
+        return None
+
+    @classmethod
+    def _find_menu_path(cls, actions, text, parent=()):
+        for action in actions:
+            action_text = action.get('text', '')
+            path = parent + ({'text': action_text},)
+            if text.lower() in action_text.replace('&', '').lower():
+                return list(path)
+            child_path = cls._find_menu_path(action.get('menu', []), text, path)
+            if child_path:
+                return child_path
+        return None
+
+    @staticmethod
+    def _invoke_ui_widget(ui, property_name, property_value, method, **arguments):
+        return ui.request(
+            'widget-invoke',
+            {
+                'path': [{property_name: property_value}],
+                'method': method,
+                **arguments,
+            },
+        )
+
+    def _wait_for_ui_widget(self, ui, accessible_name, *, enabled=None, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        last_widget = None
+        while time.monotonic() < deadline:
+            response = ui.request('widget-list', {})
+            last_widget = self._find_ui_widget(response.get('children', []), accessible_name)
+            if last_widget is not None and (enabled is None or last_widget.get('enabled') is enabled):
+                return last_widget
+            time.sleep(0.1)
+        self.fail(f'UI widget {accessible_name!r} did not reach enabled={enabled}: {last_widget!r}')
+
+    def _wait_for_ui_status(self, ui, text, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        last_status = None
+        while time.monotonic() < deadline:
+            response = ui.request('widget-list', {})
+            widget = self._find_ui_widget(response.get('children', []), 'FaithfulFrame tracking status')
+            last_status = widget.get('text') if widget else None
+            if last_status and text in last_status:
+                return last_status
+            time.sleep(0.1)
+        self.fail(f'FaithfulFrame status did not contain {text!r}: {last_status!r}')
+
     def setUp(self):
         # Keep the OBSExec instance even if startup checking times out, so the
         # failed launch's log and stderr can be saved and its process cleaned up.
@@ -315,6 +371,134 @@ class PluginLoadTest(obstest.OBSTest):
                     loaded = True
                     break
         self.assertTrue(loaded)
+
+    def test_safe_adapter_dock_controls_update_tracking_state(self):
+        'Exercise the live volunteer controls through OBS Qt widgets'
+        client = self.obs.get_obsws()
+        ui = obsui.OBSUI(client)
+        suffix = uuid.uuid4().hex
+        tracked_scene = f'FaithfulFrame dock controls {suffix}'
+        camera_name = f'FaithfulFrame dock camera {suffix}'
+        adapter_name = f'FaithfulFrame dock adapter {suffix}'
+        original_scene = None
+        created_scene = False
+        created_inputs = []
+        dock_created = False
+
+        try:
+            scene_response = client.send('GetCurrentProgramScene', {})
+            original_scene = getattr(scene_response, 'scene_name', None) or getattr(
+                scene_response, 'current_program_scene_name', None
+            )
+            self.assertTrue(original_scene, 'OBS must have an active program scene')
+
+            kinds_response = client.send('GetInputKindList', {'unversioned': False})
+            color_kinds = [
+                kind
+                for kind in kinds_response.input_kinds
+                if kind == 'color_source' or kind.startswith('color_source_v')
+            ]
+            self.assertTrue(color_kinds, 'OBS color source is required for hardware-free control testing')
+            color_kind = max(
+                color_kinds,
+                key=lambda kind: int(kind.rsplit('_v', 1)[1]) if '_v' in kind else 0,
+            )
+
+            client.send('CreateScene', {'sceneName': tracked_scene})
+            created_scene = True
+            client.send('SetCurrentProgramScene', {'sceneName': tracked_scene})
+            client.send('CreateInput', {
+                'sceneName': tracked_scene,
+                'inputName': camera_name,
+                'inputKind': color_kind,
+                'inputSettings': {'color': 0xFF336699, 'width': 320, 'height': 180},
+            })
+            created_inputs.append(camera_name)
+            camera_uuid = self._input_uuid(client, camera_name)
+            client.send('CreateInput', {
+                'sceneName': tracked_scene,
+                'inputName': adapter_name,
+                'inputKind': 'face_tracker_source',
+                'inputSettings': {
+                    'target_name': camera_name,
+                    'target_uuid': camera_uuid,
+                    'safe_tracking_enabled': True,
+                },
+            })
+            created_inputs.append(adapter_name)
+            self._wait_for_screenshot(client, adapter_name, bool)
+
+            menu_tree = ui.menu_list().get('menu', [])
+            dock_menu_path = self._find_menu_path(menu_tree, 'New FaithfulFrame Dock')
+            self.assertIsNotNone(dock_menu_path, 'FaithfulFrame dock action must be available in OBS Tools')
+            ui.request('menu-trigger', {'path': dock_menu_path})
+            dock_created = True
+
+            source_selector_name = 'Camera source with FaithfulFrame tracking filter'
+            self._wait_for_ui_widget(ui, source_selector_name)
+            self._invoke_ui_widget(ui, 'accessibleName', source_selector_name, 'setCurrentIndex', arg1=1)
+            self._wait_for_ui_status(ui, f'Tracking source: {adapter_name}')
+            self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
+
+            # The face list and selection control remain keyboard-addressable
+            # when no face is present; selection stays disabled until evidence
+            # appears in the live preview.
+            self._wait_for_ui_widget(ui, 'Detected face candidates')
+            self._wait_for_ui_widget(ui, 'Select the highlighted face as the speaker', enabled=False)
+
+            self._invoke_ui_widget(ui, 'accessibleName', 'Enable automatic speaker following', 'click')
+            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+
+            self._invoke_ui_widget(ui, 'accessibleName', 'Freeze automatic tracking', 'click')
+            self._wait_for_ui_status(ui, 'Frozen; press Resume when ready')
+            self._wait_for_ui_widget(ui, 'Resume automatic tracking', enabled=True)
+
+            self._invoke_ui_widget(ui, 'accessibleName', 'Resume automatic tracking', 'click')
+            self._wait_for_ui_status(ui, 'Manual; select a face before following')
+            self._invoke_ui_widget(ui, 'accessibleName', 'Enable automatic speaker following', 'click')
+            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Stop automatic following and hold the current framing',
+                'click',
+            )
+            self._wait_for_ui_status(ui, 'Manual override active')
+
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Reset framing to the full camera view',
+                'click',
+            )
+            self._wait_for_ui_status(ui, 'Wide framing; select a face to follow again')
+        finally:
+            if dock_created:
+                try:
+                    self._invoke_ui_widget(ui, 'objectName', 'FTDock_ft_dock', 'removeDock')
+                except Exception:
+                    pass
+
+            try:
+                if original_scene:
+                    client.send('SetCurrentProgramScene', {'sceneName': original_scene})
+            except Exception:
+                pass
+
+            try:
+                names = self._input_names(client)
+                for input_name in created_inputs:
+                    if input_name in names:
+                        client.send('RemoveInput', {'inputName': input_name})
+            except Exception:
+                pass
+
+            if created_scene:
+                try:
+                    client.send('RemoveScene', {'sceneName': tracked_scene})
+                except Exception:
+                    pass
 
     def test_safe_adapter_scene_switch_holds_source_isolation(self):
         'Switch away from and back to a bound camera without changing either source'
