@@ -904,6 +904,31 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	mainLayout->addWidget(targetSelector);
 	connect(targetSelector, &QComboBox::currentTextChanged, this, &FTDock::targetSelectorChanged);
 
+	safeStatusLabel = new QLabel(this);
+	safeStatusLabel->setWordWrap(true);
+	safeStatusLabel->setAccessibleName("FaithfulFrame tracking status");
+	mainLayout->addWidget(safeStatusLabel);
+
+	ftWidget = new FTWidget(data, this);
+	mainLayout->addWidget(ftWidget);
+	connect(ftWidget, &FTWidget::removeDock, this, &FTDock::removeDock);
+	connect(ftWidget, &FTWidget::previewClicked, this, &FTDock::handlePreviewClick);
+
+	notrackButton = new QCheckBox(obs_module_text("Show all region"), this);
+	mainLayout->addWidget(notrackButton);
+	connect(notrackButton,
+#if QT_VERSION < QT_VERSION_CHECK(6, 7, 0)
+		&QCheckBox::stateChanged,
+#else
+		&QCheckBox::checkStateChanged,
+#endif
+		this, &FTDock::notrackButtonChanged);
+
+	autoFollowButton = new QPushButton("Auto Follow", this);
+	autoFollowButton->setAccessibleName("Enable automatic speaker following");
+	mainLayout->addWidget(autoFollowButton);
+	connect(autoFollowButton, &QPushButton::clicked, this, &FTDock::autoFollowButtonClicked);
+
 	pauseButton = new QPushButton(obs_module_text("Pause"), this);
 	pauseButton->setCheckable(true);
 	pauseButton->setAccessibleName("Freeze automatic tracking");
@@ -914,11 +939,6 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	resetButton->setAccessibleName("Reset tracking framing");
 	mainLayout->addWidget(resetButton);
 	connect(resetButton, &QPushButton::clicked, this, &FTDock::resetButtonClicked);
-
-	autoFollowButton = new QPushButton("Auto Follow", this);
-	autoFollowButton->setAccessibleName("Enable automatic speaker following");
-	mainLayout->addWidget(autoFollowButton);
-	connect(autoFollowButton, &QPushButton::clicked, this, &FTDock::autoFollowButtonClicked);
 
 	manualOverrideButton = new QPushButton("Manual Override", this);
 	manualOverrideButton->setAccessibleName("Stop automatic following and hold the current framing");
@@ -933,10 +953,6 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	mainLayout->addWidget(selectCandidateButton);
 	connect(selectCandidateButton, &QPushButton::clicked, this, &FTDock::selectCandidateButtonClicked);
 
-	safeStatusLabel = new QLabel(this);
-	safeStatusLabel->setWordWrap(true);
-	safeStatusLabel->setAccessibleName("FaithfulFrame tracking status");
-	mainLayout->addWidget(safeStatusLabel);
 	performanceToggle = new QToolButton(this);
 	performanceToggle->setText("Performance diagnostics");
 	performanceToggle->setAccessibleName("Show performance diagnostics");
@@ -998,22 +1014,6 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	propertyButton = new QPushButton(obs_module_text("Properties"), this);
 	mainLayout->addWidget(propertyButton);
 	connect(propertyButton, &QPushButton::clicked, this, &FTDock::propertyButtonClicked);
-
-	ftWidget = new FTWidget(data, this);
-	mainLayout->addWidget(ftWidget);
-
-	connect(ftWidget, &FTWidget::removeDock, this, &FTDock::removeDock);
-	connect(ftWidget, &FTWidget::previewClicked, this, &FTDock::handlePreviewClick);
-
-	notrackButton = new QCheckBox(obs_module_text("Show all region"), this);
-	mainLayout->addWidget(notrackButton);
-	connect(notrackButton,
-#if QT_VERSION < QT_VERSION_CHECK(6, 7, 0)
-		&QCheckBox::stateChanged,
-#else
-		&QCheckBox::checkStateChanged,
-#endif
-		this, &FTDock::notrackButtonChanged);
 
 	setLayout(mainLayout);
 	design_tokens_ready = true;
