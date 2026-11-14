@@ -573,18 +573,26 @@ if (WITH_DOCK)
 		set(_qt_smoke_platform "offscreen")
 	endif()
 	set(_qt_smoke_environment "QT_QPA_PLATFORM=${_qt_smoke_platform}")
-	list(APPEND _qt_smoke_environment "QT_DEBUG_PLUGINS=1")
 	set(_qt_core_dir_variable "Qt${QT_VERSION}Core_DIR")
 	get_filename_component(_qt_core_config_dir "${${_qt_core_dir_variable}}" ABSOLUTE)
+	get_filename_component(_qt_core_runtime_dir "${_qt_core_config_dir}/../../../bin" ABSOLUTE)
 	get_filename_component(_qt_platform_plugins_dir "${_qt_core_config_dir}/../../../plugins/platforms" ABSOLUTE)
-	if (EXISTS "${_qt_platform_plugins_dir}")
-		list(APPEND _qt_smoke_environment "QT_QPA_PLATFORM_PLUGIN_PATH=${_qt_platform_plugins_dir}")
-	elseif (WIN32)
-		message(FATAL_ERROR "Qt platform plugin directory does not exist: ${_qt_platform_plugins_dir}")
-	endif()
 	if (WIN32)
-		get_filename_component(_qt_core_runtime_dir "${_qt_core_config_dir}/../../../bin" ABSOLUTE)
-		list(APPEND _qt_smoke_environment "PATH=${_qt_core_runtime_dir}$<SEMICOLON>$ENV{PATH}")
+		find_program(_qt_smoke_deploy_tool NAMES windeployqt HINTS "${_qt_core_runtime_dir}" NO_DEFAULT_PATH)
+		if (NOT _qt_smoke_deploy_tool)
+			message(FATAL_ERROR "windeployqt is required to prepare the Windows Qt widget smoke test")
+		endif()
+		add_custom_command(TARGET faithfulframe-no-wheel-combo-box-smoke POST_BUILD
+			COMMAND "${_qt_smoke_deploy_tool}" --no-translations --no-compiler-runtime
+				"$<TARGET_FILE:faithfulframe-no-wheel-combo-box-smoke>"
+			VERBATIM)
+		list(APPEND _qt_smoke_environment
+			"QT_QPA_PLATFORM_PLUGIN_PATH=$<TARGET_FILE_DIR:faithfulframe-no-wheel-combo-box-smoke>/platforms")
+		list(APPEND _qt_smoke_environment "QT_DEBUG_PLUGINS=1")
+		list(APPEND _qt_smoke_environment
+			"PATH=$<TARGET_FILE_DIR:faithfulframe-no-wheel-combo-box-smoke>$<SEMICOLON>${_qt_core_runtime_dir}$<SEMICOLON>$ENV{PATH}")
+	elseif (EXISTS "${_qt_platform_plugins_dir}")
+		list(APPEND _qt_smoke_environment "QT_QPA_PLATFORM_PLUGIN_PATH=${_qt_platform_plugins_dir}")
 	endif()
 	add_test(NAME faithfulframe-no-wheel-combo-box-smoke
 		COMMAND ${CMAKE_COMMAND} -E env ${_qt_smoke_environment}
