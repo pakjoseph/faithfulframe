@@ -776,3 +776,12 @@ if(ENABLE_DATAGEN)
 		dlib
 	)
 endif()
+
+# Keep a stalled replay or concurrency regression from leaving a CI matrix job
+# open indefinitely. This bounds each unit/integration test separately; long
+# production rehearsals run outside CTest and have their own acceptance gate.
+get_property(_faithfulframe_registered_tests DIRECTORY PROPERTY TESTS)
+if (_faithfulframe_registered_tests)
+	set_tests_properties(${_faithfulframe_registered_tests} PROPERTIES TIMEOUT 120)
+endif()
+unset(_faithfulframe_registered_tests)
