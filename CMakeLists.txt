@@ -212,6 +212,29 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		tests/faithfulframe-offline-detector-worker.cpp
 		src/face-detector-dlib-hog.cpp
 		src/texture-object.cpp)
+	add_executable(faithfulframe-offline-session-replay
+		tests/faithfulframe-offline-session-replay.cpp
+		tests/faithfulframe-offline-detector-worker.cpp
+		src/face-tracker-manager.cpp
+		src/face-tracker-base.cpp
+		src/face-tracker-dlib.cpp
+		src/face-detector-dlib-hog.cpp
+		src/face-detector-dlib-cnn.cpp
+		src/texture-object.cpp)
+	add_dependencies(faithfulframe-offline-session-replay faithfulframe-rust-ffi-build)
+	target_include_directories(faithfulframe-offline-session-replay PRIVATE
+		${CMAKE_CURRENT_BINARY_DIR} src tests rust/faithfulframe-ffi/include
+		"$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
+	target_link_libraries(faithfulframe-offline-session-replay PRIVATE
+		faithfulframe-offline-frame-sequence faithfulframe-rust-ffi dlib Threads::Threads OBS::libobs)
+	if (OS_WINDOWS)
+		target_link_libraries(faithfulframe-offline-session-replay PRIVATE OBS::w32-pthreads)
+		add_custom_command(TARGET faithfulframe-offline-session-replay POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different
+				"$<TARGET_FILE:OBS::w32-pthreads>"
+				"$<TARGET_FILE_DIR:faithfulframe-offline-session-replay>"
+			VERBATIM)
+	endif()
 	if (OS_WINDOWS)
 		target_link_libraries(faithfulframe-offline-replay PRIVATE Psapi)
 	endif()
@@ -293,6 +316,8 @@ if (ENABLE_RUST_CORE_BRIDGE)
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_faithfulframe_video_replay.py)
 	endif()
 	add_test(NAME faithfulframe-offline-replay-help COMMAND faithfulframe-offline-replay --help)
+	add_test(NAME faithfulframe-offline-session-replay-help
+		COMMAND faithfulframe-offline-session-replay --help)
 	add_test(NAME faithfulframe-dlib-tracker-lifetime-smoke
 		COMMAND faithfulframe-dlib-tracker-lifetime-smoke)
 	set(FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL
@@ -309,6 +334,22 @@ if (ENABLE_RUST_CORE_BRIDGE)
 					${CMAKE_CURRENT_SOURCE_DIR}/tests/test_faithfulframe_offline_replay_stream.py
 					--binary $<TARGET_FILE:faithfulframe-offline-replay>
 					--model "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}")
+		endif()
+		add_test(NAME faithfulframe-offline-session-replay-policy-smoke
+			COMMAND faithfulframe-offline-session-replay
+				--model "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}"
+				--manifest "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/offline-smoke.tsv")
+		set_tests_properties(faithfulframe-offline-session-replay-policy-smoke PROPERTIES
+			TIMEOUT 30
+			PASS_REGULAR_EXPRESSION "\"kind\":\"summary\".*\"state\":\"manual\"")
+		if (Python3_Interpreter_FOUND)
+			add_test(NAME faithfulframe-offline-session-replay-geometry-integration
+				COMMAND ${Python3_EXECUTABLE}
+					${CMAKE_CURRENT_SOURCE_DIR}/tests/test_faithfulframe_offline_session_replay.py
+					--binary $<TARGET_FILE:faithfulframe-offline-session-replay>
+					--model "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}")
+			set_tests_properties(faithfulframe-offline-session-replay-geometry-integration
+				PROPERTIES TIMEOUT 30)
 		endif()
 		set_tests_properties(faithfulframe-offline-replay-detector-smoke PROPERTIES
 			TIMEOUT 30
