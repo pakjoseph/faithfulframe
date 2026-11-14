@@ -350,6 +350,13 @@ jobs:
           name: ${{ env.artifactName }}-macos-obs${{ matrix.obs }}-${{ matrix.arch }}
           path: package/*
 
+      - name: Prepare isolated macOS OBS profile
+        if: ${{ matrix.obs == 33 && matrix.arch == 'arm64' }}
+        env:
+          HOME: ${{ runner.temp }}/faithfulframe-obs-home
+          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home
+        run: mkdir -p "$HOME/Library/Logs/DiagnosticReports"
+
       - name: 'Setup with onsdriver'
         if: ${{ matrix.obs == 33 && matrix.arch == 'arm64' }}
         timeout-minutes: 15
