@@ -1130,9 +1130,9 @@ bool reaper_shutdown_waits_for_unretired_workers(const ff_session_config &config
 		destroy_returned.store(true, std::memory_order_release);
 	});
 	const auto waiting_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-	while (!faithfulframe_test_reaper_waiting_for_workers() && std::chrono::steady_clock::now() < waiting_deadline)
+	while (!faithfulframe_test_reaper_shutdown_waiting() && std::chrono::steady_clock::now() < waiting_deadline)
 		std::this_thread::yield();
-	const bool shutdown_waited_for_worker = faithfulframe_test_reaper_waiting_for_workers() != 0;
+	const bool shutdown_waited_for_worker = faithfulframe_test_reaper_shutdown_waiting() != 0;
 	const bool retirement_accepted = shutdown_waited_for_worker && retire_executor_when_available(executor);
 	if (executor) {
 		// Keep the smoke process clean if a regression closes the reaper early.
@@ -1142,6 +1142,83 @@ bool reaper_shutdown_waits_for_unretired_workers(const ff_session_config &config
 	destroy_thread.join();
 	return shutdown_waited_for_worker && retirement_accepted && !executor && destroy_returned.load() &&
 	       weak.expired() && faithfulframe_teardown_register_instance() == 0;
+}
+
+struct chained_reaper_cleanup_context
+{
+	std::mutex mutex;
+	std::condition_variable condition;
+	faithfulframe_reap_task first{};
+	faithfulframe_reap_task second{};
+	bool first_entered = false;
+	bool release_first = false;
+	std::atomic<bool> second_accepted{false};
+	std::atomic<bool> first_completed{false};
+	std::atomic<bool> second_completed{false};
+};
+
+void complete_chained_cleanup(void *context)
+{
+	static_cast<chained_reaper_cleanup_context *>(context)->second_completed.store(true, std::memory_order_release);
+}
+
+void enqueue_chained_cleanup(void *context)
+{
+	auto *state = static_cast<chained_reaper_cleanup_context *>(context);
+	{
+		std::unique_lock<std::mutex> lock(state->mutex);
+		state->first_entered = true;
+		state->condition.notify_all();
+		state->condition.wait(lock, [state] { return state->release_first; });
+	}
+	const bool accepted = faithfulframe_defer_reap_task(&state->second, complete_chained_cleanup, state);
+	state->second_accepted.store(accepted, std::memory_order_release);
+	if (accepted)
+		faithfulframe_activate_reap_task(&state->second);
+	state->first_completed.store(true, std::memory_order_release);
+}
+
+bool reaper_drains_chained_cleanup_before_shutdown()
+{
+	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
+		return false;
+	faithfulframe_teardown_instance_created();
+	chained_reaper_cleanup_context state;
+	if (!defer_reap_task_when_available(&state.first, enqueue_chained_cleanup, &state)) {
+		faithfulframe_teardown_begin_module_unload();
+		faithfulframe_teardown_instance_destroyed();
+		return false;
+	}
+	const auto callback_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	{
+		std::unique_lock<std::mutex> lock(state.mutex);
+		state.condition.wait_until(lock, callback_deadline, [&state] { return state.first_entered; });
+	}
+	const bool callback_entered = [&state] {
+		std::lock_guard<std::mutex> lock(state.mutex);
+		return state.first_entered;
+	}();
+	faithfulframe_teardown_begin_module_unload();
+	std::atomic<bool> destroy_returned{false};
+	std::thread destroy_thread([&] {
+		faithfulframe_teardown_instance_destroyed();
+		destroy_returned.store(true, std::memory_order_release);
+	});
+	const auto shutdown_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (!faithfulframe_test_reaper_shutdown_waiting() && std::chrono::steady_clock::now() < shutdown_deadline)
+		std::this_thread::yield();
+	const bool shutdown_waited_for_callback = faithfulframe_test_reaper_shutdown_waiting() != 0;
+	{
+		std::lock_guard<std::mutex> lock(state.mutex);
+		state.release_first = true;
+	}
+	state.condition.notify_all();
+	destroy_thread.join();
+	return callback_entered && shutdown_waited_for_callback && destroy_returned.load(std::memory_order_acquire) &&
+	       state.first_completed.load(std::memory_order_acquire) &&
+	       state.second_accepted.load(std::memory_order_acquire) &&
+	       state.second_completed.load(std::memory_order_acquire) &&
+	       faithfulframe_teardown_register_instance() == 0;
 }
 } // namespace
 
@@ -2098,6 +2175,8 @@ int run_smoke()
 		return 109;
 	if (!reaper_shutdown_waits_for_unretired_workers(config, generations))
 		return 124;
+	if (!reaper_drains_chained_cleanup_before_shutdown())
+		return 125;
 	return 0;
 }
 

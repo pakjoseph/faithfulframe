@@ -73,7 +73,7 @@ namespace {
 std::atomic<bool> faithfulframe_test_reaper_waiting_for_workers_flag{false};
 } // namespace
 
-extern "C" int faithfulframe_test_reaper_waiting_for_workers(void)
+extern "C" int faithfulframe_test_reaper_shutdown_waiting(void)
 {
 	return faithfulframe_test_reaper_waiting_for_workers_flag.load(std::memory_order_acquire) ? 1 : 0;
 }
@@ -607,12 +607,14 @@ public:
 		std::lock_guard<std::mutex> shutdown_lock(shutdown_mutex);
 		{
 			std::unique_lock<std::mutex> lock(mutex);
-			if (active_executor_workers != 0) {
+			if (active_executor_workers != 0 || head || task_in_progress) {
 #ifdef FAITHFULFRAME_TEST_REAPER_SHUTDOWN_HOOK
 				faithfulframe_test_reaper_waiting_for_workers_flag.store(true,
 											 std::memory_order_release);
 #endif
-				condition.wait(lock, [this] { return active_executor_workers == 0; });
+				condition.wait(lock, [this] {
+					return active_executor_workers == 0 && !head && !task_in_progress;
+				});
 #ifdef FAITHFULFRAME_TEST_REAPER_SHUTDOWN_HOOK
 				faithfulframe_test_reaper_waiting_for_workers_flag.store(false,
 											 std::memory_order_release);
@@ -651,9 +653,15 @@ private:
 				task->next = nullptr;
 				callback = task->callback;
 				context = task->context;
+				task_in_progress = true;
 			}
 			if (callback)
 				callback(context);
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				task_in_progress = false;
+			}
+			condition.notify_all();
 		}
 	}
 
@@ -697,6 +705,7 @@ private:
 	faithfulframe_reap_task *head = nullptr;
 	faithfulframe_reap_task *tail = nullptr;
 	bool stopping = false;
+	bool task_in_progress = false;
 	size_t active_executor_workers = 0;
 	std::atomic<bool> accepting{false};
 	std::thread worker;
@@ -815,10 +824,9 @@ extern "C" void faithfulframe_executor_reaper_shutdown()
 {
 	std::shared_ptr<faithfulframe_executor_reaper> reaper;
 	{
-		// Keep the reaper accepting work for the full lifetime of every OBS
-		// source instance. A source destroy callback must be able to hand off its
-		// executor before dropping the instance reservation; closing the reaper
-		// early would make the binding destructor join that worker inline.
+		// Keep the global reaper published while it drains. Cleanup callbacks may
+		// enqueue follow-up resource releases, and all of them must finish before
+		// the reaper stops accepting work.
 		std::lock_guard<std::mutex> owner_lock(faithfulframe_reaper_owner_mutex);
 		{
 			std::lock_guard<std::mutex> lifecycle_lock(faithfulframe_module_lifecycle_mutex);
@@ -826,11 +834,19 @@ extern "C" void faithfulframe_executor_reaper_shutdown()
 			    faithfulframe_pending_creates != 0 || !faithfulframe_reaper_shutdown_started)
 				return;
 		}
-		faithfulframe_reaper_closed = true;
-		reaper = std::move(faithfulframe_reaper);
+		if (faithfulframe_reaper_closed || !faithfulframe_reaper)
+			return;
+		reaper = faithfulframe_reaper;
 	}
 	if (reaper)
 		reaper->shutdown();
+	{
+		std::lock_guard<std::mutex> owner_lock(faithfulframe_reaper_owner_mutex);
+		if (faithfulframe_reaper == reaper) {
+			faithfulframe_reaper_closed = true;
+			faithfulframe_reaper.reset();
+		}
+	}
 }
 
 extern "C" int faithfulframe_teardown_register_instance()
