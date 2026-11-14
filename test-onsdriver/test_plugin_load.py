@@ -234,10 +234,29 @@ class PluginLoadTest(obstest.OBSTest):
 
     @staticmethod
     def _invoke_ui_widget(ui, property_name, property_value, method, **arguments):
+        def find_path(widgets, parents=()):
+            for widget in widgets:
+                locator = {'className': widget.get('className', '')}
+                for key in ('objectName', 'accessibleName', 'text'):
+                    value = widget.get(key)
+                    if value:
+                        locator[key] = value
+                path = parents + (locator,)
+                if widget.get(property_name) == property_value:
+                    return list(path)
+                child_path = find_path(widget.get('children', []), path)
+                if child_path:
+                    return child_path
+            return None
+
+        widget_tree = ui.request('widget-list', {})
+        path = find_path(widget_tree.get('children', []))
+        if path is None:
+            raise AssertionError(f'UI widget {property_name}={property_value!r} was not found')
         return ui.request(
             'widget-invoke',
             {
-                'path': [{property_name: property_value}],
+                'path': path,
                 'method': method,
                 **arguments,
             },
