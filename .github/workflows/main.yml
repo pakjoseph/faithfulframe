@@ -154,6 +154,7 @@ jobs:
             macos: macos-26-intel # Intel x86_64
           - obs: 33
             arch: 'x86_64'
+            obs-onsdriver: '< 34'
             macos: macos-26-intel # Intel x86_64
           - obs: 32
             arch: 'arm64'
@@ -161,6 +162,7 @@ jobs:
             macos: macos-26 # Apple arm64
           - obs: 33
             arch: 'arm64'
+            obs-onsdriver: '< 34'
             macos: macos-26 # Apple arm64
     defaults:
       run:
@@ -349,7 +351,36 @@ jobs:
           path: package/*
 
       - name: 'Setup with onsdriver'
-        if: ${{ startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' }}
+        if: ${{ matrix.obs == 33 && matrix.arch == 'arm64' }}
+        timeout-minutes: 15
+        uses: noris-plugins-for-obs/onsdriver@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOME: ${{ runner.temp }}/faithfulframe-obs-home
+        with:
+          obs-plugins: package/*.zip
+          obs-architecture: ${{ matrix.arch }}
+          obs-version: ${{ matrix.obs-onsdriver }}
+          first-time-log: ./logs/
+
+      - name: 'Test with onsdriver'
+        if: ${{ matrix.obs == 33 && matrix.arch == 'arm64' }}
+        timeout-minutes: 5
+        env:
+          HOME: ${{ runner.temp }}/faithfulframe-obs-home
+        run: python -m unittest discover test-onsdriver/
+
+      - name: 'Upload Apple Silicon OBS smoke logs'
+        if: ${{ always() && matrix.obs == 33 && matrix.arch == 'arm64' }}
+        timeout-minutes: 3
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-${{ env.artifactName }}-macos-obs${{ matrix.obs }}-${{ matrix.arch }}
+          path: logs/*
+
+      - name: 'Setup with onsdriver from signed release package'
+        if: ${{ startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' && !(matrix.obs == 33 && matrix.arch == 'arm64') }}
         uses: noris-plugins-for-obs/onsdriver@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -358,14 +389,14 @@ jobs:
           first-time-log: ./logs/
           obs-version: ${{ matrix.obs-onsdriver }}
 
-      - name: 'Test with onsdriver'
-        if: ${{ startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' }}
+      - name: 'Test signed package with onsdriver'
+        if: ${{ startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' && !(matrix.obs == 33 && matrix.arch == 'arm64') }}
         timeout-minutes: 3
         run: |
           python -m unittest discover test-onsdriver/
 
-      - name: 'Upload logs of onsdriver'
-        if: ${{ always() && startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' }}
+      - name: 'Upload signed package onsdriver logs'
+        if: ${{ always() && startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' && !(matrix.obs == 33 && matrix.arch == 'arm64') }}
         timeout-minutes: 3
         continue-on-error: true
         uses: actions/upload-artifact@v7
