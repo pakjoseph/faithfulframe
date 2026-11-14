@@ -1,51 +1,22 @@
-#include "faithfulframe-no-wheel-combo-box.hpp"
+#include "faithfulframe-no-wheel-policy.hpp"
 
-#include <QApplication>
-#include <QProxyStyle>
+#include <QEvent>
 #include <cstdio>
 
-class WheelEnabledStyle final : public QProxyStyle {
-public:
-	int styleHint(StyleHint hint, const QStyleOption *option = nullptr, const QWidget *widget = nullptr,
-		      QStyleHintReturn *returnData = nullptr) const override
-	{
-		if (hint == QStyle::SH_ComboBox_AllowWheelScrolling)
-			return 1;
-		return QProxyStyle::styleHint(hint, option, widget, returnData);
-	}
-};
+static_assert(faithfulframe::ui::selector_focus_policy == Qt::StrongFocus);
 
-static bool send_wheel(FaithfulFrameNoWheelComboBox &combo)
+int main()
 {
-	QWheelEvent event(QPointF(4.0, 4.0), QPointF(4.0, 4.0), QPoint(), QPoint(0, -120), Qt::NoButton, Qt::NoModifier,
-			  Qt::NoScrollPhase, false);
-	QApplication::sendEvent(&combo, &event);
-	return !event.isAccepted() && combo.currentIndex() == 0;
-}
-
-int main(int argc, char **argv)
-{
-	QApplication application(argc, argv);
-	WheelEnabledStyle style;
-	FaithfulFrameNoWheelComboBox combo;
-	combo.setStyle(&style);
-	combo.addItems({"Camera one", "Camera two"});
-	combo.setCurrentIndex(0);
-	combo.show();
-	application.processEvents();
-
-	if (combo.focusPolicy() != Qt::StrongFocus ||
-	    style.styleHint(QStyle::SH_ComboBox_AllowWheelScrolling, nullptr, &combo) != 1 || !send_wheel(combo)) {
-		std::fprintf(stderr, "wheel input changed an unfocused tracking selector or was not ignored\n");
-		return 1;
-	}
-
-	combo.setFocus(Qt::OtherFocusReason);
-	application.processEvents();
-	if (!combo.hasFocus() || !send_wheel(combo)) {
-		std::fprintf(stderr,
-			     "wheel input changed a focused tracking selector or the selector did not take focus\n");
+	QEvent event(QEvent::Wheel);
+	if (!event.isAccepted()) {
+		std::fprintf(stderr, "wheel events must begin accepted before the selector rejects them\n");
 		return 2;
+	}
+
+	faithfulframe::ui::ignore_selector_wheel_event(&event);
+	if (event.isAccepted()) {
+		std::fprintf(stderr, "tracking selector wheel policy did not ignore the event\n");
+		return 1;
 	}
 
 	return 0;

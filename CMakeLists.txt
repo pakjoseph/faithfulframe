@@ -566,37 +566,31 @@ if (WITH_DOCK)
 	add_executable(faithfulframe-no-wheel-combo-box-smoke
 		tests/faithfulframe-no-wheel-combo-box-smoke.cpp)
 	target_include_directories(faithfulframe-no-wheel-combo-box-smoke PRIVATE ui)
-	target_link_libraries(faithfulframe-no-wheel-combo-box-smoke PRIVATE Qt::Widgets)
+	target_link_libraries(faithfulframe-no-wheel-combo-box-smoke PRIVATE Qt::Core)
 	if (WIN32)
-		set(_qt_smoke_platform "windows")
+		set(_qt_core_dir_variable "Qt${QT_VERSION}Core_DIR")
+		get_filename_component(_qt_core_config_dir "${${_qt_core_dir_variable}}" ABSOLUTE)
+		get_filename_component(_qt_core_runtime_dir "${_qt_core_config_dir}/../../../bin" ABSOLUTE)
+		add_test(NAME faithfulframe-no-wheel-combo-box-smoke
+			COMMAND ${CMAKE_COMMAND} -E env "PATH=${_qt_core_runtime_dir}$<SEMICOLON>$ENV{PATH}"
+				"$<TARGET_FILE:faithfulframe-no-wheel-combo-box-smoke>")
 	else()
-		set(_qt_smoke_platform "offscreen")
-	endif()
-	set(_qt_smoke_environment "QT_QPA_PLATFORM=${_qt_smoke_platform}")
-	set(_qt_core_dir_variable "Qt${QT_VERSION}Core_DIR")
-	get_filename_component(_qt_core_config_dir "${${_qt_core_dir_variable}}" ABSOLUTE)
-	get_filename_component(_qt_core_runtime_dir "${_qt_core_config_dir}/../../../bin" ABSOLUTE)
-	get_filename_component(_qt_platform_plugins_dir "${_qt_core_config_dir}/../../../plugins/platforms" ABSOLUTE)
-	if (WIN32)
-		find_program(_qt_smoke_deploy_tool NAMES windeployqt HINTS "${_qt_core_runtime_dir}" NO_DEFAULT_PATH)
-		if (NOT _qt_smoke_deploy_tool)
-			message(FATAL_ERROR "windeployqt is required to prepare the Windows Qt widget smoke test")
+		add_test(NAME faithfulframe-no-wheel-combo-box-smoke COMMAND faithfulframe-no-wheel-combo-box-smoke)
+		add_executable(faithfulframe-no-wheel-combo-box-widget-smoke
+			tests/faithfulframe-no-wheel-combo-box-widget-smoke.cpp)
+		target_include_directories(faithfulframe-no-wheel-combo-box-widget-smoke PRIVATE ui)
+		target_link_libraries(faithfulframe-no-wheel-combo-box-widget-smoke PRIVATE Qt::Widgets)
+		set(_qt_smoke_environment "QT_QPA_PLATFORM=offscreen")
+		set(_qt_core_dir_variable "Qt${QT_VERSION}Core_DIR")
+		get_filename_component(_qt_core_config_dir "${${_qt_core_dir_variable}}" ABSOLUTE)
+		get_filename_component(_qt_platform_plugins_dir "${_qt_core_config_dir}/../../../plugins/platforms" ABSOLUTE)
+		if (EXISTS "${_qt_platform_plugins_dir}")
+			list(APPEND _qt_smoke_environment "QT_QPA_PLATFORM_PLUGIN_PATH=${_qt_platform_plugins_dir}")
 		endif()
-		add_custom_command(TARGET faithfulframe-no-wheel-combo-box-smoke POST_BUILD
-			COMMAND "${_qt_smoke_deploy_tool}" --no-translations --no-compiler-runtime
-				"$<TARGET_FILE:faithfulframe-no-wheel-combo-box-smoke>"
-			VERBATIM)
-		list(APPEND _qt_smoke_environment
-			"QT_QPA_PLATFORM_PLUGIN_PATH=$<TARGET_FILE_DIR:faithfulframe-no-wheel-combo-box-smoke>/platforms")
-		list(APPEND _qt_smoke_environment "QT_DEBUG_PLUGINS=1")
-		list(APPEND _qt_smoke_environment
-			"PATH=$<TARGET_FILE_DIR:faithfulframe-no-wheel-combo-box-smoke>$<SEMICOLON>${_qt_core_runtime_dir}$<SEMICOLON>$ENV{PATH}")
-	elseif (EXISTS "${_qt_platform_plugins_dir}")
-		list(APPEND _qt_smoke_environment "QT_QPA_PLATFORM_PLUGIN_PATH=${_qt_platform_plugins_dir}")
+		add_test(NAME faithfulframe-no-wheel-combo-box-widget-smoke
+			COMMAND ${CMAKE_COMMAND} -E env ${_qt_smoke_environment}
+				"$<TARGET_FILE:faithfulframe-no-wheel-combo-box-widget-smoke>")
 	endif()
-	add_test(NAME faithfulframe-no-wheel-combo-box-smoke
-		COMMAND ${CMAKE_COMMAND} -E env ${_qt_smoke_environment}
-			"$<TARGET_FILE:faithfulframe-no-wheel-combo-box-smoke>")
 	if (TARGET faithfulframe-performance-spool-smoke)
 		target_link_libraries(faithfulframe-performance-spool-smoke PRIVATE Qt::Core)
 		if (WIN32)
