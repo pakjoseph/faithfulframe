@@ -47,6 +47,14 @@ struct reaper_wait_test_gate
 	size_t calls = 0;
 };
 
+struct reaper_join_thread_test_context
+{
+	std::mutex mutex;
+	std::thread::id caller_thread;
+	std::atomic<uint64_t> join_count{0};
+	std::atomic<bool> joined_off_caller{true};
+};
+
 struct session_work_test_gate
 {
 	std::mutex mutex;
@@ -73,11 +81,23 @@ struct shared_reaper_cleanup_test_context
 };
 
 std::atomic<uint64_t> reaper_join_started{0};
+reaper_join_thread_test_context reaper_join_thread_context;
 
 void count_reaper_join(void *context)
 {
 	(void)context;
 	reaper_join_started.fetch_add(1, std::memory_order_relaxed);
+}
+
+void record_reaper_join_thread(void *context)
+{
+	auto *state = static_cast<reaper_join_thread_test_context *>(context);
+	{
+		std::lock_guard<std::mutex> lock(state->mutex);
+		if (std::this_thread::get_id() == state->caller_thread)
+			state->joined_off_caller.store(false, std::memory_order_release);
+	}
+	state->join_count.fetch_add(1, std::memory_order_relaxed);
 }
 
 void mark_reaper_cleanup_complete(void *context)
@@ -879,6 +899,39 @@ bool duplicate_retirement_requests_enqueue_once(const ff_session_config &config,
 	return true;
 }
 
+bool executor_worker_is_joined_off_the_retirement_caller(const ff_session_config &config,
+							 const ff_generations &generations)
+{
+	auto executor = std::make_shared<faithfulframe_session_executor>(config, ff_identity{157, 257}, generations);
+	ff_snapshot snapshot{};
+	if (!await_snapshot(
+		    *executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, snapshot))
+		return false;
+
+	auto &join_context = reaper_join_thread_context;
+	{
+		std::lock_guard<std::mutex> lock(join_context.mutex);
+		join_context.caller_thread = std::this_thread::get_id();
+	}
+	join_context.join_count.store(0, std::memory_order_relaxed);
+	join_context.joined_off_caller.store(true, std::memory_order_relaxed);
+	faithfulframe_test_set_reaper_join_hook(record_reaper_join_thread, &join_context);
+	executor->request_shutdown();
+	std::weak_ptr<faithfulframe_session_executor> weak = executor;
+	const bool retired = retire_executor_when_available(executor) && !executor;
+	const bool joined = retired && await_expired(weak);
+	faithfulframe_test_set_reaper_join_hook(nullptr, nullptr);
+
+	const bool passed = joined && join_context.join_count.load(std::memory_order_acquire) >= 1 &&
+			    join_context.joined_off_caller.load(std::memory_order_acquire);
+	if (!passed)
+		std::fprintf(stderr, "executor join thread: retired=%d joined=%d calls=%llu off_caller=%d\n", retired,
+			     joined,
+			     static_cast<unsigned long long>(join_context.join_count.load(std::memory_order_relaxed)),
+			     join_context.joined_off_caller.load(std::memory_order_relaxed));
+	return passed;
+}
+
 bool rejected_command_notice_expires_without_policy_change(const ff_session_config &config,
 							   const ff_generations &generations)
 {
@@ -1069,6 +1122,8 @@ int run_smoke()
 		return 112;
 	if (!duplicate_retirement_requests_enqueue_once(config, ff_generations{1, 1, 1, 1, 1}))
 		return 111;
+	if (!executor_worker_is_joined_off_the_retirement_caller(config, ff_generations{1, 1, 1, 1, 1}))
+		return 123;
 	if (!rejected_command_notice_expires_without_policy_change(config, ff_generations{1, 1, 1, 1, 1}))
 		return 117;
 	if (!control_work_is_admitted_during_detector_backlog(config, ff_generations{1, 1, 1, 1, 1}))
