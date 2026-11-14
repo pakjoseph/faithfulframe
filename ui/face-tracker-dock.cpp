@@ -910,6 +910,9 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	mainLayout->addWidget(safeStatusLabel);
 
 	ftWidget = new FTWidget(data, this);
+	ftWidget->setAccessibleName("Live camera preview");
+	ftWidget->setAccessibleDescription(
+		"Click a face in the preview to select it. Keyboard users can choose a face from the Detected face candidates list.");
 	mainLayout->addWidget(ftWidget);
 	connect(ftWidget, &FTWidget::removeDock, this, &FTDock::removeDock);
 	connect(ftWidget, &FTWidget::previewClicked, this, &FTDock::handlePreviewClick);
@@ -947,6 +950,8 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 
 	candidateSelector = new QComboBox(this);
 	candidateSelector->setAccessibleName("Detected face candidates");
+	candidateSelector->setAccessibleDescription(
+		"Use the arrow keys to highlight a detected face, then activate Select the highlighted face as the speaker.");
 	mainLayout->addWidget(candidateSelector);
 	selectCandidateButton = new QPushButton("Select Speaker", this);
 	selectCandidateButton->setAccessibleName("Select the highlighted face as the speaker");

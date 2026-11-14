@@ -462,7 +462,10 @@ class PluginLoadTest(obstest.OBSTest):
             # The face list and selection control remain keyboard-addressable
             # when no face is present; selection stays disabled until evidence
             # appears in the live preview.
-            self._wait_for_ui_widget(ui, 'Detected face candidates')
+            preview = self._wait_for_ui_widget(ui, 'Live camera preview')
+            self.assertIn('keyboard users', preview.get('accessibleDescription', '').lower())
+            candidates = self._wait_for_ui_widget(ui, 'Detected face candidates')
+            self.assertIn('arrow keys', candidates.get('accessibleDescription', '').lower())
             self._wait_for_ui_widget(ui, 'Select the highlighted face as the speaker', enabled=False)
 
             self._invoke_ui_widget(ui, 'accessibleName', 'Enable automatic speaker following', 'click')
