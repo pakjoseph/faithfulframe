@@ -594,6 +594,7 @@ if (WITH_DOCK)
 				COMMAND ${CMAKE_COMMAND} -E env QT_QPA_PLATFORM=offscreen
 					"$<TARGET_FILE:faithfulframe-candidate-selector-smoke>")
 		endif()
+		set_tests_properties(faithfulframe-candidate-selector-smoke PROPERTIES TIMEOUT 30)
 	endif()
 	set(plugin_additional_incs ${plugin_additional_incs} src)
 	set(plugin_additional_libs ${plugin_additional_libs} Qt::Gui Qt::Widgets)
