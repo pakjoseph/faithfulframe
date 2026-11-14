@@ -734,11 +734,16 @@ impl TrackingSession {
             ),
             Lifecycle::SceneInactive { .. }
             | Lifecycle::SceneActive { .. }
-            | Lifecycle::CameraDisconnected { .. }
-            | Lifecycle::CameraRestored { .. } => (
+            | Lifecycle::CameraDisconnected { .. } => (
                 Reason::LifecycleInvalidated,
                 State::Manual,
                 CropAction::Hold,
+                false,
+            ),
+            Lifecycle::CameraRestored { .. } => (
+                Reason::LifecycleInvalidated,
+                State::Manual,
+                CropAction::Wide,
                 false,
             ),
             Lifecycle::GeometryChanged { .. } => (
@@ -1235,7 +1240,7 @@ mod tests {
                     generations: generations_after(base, false, false, true, false, true),
                 },
                 State::Manual,
-                CropAction::Hold,
+                CropAction::Wide,
                 false,
             ),
             (

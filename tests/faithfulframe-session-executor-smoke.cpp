@@ -1535,22 +1535,23 @@ int run_smoke()
 		uint32_t kind;
 		ff_generations expected_generations;
 		uint32_t expected_state;
+		uint32_t expected_crop_action;
 		bool expected_closed;
 	};
 	const ff_generations initial_generations{1, 1, 1, 1, 1};
 	const lifecycle_case lifecycle_cases[] = {
-		{FF_LIFECYCLE_SCENE_INACTIVE, {1, 2, 1, 1, 2}, FF_STATE_MANUAL, false},
-		{FF_LIFECYCLE_SCENE_ACTIVE, {1, 2, 1, 1, 2}, FF_STATE_MANUAL, false},
-		{FF_LIFECYCLE_CAMERA_DISCONNECTED, {1, 1, 2, 1, 2}, FF_STATE_MANUAL, false},
-		{FF_LIFECYCLE_CAMERA_RESTORED, {1, 1, 2, 1, 2}, FF_STATE_MANUAL, false},
-		{FF_LIFECYCLE_SOURCE_REBOUND, {2, 2, 2, 2, 2}, FF_STATE_MANUAL, true},
-		{FF_LIFECYCLE_GEOMETRY_CHANGED, {1, 1, 2, 2, 2}, FF_STATE_MANUAL, false},
-		{FF_LIFECYCLE_TRACKER_CHANGED, {1, 1, 1, 1, 2}, FF_STATE_LOST, false},
-		{FF_LIFECYCLE_FRAMING_CONFIG_CHANGED, {1, 2, 1, 2, 2}, FF_STATE_MANUAL, true},
-		{FF_LIFECYCLE_CANDIDATE_POLICY_CHANGED, {1, 2, 1, 1, 2}, FF_STATE_MANUAL, true},
-		{FF_LIFECYCLE_ADAPTER_DESTROYED, {1, 2, 1, 1, 2}, FF_STATE_MANUAL, true},
-		{FF_LIFECYCLE_SOURCE_DESTROYED, {2, 2, 2, 1, 2}, FF_STATE_MANUAL, true},
-		{FF_LIFECYCLE_OBS_SHUTDOWN, {2, 2, 2, 1, 2}, FF_STATE_MANUAL, true},
+		{FF_LIFECYCLE_SCENE_INACTIVE, {1, 2, 1, 1, 2}, FF_STATE_MANUAL, FF_CROP_HOLD, false},
+		{FF_LIFECYCLE_SCENE_ACTIVE, {1, 2, 1, 1, 2}, FF_STATE_MANUAL, FF_CROP_HOLD, false},
+		{FF_LIFECYCLE_CAMERA_DISCONNECTED, {1, 1, 2, 1, 2}, FF_STATE_MANUAL, FF_CROP_HOLD, false},
+		{FF_LIFECYCLE_CAMERA_RESTORED, {1, 1, 2, 1, 2}, FF_STATE_MANUAL, FF_CROP_WIDE, false},
+		{FF_LIFECYCLE_SOURCE_REBOUND, {2, 2, 2, 2, 2}, FF_STATE_MANUAL, FF_CROP_WIDE, true},
+		{FF_LIFECYCLE_GEOMETRY_CHANGED, {1, 1, 2, 2, 2}, FF_STATE_MANUAL, FF_CROP_WIDE, false},
+		{FF_LIFECYCLE_TRACKER_CHANGED, {1, 1, 1, 1, 2}, FF_STATE_LOST, FF_CROP_HOLD, false},
+		{FF_LIFECYCLE_FRAMING_CONFIG_CHANGED, {1, 2, 1, 2, 2}, FF_STATE_MANUAL, FF_CROP_WIDE, true},
+		{FF_LIFECYCLE_CANDIDATE_POLICY_CHANGED, {1, 2, 1, 1, 2}, FF_STATE_MANUAL, FF_CROP_WIDE, true},
+		{FF_LIFECYCLE_ADAPTER_DESTROYED, {1, 2, 1, 1, 2}, FF_STATE_MANUAL, FF_CROP_WIDE, true},
+		{FF_LIFECYCLE_SOURCE_DESTROYED, {2, 2, 2, 1, 2}, FF_STATE_MANUAL, FF_CROP_WIDE, true},
+		{FF_LIFECYCLE_OBS_SHUTDOWN, {2, 2, 2, 1, 2}, FF_STATE_MANUAL, FF_CROP_WIDE, true},
 	};
 	auto same_generations = [](const ff_generations &left, const ff_generations &right) {
 		return left.source == right.source && left.session == right.session && left.stream == right.stream &&
@@ -1581,6 +1582,7 @@ int run_smoke()
 			    lifecycle_executor,
 			    [&test, &same_generations](const ff_snapshot &value) {
 				    return value.state == test.expected_state && value.closed == test.expected_closed &&
+					   value.crop_action == test.expected_crop_action &&
 					   same_generations(value.generations, test.expected_generations);
 			    },
 			    lifecycle_snapshot)) {
