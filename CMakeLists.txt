@@ -46,6 +46,7 @@ foreach(_obs_location_property
 	endif()
 endforeach()
 set(FAITHFULFRAME_SESSION_REPLAY_TEST_ENV)
+set(FAITHFULFRAME_SESSION_REPLAY_TEST_PATH)
 if (APPLE)
 	set(_obs_runtime_candidates)
 	foreach(_framework_path IN LISTS CMAKE_FRAMEWORK_PATH)
@@ -73,8 +74,7 @@ if (APPLE)
 		list(APPEND FAITHFULFRAME_SESSION_REPLAY_TEST_ENV "DYLD_LIBRARY_PATH=${_obs_runtime_path}")
 	endif()
 elseif (WIN32)
-	list(APPEND FAITHFULFRAME_SESSION_REPLAY_TEST_ENV
-		"PATH=$<TARGET_FILE_DIR:OBS::libobs>")
+	set(FAITHFULFRAME_SESSION_REPLAY_TEST_PATH "${FAITHFULFRAME_OBS_RUNTIME_DIRECTORY}")
 endif()
 
 if (ENABLE_RUST_CORE_TESTS)
@@ -366,8 +366,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	endif()
 	add_test(NAME faithfulframe-offline-replay-help COMMAND faithfulframe-offline-replay --help)
 	add_test(NAME faithfulframe-offline-session-replay-help
-		COMMAND ${CMAKE_COMMAND} -E env ${FAITHFULFRAME_SESSION_REPLAY_TEST_ENV}
-			$<TARGET_FILE:faithfulframe-offline-session-replay> --help)
+		COMMAND faithfulframe-offline-session-replay --help)
 	add_test(NAME faithfulframe-dlib-tracker-lifetime-smoke
 		COMMAND faithfulframe-dlib-tracker-lifetime-smoke)
 	set(FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL
@@ -386,8 +385,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 					--model "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}")
 		endif()
 		add_test(NAME faithfulframe-offline-session-replay-policy-smoke
-			COMMAND ${CMAKE_COMMAND} -E env ${FAITHFULFRAME_SESSION_REPLAY_TEST_ENV}
-				$<TARGET_FILE:faithfulframe-offline-session-replay>
+			COMMAND faithfulframe-offline-session-replay
 				--model "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}"
 				--manifest "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/offline-smoke.tsv")
 		set_tests_properties(faithfulframe-offline-session-replay-policy-smoke PROPERTIES
@@ -395,8 +393,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 			PASS_REGULAR_EXPRESSION "\"kind\":\"summary\".*\"state\":\"manual\"")
 		if (Python3_Interpreter_FOUND)
 			add_test(NAME faithfulframe-offline-session-replay-geometry-integration
-				COMMAND ${CMAKE_COMMAND} -E env ${FAITHFULFRAME_SESSION_REPLAY_TEST_ENV}
-					${Python3_EXECUTABLE}
+				COMMAND ${Python3_EXECUTABLE}
 					${CMAKE_CURRENT_SOURCE_DIR}/tests/test_faithfulframe_offline_session_replay.py
 					--binary $<TARGET_FILE:faithfulframe-offline-session-replay>
 					--model "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}")
@@ -409,6 +406,28 @@ if (ENABLE_RUST_CORE_BRIDGE)
 				"process_cpu_us=[0-9]+ process_cpu_percent=[0-9.]+ resident_bytes=[0-9]+ peak_resident_bytes=[0-9]+")
 		if (Python3_Interpreter_FOUND)
 			set_tests_properties(faithfulframe-offline-replay-stream-smoke PROPERTIES TIMEOUT 30)
+		endif()
+	endif()
+	set(FAITHFULFRAME_SESSION_REPLAY_TESTS faithfulframe-offline-session-replay-help)
+	if (EXISTS "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}")
+		list(APPEND FAITHFULFRAME_SESSION_REPLAY_TESTS faithfulframe-offline-session-replay-policy-smoke)
+		if (Python3_Interpreter_FOUND)
+			list(APPEND FAITHFULFRAME_SESSION_REPLAY_TESTS
+				faithfulframe-offline-session-replay-geometry-integration)
+		endif()
+	endif()
+	if (APPLE AND FAITHFULFRAME_SESSION_REPLAY_TEST_ENV)
+		set_tests_properties(${FAITHFULFRAME_SESSION_REPLAY_TESTS} PROPERTIES
+			ENVIRONMENT "${FAITHFULFRAME_SESSION_REPLAY_TEST_ENV}")
+	elseif (WIN32 AND FAITHFULFRAME_SESSION_REPLAY_TEST_PATH)
+		if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
+			set_tests_properties(${FAITHFULFRAME_SESSION_REPLAY_TESTS} PROPERTIES
+				ENVIRONMENT_MODIFICATION
+				"PATH=path_list_prepend:${FAITHFULFRAME_SESSION_REPLAY_TEST_PATH}")
+		else()
+			string(REPLACE ";" "\\;" _faithfulframe_existing_path "$ENV{PATH}")
+			set_tests_properties(${FAITHFULFRAME_SESSION_REPLAY_TESTS} PROPERTIES
+				ENVIRONMENT "PATH=${FAITHFULFRAME_SESSION_REPLAY_TEST_PATH}\\;${_faithfulframe_existing_path}")
 		endif()
 	endif()
 	set_tests_properties(faithfulframe-detector-worker-smoke faithfulframe-tracker-worker-smoke
