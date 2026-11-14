@@ -419,11 +419,34 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	if (APPLE AND FAITHFULFRAME_SESSION_REPLAY_TEST_ENV)
 		set_tests_properties(${FAITHFULFRAME_SESSION_REPLAY_TESTS} PROPERTIES
 			ENVIRONMENT "${FAITHFULFRAME_SESSION_REPLAY_TEST_ENV}")
-	elseif (WIN32 AND FAITHFULFRAME_SESSION_REPLAY_TEST_PATH)
+	elseif (WIN32)
 		if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
+		set(_faithfulframe_windows_runtime_dirs)
+		if (FAITHFULFRAME_OBS_RUNTIME_DIRECTORY)
+			list(APPEND _faithfulframe_windows_runtime_dirs
+				"${FAITHFULFRAME_OBS_RUNTIME_DIRECTORY}")
+		endif()
+		foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
+			list(APPEND _faithfulframe_windows_runtime_dirs
+				"${_prefix}"
+				"${_prefix}/lib/64bit"
+				"${_prefix}/lib"
+				"${_prefix}/bin/64bit"
+				"${_prefix}/bin")
+			get_filename_component(_prefix_parent "${_prefix}" DIRECTORY)
+			list(APPEND _faithfulframe_windows_runtime_dirs
+				"${_prefix_parent}/obs-studio/bin/64bit"
+				"${_prefix_parent}/obs-studio/bin")
+		endforeach()
+		set(_faithfulframe_windows_path_modifications)
+		foreach(_runtime_directory IN LISTS _faithfulframe_windows_runtime_dirs)
+			if (IS_DIRECTORY "${_runtime_directory}")
+				list(APPEND _faithfulframe_windows_path_modifications
+					"PATH=path_list_prepend:${_runtime_directory}")
+			endif()
+		endforeach()
 			set_tests_properties(${FAITHFULFRAME_SESSION_REPLAY_TESTS} PROPERTIES
-				ENVIRONMENT_MODIFICATION
-				"PATH=path_list_prepend:${FAITHFULFRAME_SESSION_REPLAY_TEST_PATH}")
+			ENVIRONMENT_MODIFICATION "${_faithfulframe_windows_path_modifications}")
 		else()
 			string(REPLACE ";" "\\;" _faithfulframe_existing_path "$ENV{PATH}")
 			set_tests_properties(${FAITHFULFRAME_SESSION_REPLAY_TESTS} PROPERTIES
