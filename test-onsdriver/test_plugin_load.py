@@ -454,7 +454,9 @@ class PluginLoadTest(obstest.OBSTest):
             dock_created = True
 
             source_selector_name = 'Camera source with FaithfulFrame tracking filter'
-            self._wait_for_ui_widget(ui, source_selector_name)
+            source_selector = self._wait_for_ui_widget(ui, source_selector_name)
+            self.assertIn('arrow keys', source_selector.get('accessibleDescription', '').lower())
+            self.assertIn('scrolling over', source_selector.get('accessibleDescription', '').lower())
             self._invoke_ui_widget(ui, 'accessibleName', source_selector_name, 'setCurrentIndex', arg1=1)
             self._wait_for_ui_status(ui, f'Tracking source: {camera_name}')
             self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
@@ -466,7 +468,11 @@ class PluginLoadTest(obstest.OBSTest):
             self.assertIn('keyboard users', preview.get('accessibleDescription', '').lower())
             candidates = self._wait_for_ui_widget(ui, 'Detected face candidates')
             self.assertIn('arrow keys', candidates.get('accessibleDescription', '').lower())
-            self._wait_for_ui_widget(ui, 'Select the highlighted face as the speaker', enabled=False)
+            self.assertIn('scrolling over', candidates.get('accessibleDescription', '').lower())
+            select_control = self._wait_for_ui_widget(
+                ui, 'Select the highlighted face as the speaker', enabled=False
+            )
+            self.assertIn('press space', select_control.get('accessibleDescription', '').lower())
 
             self._invoke_ui_widget(ui, 'accessibleName', 'Enable automatic speaker following', 'click')
             self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')

@@ -900,6 +900,9 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 
 	targetSelector = new QComboBox(this);
 	targetSelector->setAccessibleName("Camera source with FaithfulFrame tracking filter");
+	targetSelector->setAccessibleDescription(
+		"Use Tab or click to focus this list, then use the arrow keys to choose a camera. Scrolling over the list does not change the selection.");
+	targetSelector->setFocusPolicy(Qt::StrongFocus);
 	init_target_selector(targetSelector);
 	mainLayout->addWidget(targetSelector);
 	connect(targetSelector, &QComboBox::currentTextChanged, this, &FTDock::targetSelectorChanged);
@@ -951,10 +954,14 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	candidateSelector = new QComboBox(this);
 	candidateSelector->setAccessibleName("Detected face candidates");
 	candidateSelector->setAccessibleDescription(
-		"Use the arrow keys to highlight a detected face, then activate Select the highlighted face as the speaker.");
+		"Use Tab or click to focus this list, then use the arrow keys to highlight a detected face. "
+		"Scrolling over the list does not change the selection.");
+	candidateSelector->setFocusPolicy(Qt::StrongFocus);
 	mainLayout->addWidget(candidateSelector);
 	selectCandidateButton = new QPushButton("Select Speaker", this);
 	selectCandidateButton->setAccessibleName("Select the highlighted face as the speaker");
+	selectCandidateButton->setAccessibleDescription(
+		"After choosing a face, press Tab to reach this button, then press Space to confirm.");
 	mainLayout->addWidget(selectCandidateButton);
 	connect(selectCandidateButton, &QPushButton::clicked, this, &FTDock::selectCandidateButtonClicked);
 
