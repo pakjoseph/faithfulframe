@@ -1,13 +1,14 @@
 #pragma once
 
-#include <QAbstractItemView>
-#include <QComboBox>
-
 namespace faithfulframe::ui {
 
-inline bool candidate_selector_model_can_refresh(const QComboBox *selector)
+template<typename Refresh>
+inline bool refresh_candidate_selector_model(bool popup_visible, Refresh refresh)
 {
-	return !selector || !selector->view() || !selector->view()->isVisible();
+	if (popup_visible)
+		return false;
+	refresh();
+	return true;
 }
 
 } // namespace faithfulframe::ui
