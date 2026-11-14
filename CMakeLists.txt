@@ -425,6 +425,9 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		if (FAITHFULFRAME_OBS_RUNTIME_DIRECTORY)
 			list(APPEND _faithfulframe_windows_runtime_dirs
 				"${FAITHFULFRAME_OBS_RUNTIME_DIRECTORY}")
+			get_filename_component(_obs_runtime_parent
+				"${FAITHFULFRAME_OBS_RUNTIME_DIRECTORY}" DIRECTORY)
+			list(APPEND _faithfulframe_windows_runtime_dirs "${_obs_runtime_parent}")
 		endif()
 		foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
 			list(APPEND _faithfulframe_windows_runtime_dirs
@@ -445,7 +448,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 					"PATH=path_list_prepend:${_runtime_directory}")
 			endif()
 		endforeach()
-			set_tests_properties(${FAITHFULFRAME_SESSION_REPLAY_TESTS} PROPERTIES
+		set_tests_properties(${FAITHFULFRAME_SESSION_REPLAY_TESTS} PROPERTIES
 			ENVIRONMENT_MODIFICATION "${_faithfulframe_windows_path_modifications}")
 		else()
 			string(REPLACE ";" "\\;" _faithfulframe_existing_path "$ENV{PATH}")
