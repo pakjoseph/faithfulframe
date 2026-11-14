@@ -357,6 +357,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOME: ${{ runner.temp }}/faithfulframe-obs-home
+          # OBS resolves its macOS Application Support path through Foundation,
+          # which does not follow HOME alone when the account home is available.
+          # Keep OBS and onsdriver on the same isolated per-job profile.
+          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home
         with:
           obs-plugins: package/*.zip
           obs-architecture: ${{ matrix.arch }}
@@ -368,6 +372,7 @@ jobs:
         timeout-minutes: 5
         env:
           HOME: ${{ runner.temp }}/faithfulframe-obs-home
+          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home
         run: python -m unittest discover test-onsdriver/
 
       - name: 'Upload Apple Silicon OBS smoke logs'
