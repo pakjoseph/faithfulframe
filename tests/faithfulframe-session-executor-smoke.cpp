@@ -1102,6 +1102,47 @@ bool control_work_is_admitted_during_detector_backlog(const ff_session_config &c
 			     static_cast<unsigned long long>(completed_diagnostics.rejected_work));
 	return passed;
 }
+
+bool reaper_shutdown_waits_for_unretired_workers(const ff_session_config &config, const ff_generations &generations)
+{
+	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
+		return false;
+	faithfulframe_teardown_instance_created();
+	auto executor = std::make_shared<faithfulframe_session_executor>(config, ff_identity{153, 253}, generations);
+	ff_snapshot snapshot{};
+	if (!executor->worker_available() ||
+	    !await_snapshot(
+		    *executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, snapshot)) {
+		executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+		if (!faithfulframe_retire_session_executor(executor, true) && executor)
+			executor->shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+		executor.reset();
+		faithfulframe_teardown_begin_module_unload();
+		faithfulframe_teardown_instance_destroyed();
+		return false;
+	}
+	executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+	std::weak_ptr<faithfulframe_session_executor> weak = executor;
+	faithfulframe_teardown_begin_module_unload();
+	std::atomic<bool> destroy_returned{false};
+	std::thread destroy_thread([&] {
+		faithfulframe_teardown_instance_destroyed();
+		destroy_returned.store(true, std::memory_order_release);
+	});
+	const auto waiting_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (!faithfulframe_test_reaper_waiting_for_workers() && std::chrono::steady_clock::now() < waiting_deadline)
+		std::this_thread::yield();
+	const bool shutdown_waited_for_worker = faithfulframe_test_reaper_waiting_for_workers() != 0;
+	const bool retirement_accepted = shutdown_waited_for_worker && retire_executor_when_available(executor);
+	if (executor) {
+		// Keep the smoke process clean if a regression closes the reaper early.
+		executor->shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+		executor.reset();
+	}
+	destroy_thread.join();
+	return shutdown_waited_for_worker && retirement_accepted && !executor && destroy_returned.load() &&
+	       weak.expired() && faithfulframe_teardown_register_instance() == 0;
+}
 } // namespace
 
 int run_smoke()
@@ -2055,6 +2096,8 @@ int run_smoke()
 	faithfulframe_teardown_begin_module_unload();
 	if (faithfulframe_teardown_register_instance() != 0)
 		return 109;
+	if (!reaper_shutdown_waits_for_unretired_workers(config, generations))
+		return 124;
 	return 0;
 }
 

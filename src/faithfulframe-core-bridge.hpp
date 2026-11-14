@@ -195,6 +195,10 @@ private:
 	// off without consulting a global mutex, and unload cannot reclaim the
 	// reaper while an adapter still owns an executor.
 	const std::shared_ptr<faithfulframe_executor_reaper> reaper;
+	// Prevent the module reaper from closing while this worker still needs its
+	// join queue, even if source-instance teardown reaches the shutdown barrier
+	// before the worker's retirement task is enqueued.
+	bool reaper_worker_reserved = false;
 	std::array<work_item, max_queued_work + 1> queue{};
 	size_t queue_head = 0;
 	size_t queue_size = 0;
@@ -270,6 +274,10 @@ extern "C" void faithfulframe_test_set_reaper_queue_lock_hook(void (*hook)(void 
 #endif
 #ifdef FAITHFULFRAME_TEST_REAPER_WAIT_HOOK
 extern "C" void faithfulframe_test_set_reaper_wait_hook(void (*hook)(void *), void *context);
+#endif
+
+#ifdef FAITHFULFRAME_TEST_REAPER_SHUTDOWN_HOOK
+extern "C" int faithfulframe_test_reaper_waiting_for_workers(void);
 #endif
 #ifdef FAITHFULFRAME_TEST_SESSION_WORK_HOOK
 extern "C" void faithfulframe_test_set_session_work_hook(void (*hook)(void *), void *context);

@@ -68,6 +68,17 @@ void faithfulframe_test_run_reaper_wait_hook()
 } // namespace
 #endif
 
+#ifdef FAITHFULFRAME_TEST_REAPER_SHUTDOWN_HOOK
+namespace {
+std::atomic<bool> faithfulframe_test_reaper_waiting_for_workers_flag{false};
+} // namespace
+
+extern "C" int faithfulframe_test_reaper_waiting_for_workers(void)
+{
+	return faithfulframe_test_reaper_waiting_for_workers_flag.load(std::memory_order_acquire) ? 1 : 0;
+}
+#endif
+
 #ifdef FAITHFULFRAME_TEST_REAPER_JOIN_HOOK
 namespace {
 std::mutex faithfulframe_test_join_hook_mutex;
@@ -202,6 +213,9 @@ ff_result faithfulframe_core_bridge::lifecycle(uint64_t monotonic_ms, const ff_l
 
 static_assert(std::atomic<uint64_t>::is_always_lock_free, "OBS render snapshots require lock-free 64-bit atomics");
 
+static bool faithfulframe_reserve_reaper_worker(const std::shared_ptr<faithfulframe_executor_reaper> &reaper);
+static void faithfulframe_release_reaper_worker(const std::shared_ptr<faithfulframe_executor_reaper> &reaper);
+
 bool faithfulframe_next_lifecycle_generations(uint32_t kind, const ff_generations &current, ff_generations &next)
 {
 	next = current;
@@ -216,19 +230,26 @@ faithfulframe_session_executor::faithfulframe_session_executor(const ff_session_
 	  initial_generations(generations),
 	  reaper(faithfulframe_acquire_executor_reaper())
 {
-	if (!reaper)
+	if (!reaper || !faithfulframe_reserve_reaper_worker(reaper))
 		return;
+	reaper_worker_reserved = true;
 	worker_started.store(true, std::memory_order_release);
 	try {
 		worker = std::thread(&faithfulframe_session_executor::run, this);
 	} catch (...) {
 		worker_started.store(false, std::memory_order_release);
+		reaper_worker_reserved = false;
+		faithfulframe_release_reaper_worker(reaper);
 	}
 }
 
 faithfulframe_session_executor::~faithfulframe_session_executor()
 {
 	shutdown();
+	if (reaper_worker_reserved) {
+		reaper_worker_reserved = false;
+		faithfulframe_release_reaper_worker(reaper);
+	}
 }
 
 bool faithfulframe_session_executor::enqueue_tick(uint64_t monotonic_ms)
@@ -469,10 +490,19 @@ void faithfulframe_session_executor::shutdown(uint32_t terminal_lifecycle_kind, 
 
 void faithfulframe_session_executor::join()
 {
-	std::lock_guard<std::mutex> shutdown_lock(shutdown_mutex);
-	if (worker.joinable())
-		worker.join();
-	worker_started.store(false, std::memory_order_release);
+	bool release_reaper_reservation = false;
+	{
+		std::lock_guard<std::mutex> shutdown_lock(shutdown_mutex);
+		if (worker.joinable())
+			worker.join();
+		worker_started.store(false, std::memory_order_release);
+		if (reaper_worker_reserved) {
+			reaper_worker_reserved = false;
+			release_reaper_reservation = true;
+		}
+	}
+	if (release_reaper_reservation)
+		faithfulframe_release_reaper_worker(reaper);
 }
 
 class faithfulframe_executor_reaper {
@@ -489,6 +519,27 @@ public:
 	~faithfulframe_executor_reaper() { shutdown(); }
 
 	bool available() const { return accepting.load(std::memory_order_acquire); }
+
+	bool reserve_worker()
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		if (!accepting.load(std::memory_order_acquire) || stopping)
+			return false;
+		if (active_executor_workers == std::numeric_limits<size_t>::max())
+			return false;
+		++active_executor_workers;
+		return true;
+	}
+
+	void release_worker()
+	{
+		{
+			std::lock_guard<std::mutex> lock(mutex);
+			if (active_executor_workers > 0)
+				--active_executor_workers;
+		}
+		condition.notify_all();
+	}
 
 	bool enqueue(const std::shared_ptr<faithfulframe_session_executor> &executor, bool wait_for_lock = false)
 	{
@@ -555,7 +606,18 @@ public:
 	{
 		std::lock_guard<std::mutex> shutdown_lock(shutdown_mutex);
 		{
-			std::lock_guard<std::mutex> lock(mutex);
+			std::unique_lock<std::mutex> lock(mutex);
+			if (active_executor_workers != 0) {
+#ifdef FAITHFULFRAME_TEST_REAPER_SHUTDOWN_HOOK
+				faithfulframe_test_reaper_waiting_for_workers_flag.store(true,
+											 std::memory_order_release);
+#endif
+				condition.wait(lock, [this] { return active_executor_workers == 0; });
+#ifdef FAITHFULFRAME_TEST_REAPER_SHUTDOWN_HOOK
+				faithfulframe_test_reaper_waiting_for_workers_flag.store(false,
+											 std::memory_order_release);
+#endif
+			}
 			accepting.store(false, std::memory_order_release);
 			stopping = true;
 		}
@@ -635,9 +697,21 @@ private:
 	faithfulframe_reap_task *head = nullptr;
 	faithfulframe_reap_task *tail = nullptr;
 	bool stopping = false;
+	size_t active_executor_workers = 0;
 	std::atomic<bool> accepting{false};
 	std::thread worker;
 };
+
+static bool faithfulframe_reserve_reaper_worker(const std::shared_ptr<faithfulframe_executor_reaper> &reaper)
+{
+	return reaper && reaper->reserve_worker();
+}
+
+static void faithfulframe_release_reaper_worker(const std::shared_ptr<faithfulframe_executor_reaper> &reaper)
+{
+	if (reaper)
+		reaper->release_worker();
+}
 
 namespace {
 std::mutex faithfulframe_reaper_owner_mutex;

@@ -220,6 +220,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	target_compile_definitions(faithfulframe-session-executor-smoke PRIVATE
 		FAITHFULFRAME_TEST_REAPER_JOIN_HOOK=1 FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK=1
 		FAITHFULFRAME_TEST_REAPER_QUEUE_LOCK_HOOK=1 FAITHFULFRAME_TEST_REAPER_WAIT_HOOK=1
+		FAITHFULFRAME_TEST_REAPER_SHUTDOWN_HOOK=1
 		FAITHFULFRAME_TEST_SESSION_WORK_HOOK=1)
 	add_executable(faithfulframe-detector-worker-smoke
 		tests/faithfulframe-detector-worker-smoke.cpp src/face-detector-base.cpp)
