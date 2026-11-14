@@ -71,7 +71,12 @@ class VideoReplayTests(unittest.TestCase):
                 ffmpeg_bin="ffmpeg",
                 fps=5,
                 max_width=1920,
+                max_height=1080,
                 csv=Path(sys.executable),
+                trace=None,
+                session_policy=False,
+                session_replay_bin="faithfulframe-offline-session-replay",
+                operator_select_first_candidate_at_ms=None,
             )
             run = Mock()
             with patch.object(video_replay, "parse_args", return_value=args), patch.object(
@@ -108,6 +113,14 @@ class VideoReplayTests(unittest.TestCase):
                 ["--video", "input.mp4", "--model", "model.dat", "--max-height", "79"]
             )
 
+    def test_cli_uses_production_like_session_sampling_rate_by_default(self):
+        detector = video_replay.parse_args(["--video", "input.mp4", "--model", "model.dat"])
+        session = video_replay.parse_args(
+            ["--video", "input.mp4", "--model", "model.dat", "--session-policy"]
+        )
+        self.assertEqual(detector.fps, 5)
+        self.assertEqual(session.fps, 30)
+
     def test_replay_command_passes_stream_mode_fps_and_optional_csv(self):
         command = video_replay.replay_command("replay", Path("model.dat"), 5, Path("results.csv"))
         self.assertEqual(
@@ -118,6 +131,53 @@ class VideoReplayTests(unittest.TestCase):
             video_replay.replay_command("replay", Path("model.dat"), 5, None)[-3:],
             ["--ppm-stdin", "--fps", "5"],
         )
+
+    def test_session_replay_command_passes_dimensions_trace_and_explicit_selection(self):
+        command = video_replay.session_replay_command(
+            "session-replay", Path("model.dat"), 7, Path("trace.jsonl"), 1280, 720, 1400
+        )
+        self.assertEqual(
+            command,
+            [
+                "session-replay",
+                "--model",
+                "model.dat",
+                "--ppm-stdin",
+                "--fps",
+                "7",
+                "--output-width",
+                "1280",
+                "--output-height",
+                "720",
+                "--trace",
+                "trace.jsonl",
+                "--operator-select-first-candidate-at-ms",
+                "1400",
+            ],
+        )
+
+    def test_cli_requires_session_mode_for_operator_selection_and_trace(self):
+        common = ["--video", "input.mp4", "--model", "model.dat"]
+        for extra in (
+            ["--operator-select-first-candidate-at-ms", "0"],
+            ["--trace", "trace.jsonl"],
+        ):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                video_replay.parse_args(common + extra)
+
+    def test_cli_rejects_detector_csv_in_session_mode(self):
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            video_replay.parse_args(
+                [
+                    "--video",
+                    "input.mp4",
+                    "--model",
+                    "model.dat",
+                    "--session-policy",
+                    "--csv",
+                    "detector.csv",
+                ]
+            )
 
     def test_pipeline_connects_and_closes_parent_pipe_then_waits_for_both(self):
         ffmpeg = FakeProcess()
@@ -139,6 +199,29 @@ class VideoReplayTests(unittest.TestCase):
         self.assertTrue(ffmpeg.stdout.closed)
         self.assertTrue(replay.waited)
         self.assertTrue(ffmpeg.waited)
+
+    def test_session_policy_pipeline_selects_policy_replay_binary(self):
+        ffmpeg = FakeProcess()
+        replay = FakeProcess()
+        popen = Mock(side_effect=[ffmpeg, replay])
+        status = video_replay.run_pipeline(
+            ffmpeg_bin="ffmpeg",
+            video=Path("input.mp4"),
+            replay_bin="detector-replay",
+            model=Path("model.dat"),
+            fps=5,
+            max_width=1920,
+            csv=None,
+            session_policy=True,
+            session_replay_bin="session-replay",
+            trace=Path("trace.jsonl"),
+            operator_select_first_candidate_at_ms=3000,
+            popen=popen,
+        )
+        self.assertEqual(status, 0)
+        session_command = popen.call_args_list[1].args[0]
+        self.assertEqual(session_command[0], "session-replay")
+        self.assertIn("--operator-select-first-candidate-at-ms", session_command)
 
     def test_replay_failure_stops_ffmpeg_and_preserves_failure_status(self):
         ffmpeg = FakeProcess()
