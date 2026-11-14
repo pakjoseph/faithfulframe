@@ -1171,7 +1171,9 @@ void enqueue_chained_cleanup(void *context)
 		state->condition.notify_all();
 		state->condition.wait(lock, [state] { return state->release_first; });
 	}
-	const bool accepted = faithfulframe_defer_reap_task(&state->second, complete_chained_cleanup, state);
+	// The callback is running on the reaper thread; use the controlled blocking
+	// enqueue path so this test exercises lifecycle acceptance, not try-lock timing.
+	const bool accepted = faithfulframe_defer_reap_task(&state->second, complete_chained_cleanup, state, true);
 	state->second_accepted.store(accepted, std::memory_order_release);
 	if (accepted)
 		faithfulframe_activate_reap_task(&state->second);
