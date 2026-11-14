@@ -19,7 +19,6 @@
 #include <QTimer>
 #include <QSignalBlocker>
 #include <QPointer>
-#include <QWheelEvent>
 #include <QVariantMap>
 #include <QDateTime>
 #include <QFileDialog>
@@ -31,6 +30,7 @@
 #include "face-tracker-dock.hpp"
 #include "face-tracker-widget.hpp"
 #include "face-tracker-dock-internal.hpp"
+#include "faithfulframe-no-wheel-combo-box.hpp"
 #include "faithfulframe-performance-spool.hpp"
 #include "faithfulframe-source-identity.hpp"
 #ifdef ENABLE_RUST_CORE_BRIDGE
@@ -45,14 +45,6 @@
 
 static bool dock_frontend_shutdown_started = false;
 static bool dock_frontend_closing_docks = false;
-
-class FaithfulFrameNoWheelComboBox final : public QComboBox {
-public:
-	using QComboBox::QComboBox;
-
-protected:
-	void wheelEvent(QWheelEvent *event) override { event->ignore(); }
-};
 
 void FTDock::closeEvent(QCloseEvent *event)
 {
@@ -911,7 +903,6 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	targetSelector->setAccessibleName("Camera source with FaithfulFrame tracking filter");
 	targetSelector->setAccessibleDescription(
 		"Use Tab or click to focus this list, then use the arrow keys to choose a camera. Scrolling over the list does not change the selection.");
-	targetSelector->setFocusPolicy(Qt::StrongFocus);
 	init_target_selector(targetSelector);
 	mainLayout->addWidget(targetSelector);
 	connect(targetSelector, &QComboBox::currentTextChanged, this, &FTDock::targetSelectorChanged);
@@ -965,7 +956,6 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	candidateSelector->setAccessibleDescription(
 		"Use Tab or click to focus this list, then use the arrow keys to highlight a detected face. "
 		"Scrolling over the list does not change the selection.");
-	candidateSelector->setFocusPolicy(Qt::StrongFocus);
 	mainLayout->addWidget(candidateSelector);
 	selectCandidateButton = new QPushButton("Select Speaker", this);
 	selectCandidateButton->setAccessibleName("Select the highlighted face as the speaker");
