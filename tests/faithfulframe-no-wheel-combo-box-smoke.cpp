@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QProxyStyle>
+#include <cstdio>
 
 class WheelEnabledStyle final : public QProxyStyle {
 public:
@@ -34,13 +35,18 @@ int main(int argc, char **argv)
 	application.processEvents();
 
 	if (combo.focusPolicy() != Qt::StrongFocus ||
-	    style.styleHint(QStyle::SH_ComboBox_AllowWheelScrolling, nullptr, &combo) != 1 || !send_wheel(combo))
+	    style.styleHint(QStyle::SH_ComboBox_AllowWheelScrolling, nullptr, &combo) != 1 || !send_wheel(combo)) {
+		std::fprintf(stderr, "wheel input changed an unfocused tracking selector or was not ignored\n");
 		return 1;
+	}
 
 	combo.setFocus(Qt::OtherFocusReason);
 	application.processEvents();
-	if (!combo.hasFocus() || !send_wheel(combo))
+	if (!combo.hasFocus() || !send_wheel(combo)) {
+		std::fprintf(stderr,
+			     "wheel input changed a focused tracking selector or the selector did not take focus\n");
 		return 2;
+	}
 
 	return 0;
 }
