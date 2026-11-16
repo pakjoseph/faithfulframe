@@ -1224,8 +1224,15 @@ bool reaper_drains_chained_cleanup_before_shutdown()
 }
 } // namespace
 
+static void trace_session_smoke_checkpoint(const char *name)
+{
+	std::fprintf(stderr, "session executor smoke checkpoint: %s\n", name);
+	std::fflush(stderr);
+}
+
 int run_smoke()
 {
+	trace_session_smoke_checkpoint("snapshot ABI and reaper startup");
 	if (!snapshot_words_clear_ffi_padding())
 		return 119;
 	if (faithfulframe_teardown_register_instance() != 0)
@@ -1236,21 +1243,28 @@ int run_smoke()
 		return 115;
 	const ff_session_config config{5000, 500,  8,     3840,  2160,  1920,  1080, 0.45f,
 				       1.0f, 4.0f, 0.25f, 0.08f, 0.08f, 0.05f, 0.25f};
+	trace_session_smoke_checkpoint("concurrent retirement handoffs");
 	if (!retirement_handoffs_are_concurrent(config, ff_generations{1, 1, 1, 1, 1}))
 		return 110;
+	trace_session_smoke_checkpoint("reaper queue lock handoff");
 	if (!reaper_handoff_does_not_wait_for_queue_lock(config, ff_generations{1, 1, 1, 1, 1}))
 		return 112;
+	trace_session_smoke_checkpoint("duplicate retirement handoff");
 	if (!duplicate_retirement_requests_enqueue_once(config, ff_generations{1, 1, 1, 1, 1}))
 		return 111;
+	trace_session_smoke_checkpoint("off-caller worker join");
 	if (!executor_worker_is_joined_off_the_retirement_caller(config, ff_generations{1, 1, 1, 1, 1}))
 		return 123;
+	trace_session_smoke_checkpoint("operator notice expiry");
 	if (!rejected_command_notice_expires_without_policy_change(config, ff_generations{1, 1, 1, 1, 1}))
 		return 117;
+	trace_session_smoke_checkpoint("control queue under detector backlog");
 	if (!control_work_is_admitted_during_detector_backlog(config, ff_generations{1, 1, 1, 1, 1}))
 		return 118;
 	if (faithfulframe_teardown_register_instance() != 1)
 		return 94;
 	faithfulframe_teardown_instance_created();
+	trace_session_smoke_checkpoint("repeated startup and source teardown");
 	// Repeated startup preserves live reservations, and beginning module unload
 	// must keep the reaper available until the source destroy callback hands off.
 	if (faithfulframe_executor_reaper_start() != 1)
@@ -1282,12 +1296,14 @@ int run_smoke()
 		return 87;
 	faithfulframe_teardown_instance_created();
 	faithfulframe_teardown_instance_created();
+	trace_session_smoke_checkpoint("configuration and snapshot races");
 	if (!configuration_revision_guard_is_race_safe())
 		return 23;
 	if (!snapshot_publication_is_consistent(config, ff_generations{1, 1, 1, 1, 1}))
 		return 93;
 	if (!retirement_queue_handles_concurrent_handoffs(config, ff_generations{1, 1, 1, 1, 1}))
 		return 91;
+	trace_session_smoke_checkpoint("basic serialized session events");
 	const ff_identity identity{101, 201};
 	const ff_generations generations{1, 1, 1, 1, 1};
 	faithfulframe_session_executor executor(config, identity, generations);
@@ -1385,6 +1401,7 @@ int run_smoke()
 	// Cross-thread ingress can acquire the queue mutex in a different order
 	// from timestamp sampling. Event time and snapshot publication must remain
 	// monotonic in the actual serialized work order.
+	trace_session_smoke_checkpoint("event timestamp ordering");
 	faithfulframe_session_executor ordered(config, ff_identity{103, 203}, generations);
 	ff_snapshot ordered_snapshot{};
 	if (!await_snapshot(
@@ -1414,6 +1431,7 @@ int run_smoke()
 	// Equal monotonic timestamps follow the queue's mutex-linearized FIFO
 	// insertion order. Freeze then Resume returns to Manual; reversing the
 	// order would leave the session Frozen.
+	trace_session_smoke_checkpoint("equal-time operator commands");
 	faithfulframe_session_executor equal_time(config, ff_identity{104, 204}, generations);
 	ff_snapshot equal_snapshot{};
 	if (!await_snapshot(
@@ -1454,6 +1472,7 @@ int run_smoke()
 	// One candidate batch can contain tracker results with different capture
 	// timestamps. Arrival-time ordering is shared, but each fresh face remains
 	// available for operator selection regardless of array order.
+	trace_session_smoke_checkpoint("multi-face candidate batch");
 	const ff_identity multi_identity{105, 205};
 	faithfulframe_session_executor multi_face(config, multi_identity, generations);
 	ff_snapshot multi_snapshot{};
@@ -1502,6 +1521,7 @@ int run_smoke()
 
 	// Teardown drops queued detector and operator work, then publishes only the
 	// worker-owned destruction transition.
+	trace_session_smoke_checkpoint("queued work teardown");
 	faithfulframe_session_executor queued(config, ff_identity{102, 202}, generations);
 	ff_snapshot queued_snapshot{};
 	const ff_command queued_enable{FF_COMMAND_ENABLE_AUTO_FOLLOW, ff_identity{102, 202}, 0, generations, 0, 0};
@@ -1537,6 +1557,7 @@ int run_smoke()
 	// removes its published handle. Teardown begins between command creation
 	// and submission; the callback must be able to finish without touching a
 	// destroyed executor, and the closed executor must reject that command.
+	trace_session_smoke_checkpoint("callback versus teardown race");
 	for (int attempt = 0; attempt < 10; ++attempt) {
 		auto owned = std::make_shared<faithfulframe_session_executor>(
 			config,
@@ -1602,6 +1623,7 @@ int run_smoke()
 	// A late detector result must not reacquire a target after the stale-lock
 	// grace deadline, even when the executor has not received a Tick at that
 	// deadline. This exercises timer ordering through the C++/Rust bridge.
+	trace_session_smoke_checkpoint("late detector result after deadline");
 	faithfulframe_session_executor deadline_executor(config, ff_identity{401, 501}, generations);
 	ff_snapshot deadline_snapshot{};
 	if (!await_snapshot(
@@ -1650,6 +1672,7 @@ int run_smoke()
 	// Exercise every C++ lifecycle translation against the Rust policy. A
 	// generation-table drift would otherwise leave an adapter transition
 	// pending after Rust rejects the event.
+	trace_session_smoke_checkpoint("lifecycle generation matrix");
 	struct lifecycle_case
 	{
 		uint32_t kind;
@@ -1723,6 +1746,7 @@ int run_smoke()
 	// Scene deactivation must invalidate a previously locked target. A click
 	// captured before deactivation is delivered afterward and must be a strict
 	// no-op; activation requires a fresh explicit selection.
+	trace_session_smoke_checkpoint("scene change and stale selection");
 	const ff_identity scene_identity{800, 900};
 	faithfulframe_session_executor scene_executor(config, scene_identity, initial_generations);
 	ff_snapshot scene_snapshot{};
@@ -1894,6 +1918,7 @@ int run_smoke()
 		return 63;
 	// OBS may destroy plugin sources after obs_module_unload returns. Unload
 	// keeps the reaper alive while registered source instances remain.
+	trace_session_smoke_checkpoint("module unload with live source");
 	faithfulframe_teardown_begin_module_unload();
 	if (faithfulframe_teardown_register_instance() != 0)
 		return 88;
@@ -2172,6 +2197,7 @@ int run_smoke()
 	}
 	// Module unload remains the controlled barrier that closes and joins the
 	// reaper after all source destruction callbacks have finished.
+	trace_session_smoke_checkpoint("final reaper shutdown barriers");
 	faithfulframe_teardown_begin_module_unload();
 	if (faithfulframe_teardown_register_instance() != 0)
 		return 109;
