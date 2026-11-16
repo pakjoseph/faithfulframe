@@ -33,6 +33,7 @@ public:
 	class FTWidget *ftWidget;
 	class QCheckBox *notrackButton;
 	class QLabel *safeStatusLabel;
+	class QLabel *safeStatusIcon;
 	class QToolButton *performanceToggle;
 	class QLabel *performanceLabel;
 	class QLineEdit *performanceRunNotes;

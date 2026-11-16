@@ -8,11 +8,15 @@
 #include <QAction>
 #include <QMainWindow>
 #include <QDockWidget>
+#include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QComboBox>
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QLabel>
+#include <QIcon>
+#include <QStyle>
+#include <QSize>
 #include <QPushButton>
 #include <QToolButton>
 #include <QRectF>
@@ -688,6 +692,52 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 	}
 }
 
+static QStyle::StandardPixmap safe_state_icon(const faithfulframe_safe_preview &preview)
+{
+	if (preview.configuration_issue != faithfulframe::safe_adapter_availability_issue::none ||
+	    preview.session_closed || !preview.available || !preview.signal_connected || !preview.target_active ||
+	    preview.reason == FF_REASON_FRAMING_FAILURE)
+		return QStyle::SP_MessageBoxWarning;
+
+	switch (preview.state) {
+	case FF_STATE_FROZEN:
+		return QStyle::SP_MediaPause;
+	case FF_STATE_MANUAL:
+		return QStyle::SP_MediaStop;
+	case FF_STATE_SEARCHING:
+		return QStyle::SP_BrowserReload;
+	case FF_STATE_LOCKED:
+		return QStyle::SP_DialogApplyButton;
+	case FF_STATE_LOST:
+		return QStyle::SP_MessageBoxWarning;
+	default:
+		return QStyle::SP_MessageBoxInformation;
+	}
+}
+
+static QString safe_state_icon_accessible_name(const faithfulframe_safe_preview &preview)
+{
+	if (preview.configuration_issue != faithfulframe::safe_adapter_availability_issue::none ||
+	    preview.session_closed || !preview.available || !preview.signal_connected || !preview.target_active ||
+	    preview.reason == FF_REASON_FRAMING_FAILURE)
+		return "Tracking status: attention required";
+
+	switch (preview.state) {
+	case FF_STATE_FROZEN:
+		return "Tracking state: Frozen";
+	case FF_STATE_MANUAL:
+		return "Tracking state: Manual";
+	case FF_STATE_SEARCHING:
+		return "Tracking state: Searching";
+	case FF_STATE_LOCKED:
+		return "Tracking state: Locked";
+	case FF_STATE_LOST:
+		return "Tracking state: Lost";
+	default:
+		return "Tracking status: unavailable";
+	}
+}
+
 static double safe_preview_zoom(const faithfulframe_safe_preview &preview)
 {
 	double zoom = 1.0;
@@ -907,10 +957,19 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	mainLayout->addWidget(targetSelector);
 	connect(targetSelector, &QComboBox::currentTextChanged, this, &FTDock::targetSelectorChanged);
 
+	auto *safeStatusLayout = new QHBoxLayout();
+	safeStatusLayout->setContentsMargins(0, 0, 0, 0);
+	safeStatusLayout->setSpacing(sanctuary::style::space_2);
+	safeStatusIcon = new QLabel(this);
+	safeStatusIcon->setFixedSize(20, 20);
+	safeStatusIcon->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+	safeStatusIcon->setToolTip("Tracking state icon; read the adjacent status text for the required action");
+	safeStatusLayout->addWidget(safeStatusIcon, 0, Qt::AlignTop);
 	safeStatusLabel = new QLabel(this);
 	safeStatusLabel->setWordWrap(true);
 	safeStatusLabel->setAccessibleName("FaithfulFrame tracking status");
-	mainLayout->addWidget(safeStatusLabel);
+	safeStatusLayout->addWidget(safeStatusLabel, 1);
+	mainLayout->addLayout(safeStatusLayout);
 
 	ftWidget = new FTWidget(data, this);
 	ftWidget->setAccessibleName("Live camera preview");
@@ -1344,6 +1403,7 @@ void FTDock::updateState()
 	manualOverrideButton->setVisible(safe_mode);
 	candidateSelector->setVisible(safe_mode);
 	selectCandidateButton->setVisible(safe_mode);
+	safeStatusIcon->setVisible(safe_mode);
 	safeStatusLabel->setVisible(safe_mode);
 	performanceToggle->setVisible(safe_mode);
 	performanceLabel->setVisible(safe_mode && performanceToggle->isChecked());
@@ -1355,6 +1415,10 @@ void FTDock::updateState()
 	enableButton->setVisible(!safe_mode);
 	notrackButton->setVisible(true);
 	if (safe_mode) {
+		safeStatusIcon->setPixmap(style()->standardIcon(safe_state_icon(safe_preview)).pixmap(QSize(16, 16)));
+		safeStatusIcon->setAccessibleName(safe_state_icon_accessible_name(safe_preview));
+		safeStatusIcon->setAccessibleDescription(
+			"Current tracking state. The adjacent status text explains the state and the next action.");
 		notrackButton->setText("Show full camera preview");
 		notrackButton->setAccessibleName("Show full camera preview for selecting another speaker");
 		notrackButton->setToolTip(

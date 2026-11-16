@@ -459,6 +459,8 @@ class PluginLoadTest(obstest.OBSTest):
             self.assertIn('scrolling over', source_selector.get('accessibleDescription', '').lower())
             self._invoke_ui_widget(ui, 'accessibleName', source_selector_name, 'setCurrentIndex', arg1=1)
             self._wait_for_ui_status(ui, f'Tracking source: {camera_name}')
+            status_icon = self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+            self.assertIn('adjacent status text', status_icon.get('accessibleDescription', '').lower())
             self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
 
             # The face list and selection control remain keyboard-addressable
@@ -476,13 +478,16 @@ class PluginLoadTest(obstest.OBSTest):
 
             self._invoke_ui_widget(ui, 'accessibleName', 'Enable automatic speaker following', 'click')
             self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
 
             self._invoke_ui_widget(ui, 'accessibleName', 'Freeze automatic tracking', 'click')
             self._wait_for_ui_status(ui, 'Frozen; press Resume when ready')
+            self._wait_for_ui_widget(ui, 'Tracking state: Frozen')
             self._wait_for_ui_widget(ui, 'Resume automatic tracking', enabled=True)
 
             self._invoke_ui_widget(ui, 'accessibleName', 'Resume automatic tracking', 'click')
             self._wait_for_ui_status(ui, 'Manual; select a face before following')
+            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
             self._invoke_ui_widget(ui, 'accessibleName', 'Enable automatic speaker following', 'click')
             self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
 
