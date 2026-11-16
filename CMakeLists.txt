@@ -785,3 +785,9 @@ if (_faithfulframe_registered_tests)
 	set_tests_properties(${_faithfulframe_registered_tests} PROPERTIES TIMEOUT 120)
 endif()
 unset(_faithfulframe_registered_tests)
+
+# A stalled session teardown should fail quickly and retain the executor's
+# flushed checkpoints instead of occupying a matrix job for the generic limit.
+if (TEST faithfulframe-session-executor-smoke)
+	set_tests_properties(faithfulframe-session-executor-smoke PROPERTIES TIMEOUT 20)
+endif()

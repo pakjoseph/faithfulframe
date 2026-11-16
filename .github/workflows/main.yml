@@ -87,6 +87,9 @@ jobs:
           python3 -m unittest tests/test_verify_package_assets.py
           cd build
           make -j4
+          if [[ "${{ matrix.ubuntu }}" == 'ubuntu-24.04' ]]; then
+            ctest --repeat until-fail:10 --output-on-failure -R '^faithfulframe-session-executor-smoke$'
+          fi
           ctest --output-on-failure
           make package
           deb_file=$(find . -name '*.deb' -print -quit)
