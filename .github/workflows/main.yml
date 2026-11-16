@@ -426,7 +426,8 @@ jobs:
           - obs: 30
             arch: 'x64'
             runner: 'windows-2022'
-            obs-onsdriver: '< 33'
+            # Keep the runtime test on OBS 30; <33 drifts to newer OBS releases.
+            obs-onsdriver: '< 31'
             # onsdriver's OBS 30 setup crashes when --size calls get_profile()
             # before OBS has populated General/LastVersion. This module-load
             # job does not need an explicit canvas size.
