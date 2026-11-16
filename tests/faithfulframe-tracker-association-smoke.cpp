@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstdio>
+#include <cmath>
 #include <limits>
 
 static void check_impl(bool condition, int line)
@@ -22,6 +23,13 @@ int main()
 	check(!ff_tracker_score_is_usable(std::numeric_limits<float>::infinity()));
 	check(!ff_tracker_score_is_usable(-std::numeric_limits<float>::infinity()));
 	check(!ff_tracker_score_is_usable(std::numeric_limits<float>::quiet_NaN()));
+	const float decayed_score = ff_tracker_confidence_after_psr(1.0f, 10.0, 20.0, 10.0, 0.1);
+	check(std::abs(decayed_score - (1.0f / 1.2f)) < 1e-6f);
+	check(ff_tracker_confidence_after_psr(1.0f, 0.0, 20.0, 10.0, 0.1) == 0.0f);
+	check(ff_tracker_confidence_after_psr(1.0f, -1.0, 20.0, 10.0, 0.1) == 0.0f);
+	check(ff_tracker_confidence_after_psr(1.0f, 10.0, 20.0, 0.0, 0.1) == 0.0f);
+	check(ff_tracker_confidence_after_psr(1.0f, std::numeric_limits<double>::infinity(), 20.0, 10.0, 0.1) == 0.0f);
+	check(ff_tracker_confidence_after_psr(0.0f, 10.0, 20.0, 10.0, 0.1) == 0.0f);
 
 	const ff_tracker_box_i first{100, 100, 200, 220};
 	check(ff_tracker_boxes_match(first, first));

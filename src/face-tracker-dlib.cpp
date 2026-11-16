@@ -2,6 +2,7 @@
 #include "plugin-macros.generated.h"
 #include "texture-object.h"
 #include "face-tracker-dlib.h"
+#include "face-tracker-association.hpp"
 #include "faithfulframe-worker-log.hpp"
 
 #include <dlib/image_processing/scan_fhog_pyramid.h>
@@ -158,18 +159,21 @@ void face_tracker_dlib::track_main()
 			return;
 		}
 
-		float s = p->tracker->update(img);
-		if (s > p->pslr_max)
-			p->pslr_max = s;
-		if (s < p->pslr_min)
-			p->pslr_min = s;
+		const double psr = p->tracker->update(img);
+		if (std::isfinite(psr) && psr > 0.0) {
+			if (psr > p->pslr_max)
+				p->pslr_max = static_cast<float>(psr);
+			if (psr < p->pslr_min)
+				p->pslr_min = static_cast<float>(psr);
+		}
 		dlib::rectangle r = p->tracker->get_position();
 		p->rect.x0 = r.left() * tex->scale;
 		p->rect.y0 = r.top() * tex->scale;
 		p->rect.x1 = r.right() * tex->scale;
 		p->rect.y1 = r.bottom() * tex->scale;
-		s = p->pslr_max / p->pslr_min * ((ns - p->last_ns) * 1e-9f);
-		p->rect.score = (p->rect.score /*+ 0.0f*s */) / (1.0f + s);
+		const double elapsed_seconds = (ns - p->last_ns) * 1e-9;
+		p->rect.score =
+			ff_tracker_confidence_after_psr(p->rect.score, psr, p->pslr_max, p->pslr_min, elapsed_seconds);
 		p->n_track += 1;
 		observed = true;
 
