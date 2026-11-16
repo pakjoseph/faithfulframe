@@ -1330,6 +1330,62 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[derive(Debug, PartialEq)]
+    struct SessionFingerprint {
+        config: (Millis, Millis, Rect, usize),
+        identity: Identity,
+        generations: Generations,
+        state: State,
+        reason: Reason,
+        selected: Option<(CandidateHandle, ContinuityToken, u64, Millis, Rect)>,
+        latest: BTreeMap<CandidateHandle, Candidate>,
+        highest_candidate_handle: CandidateHandle,
+        candidate_observation_open: bool,
+        held_crop: Rect,
+        crop_action: CropAction,
+        loss_started_at: Option<Millis>,
+        loss_deadline: Option<Millis>,
+        status_version: u64,
+        observation_version: u64,
+        last_at: Millis,
+        closed: bool,
+    }
+
+    fn session_fingerprint(session: &TrackingSession) -> SessionFingerprint {
+        SessionFingerprint {
+            config: (
+                session.config.loss_grace_ms,
+                session.config.max_evidence_age_ms,
+                session.config.safe_wide,
+                session.config.max_candidates,
+            ),
+            identity: session.identity,
+            generations: session.generations,
+            state: session.state,
+            reason: session.reason,
+            selected: session.selected.map(|target| {
+                (
+                    target.handle,
+                    target.continuity,
+                    target.observation_version,
+                    target.last_seen,
+                    target.rect,
+                )
+            }),
+            latest: session.latest.clone(),
+            highest_candidate_handle: session.highest_candidate_handle,
+            candidate_observation_open: session.candidate_observation_open,
+            held_crop: session.held_crop,
+            crop_action: session.crop_action,
+            loss_started_at: session.loss_started_at,
+            loss_deadline: session.loss_deadline,
+            status_version: session.status_version,
+            observation_version: session.observation_version,
+            last_at: session.last_at,
+            closed: session.closed,
+        }
+    }
+
     #[test]
     fn explicit_selection_is_required_for_initial_lock() {
         let mut session = session();
@@ -1465,6 +1521,7 @@ mod tests {
     fn invalid_command_is_a_strict_no_op() {
         let mut session = session();
         let before = session.snapshot();
+        let before_private_state = session_fingerprint(&session);
         let after = send(&mut session, 1, Command::Resume);
         assert_eq!(
             after.command_result,
@@ -1473,6 +1530,122 @@ mod tests {
         assert_eq!(after.state, before.state);
         assert_eq!(after.crop, before.crop);
         assert_eq!(after.loss_deadline, before.loss_deadline);
+        assert_eq!(session_fingerprint(&session), before_private_state);
+    }
+
+    #[test]
+    fn rejected_commands_preserve_private_state_in_every_tracking_state() {
+        let mut frozen = session();
+        send(&mut frozen, 1, Command::Freeze);
+
+        let mut searching = session();
+        send(&mut searching, 1, Command::EnableAutoFollow);
+
+        let mut locked = session();
+        lock_test_target(&mut locked);
+
+        let mut lost = session();
+        lock_test_target(&mut lost);
+        lost.apply(Event::Tick { at: 13 });
+        lost.apply(Event::Tick { at: 113 });
+
+        let mut closed = session();
+        let initial = closed.snapshot();
+        closed.apply(Event::Lifecycle {
+            at: 1,
+            identity: initial.identity,
+            event: Lifecycle::ObsShutdown {
+                generations: generations_after(initial.generations, true, true, true, false, true),
+            },
+        });
+
+        let cases = [
+            ("manual", session(), 1, Command::Resume),
+            ("frozen", frozen, 2, Command::EnableAutoFollow),
+            ("searching", searching, 2, Command::Resume),
+            ("locked", locked, 4, Command::Resume),
+            ("lost", lost, 114, Command::Resume),
+            ("closed", closed, 2, Command::Freeze),
+        ];
+
+        for (name, mut session, at, command) in cases {
+            let before = session.snapshot();
+            let before_private_state = session_fingerprint(&session);
+
+            let after = send(&mut session, at, command);
+
+            assert!(
+                matches!(after.command_result, CommandResult::Rejected(_)),
+                "{name} command was unexpectedly accepted: {after:?}"
+            );
+            assert_policy_no_op(after, before);
+            assert_eq!(
+                session_fingerprint(&session),
+                before_private_state,
+                "rejected command mutated private state in {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_events_preserve_candidate_history_and_deadlines() {
+        let mut session = session();
+        let locked = lock_test_target(&mut session);
+
+        let mut recycled = candidate(10, 200, locked.observation_version + 1, 4);
+        recycled.generations = locked.generations;
+        let invalid_events = [
+            Event::Candidate {
+                at: 4,
+                candidate: recycled,
+            },
+            Event::CandidatesCleared {
+                at: 5,
+                identity: locked.identity,
+                generations: locked.generations,
+                observation_version: locked.observation_version,
+            },
+            Event::Lifecycle {
+                at: 6,
+                identity: Identity {
+                    source: locked.identity.source + 1,
+                    session: locked.identity.session,
+                },
+                event: Lifecycle::SceneInactive {
+                    generations: generations_after(
+                        locked.generations,
+                        false,
+                        true,
+                        false,
+                        false,
+                        true,
+                    ),
+                },
+            },
+            Event::Command {
+                at: 7,
+                envelope: CommandEnvelope {
+                    identity: locked.identity,
+                    status_version: locked.status_version,
+                    generations: locked.generations,
+                    command: Command::SelectCandidate {
+                        handle: 10,
+                        observation_version: locked.observation_version + 1,
+                    },
+                },
+            },
+        ];
+
+        for event in invalid_events {
+            let before = session.snapshot();
+            let before_private_state = session_fingerprint(&session);
+
+            let after = session.apply(event);
+
+            assert!(matches!(after.command_result, CommandResult::Rejected(_)));
+            assert_policy_no_op(after, before);
+            assert_eq!(session_fingerprint(&session), before_private_state);
+        }
     }
 
     #[test]
