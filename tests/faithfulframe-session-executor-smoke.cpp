@@ -14,6 +14,8 @@
 #include <thread>
 
 namespace {
+void trace_session_smoke_checkpoint(const char *name);
+
 struct reaper_join_test_gate
 {
 	std::mutex mutex;
@@ -1105,6 +1107,7 @@ bool control_work_is_admitted_during_detector_backlog(const ff_session_config &c
 
 bool reaper_shutdown_waits_for_unretired_workers(const ff_session_config &config, const ff_generations &generations)
 {
+	trace_session_smoke_checkpoint("unretired-worker shutdown: setup");
 	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
 		return false;
 	faithfulframe_teardown_instance_created();
@@ -1123,7 +1126,9 @@ bool reaper_shutdown_waits_for_unretired_workers(const ff_session_config &config
 	}
 	executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
 	std::weak_ptr<faithfulframe_session_executor> weak = executor;
+	trace_session_smoke_checkpoint("unretired-worker shutdown: unload request");
 	faithfulframe_teardown_begin_module_unload();
+	trace_session_smoke_checkpoint("unretired-worker shutdown: unload returned");
 	std::atomic<bool> destroy_returned{false};
 	std::thread destroy_thread([&] {
 		faithfulframe_teardown_instance_destroyed();
@@ -1133,13 +1138,16 @@ bool reaper_shutdown_waits_for_unretired_workers(const ff_session_config &config
 	while (!faithfulframe_test_reaper_shutdown_waiting() && std::chrono::steady_clock::now() < waiting_deadline)
 		std::this_thread::yield();
 	const bool shutdown_waited_for_worker = faithfulframe_test_reaper_shutdown_waiting() != 0;
+	trace_session_smoke_checkpoint("unretired-worker shutdown: retire executor");
 	const bool retirement_accepted = shutdown_waited_for_worker && retire_executor_when_available(executor);
 	if (executor) {
 		// Keep the smoke process clean if a regression closes the reaper early.
 		executor->shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
 		executor.reset();
 	}
+	trace_session_smoke_checkpoint("unretired-worker shutdown: join destroy callback");
 	destroy_thread.join();
+	trace_session_smoke_checkpoint("unretired-worker shutdown: destroy callback joined");
 	return shutdown_waited_for_worker && retirement_accepted && !executor && destroy_returned.load() &&
 	       weak.expired() && faithfulframe_teardown_register_instance() == 0;
 }
@@ -1182,6 +1190,7 @@ void enqueue_chained_cleanup(void *context)
 
 bool reaper_drains_chained_cleanup_before_shutdown()
 {
+	trace_session_smoke_checkpoint("chained cleanup shutdown: setup");
 	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
 		return false;
 	faithfulframe_teardown_instance_created();
@@ -1200,7 +1209,9 @@ bool reaper_drains_chained_cleanup_before_shutdown()
 		std::lock_guard<std::mutex> lock(state.mutex);
 		return state.first_entered;
 	}();
+	trace_session_smoke_checkpoint("chained cleanup shutdown: unload request");
 	faithfulframe_teardown_begin_module_unload();
+	trace_session_smoke_checkpoint("chained cleanup shutdown: unload returned");
 	std::atomic<bool> destroy_returned{false};
 	std::thread destroy_thread([&] {
 		faithfulframe_teardown_instance_destroyed();
@@ -1215,20 +1226,22 @@ bool reaper_drains_chained_cleanup_before_shutdown()
 		state.release_first = true;
 	}
 	state.condition.notify_all();
+	trace_session_smoke_checkpoint("chained cleanup shutdown: join destroy callback");
 	destroy_thread.join();
+	trace_session_smoke_checkpoint("chained cleanup shutdown: destroy callback joined");
 	return callback_entered && shutdown_waited_for_callback && destroy_returned.load(std::memory_order_acquire) &&
 	       state.first_completed.load(std::memory_order_acquire) &&
 	       state.second_accepted.load(std::memory_order_acquire) &&
 	       state.second_completed.load(std::memory_order_acquire) &&
 	       faithfulframe_teardown_register_instance() == 0;
 }
-} // namespace
 
-static void trace_session_smoke_checkpoint(const char *name)
+void trace_session_smoke_checkpoint(const char *name)
 {
 	std::fprintf(stderr, "session executor smoke checkpoint: %s\n", name);
 	std::fflush(stderr);
 }
+} // namespace
 
 int run_smoke()
 {
@@ -2199,10 +2212,13 @@ int run_smoke()
 	// reaper after all source destruction callbacks have finished.
 	trace_session_smoke_checkpoint("final reaper shutdown barriers");
 	faithfulframe_teardown_begin_module_unload();
+	trace_session_smoke_checkpoint("final module unload returned");
 	if (faithfulframe_teardown_register_instance() != 0)
 		return 109;
+	trace_session_smoke_checkpoint("unretired-worker shutdown test");
 	if (!reaper_shutdown_waits_for_unretired_workers(config, generations))
 		return 124;
+	trace_session_smoke_checkpoint("chained-cleanup shutdown test");
 	if (!reaper_drains_chained_cleanup_before_shutdown())
 		return 125;
 	return 0;
