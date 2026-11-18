@@ -2,6 +2,7 @@
 Test plugin is loaded
 '''
 
+import base64
 import glob
 import os
 import shutil
@@ -699,11 +700,29 @@ class PluginLoadTest(obstest.OBSTest):
                 media_state = getattr(media_status, 'media_state', None)
                 if media_state is None and isinstance(media_status, dict):
                     media_state = media_status.get('mediaState') or media_status.get('media_state')
+                screenshot_path = None
+                try:
+                    screenshot = client.send('GetSourceScreenshot', {
+                        'sourceName': camera_name,
+                        'imageFormat': 'png',
+                        'imageWidth': 320,
+                        'imageHeight': 360,
+                    }).image_data
+                    if screenshot:
+                        encoded = screenshot.partition(',')[2] or screenshot
+                        logsdir = os.environ.get('ONSDRIVER_LOGS', 'logs')
+                        os.makedirs(logsdir, exist_ok=True)
+                        screenshot_path = os.path.join(logsdir, f'{camera_name.replace(" ", "_")}.png')
+                        with open(screenshot_path, 'wb') as screenshot_file:
+                            screenshot_file.write(base64.b64decode(encoded))
+                except Exception as screenshot_error:
+                    screenshot_path = f'unavailable: {screenshot_error}'
                 self.fail(
                     f'{selection_error}\n'
                     f'Synthetic media state: {media_state!r}\n'
                     f'Tracking status widget: {status_widget!r}\n'
-                    f'Candidate list widget: {candidates_widget!r}'
+                    f'Candidate list widget: {candidates_widget!r}\n'
+                    f'Synthetic media screenshot: {screenshot_path!r}'
                 )
             self._invoke_ui_widget(ui, 'accessibleName', 'Detected face candidates', 'setCurrentIndex', arg1=1)
             self._invoke_ui_widget(ui, 'accessibleName', select_control, 'click')
