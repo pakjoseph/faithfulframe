@@ -1105,7 +1105,8 @@ bool control_work_is_admitted_during_detector_backlog(const ff_session_config &c
 	return passed;
 }
 
-bool reaper_shutdown_waits_for_unretired_workers(const ff_session_config &config, const ff_generations &generations)
+bool reaper_shutdown_does_not_wait_for_unretired_workers(const ff_session_config &config,
+							 const ff_generations &generations)
 {
 	trace_session_smoke_checkpoint("unretired-worker shutdown: setup");
 	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
@@ -1135,21 +1136,24 @@ bool reaper_shutdown_waits_for_unretired_workers(const ff_session_config &config
 		destroy_returned.store(true, std::memory_order_release);
 	});
 	const auto waiting_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-	while (!faithfulframe_test_reaper_shutdown_waiting() && std::chrono::steady_clock::now() < waiting_deadline)
+	while ((!faithfulframe_test_reaper_shutdown_pending() || !destroy_returned.load(std::memory_order_acquire)) &&
+	       std::chrono::steady_clock::now() < waiting_deadline)
 		std::this_thread::yield();
-	const bool shutdown_waited_for_worker = faithfulframe_test_reaper_shutdown_waiting() != 0;
-	trace_session_smoke_checkpoint("unretired-worker shutdown: retire executor");
-	const bool retirement_accepted = shutdown_waited_for_worker && retire_executor_when_available(executor);
+	const bool callback_returned_while_worker_unretired = destroy_returned.load(std::memory_order_acquire);
+	const bool shutdown_was_requested = faithfulframe_test_reaper_shutdown_pending() != 0;
+	trace_session_smoke_checkpoint("unretired-worker shutdown: retire executor after callback return");
+	const bool retirement_accepted = retire_executor_when_available(executor);
 	if (executor) {
 		// Keep the smoke process clean if a regression closes the reaper early.
 		executor->shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
 		executor.reset();
 	}
-	trace_session_smoke_checkpoint("unretired-worker shutdown: join destroy callback");
+	const auto reaped_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (!weak.expired() && std::chrono::steady_clock::now() < reaped_deadline)
+		std::this_thread::yield();
 	destroy_thread.join();
-	trace_session_smoke_checkpoint("unretired-worker shutdown: destroy callback joined");
-	return shutdown_waited_for_worker && retirement_accepted && !executor && destroy_returned.load() &&
-	       weak.expired() && faithfulframe_teardown_register_instance() == 0;
+	return shutdown_was_requested && callback_returned_while_worker_unretired && retirement_accepted && !executor &&
+	       destroy_returned.load() && weak.expired() && faithfulframe_teardown_register_instance() == 0;
 }
 
 struct chained_reaper_cleanup_context
@@ -1218,9 +1222,11 @@ bool reaper_drains_chained_cleanup_before_shutdown()
 		destroy_returned.store(true, std::memory_order_release);
 	});
 	const auto shutdown_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-	while (!faithfulframe_test_reaper_shutdown_waiting() && std::chrono::steady_clock::now() < shutdown_deadline)
+	while ((!faithfulframe_test_reaper_shutdown_pending() || !destroy_returned.load(std::memory_order_acquire)) &&
+	       std::chrono::steady_clock::now() < shutdown_deadline)
 		std::this_thread::yield();
-	const bool shutdown_waited_for_callback = faithfulframe_test_reaper_shutdown_waiting() != 0;
+	const bool shutdown_requested_while_callback_was_blocked = faithfulframe_test_reaper_shutdown_pending() != 0 &&
+								   destroy_returned.load(std::memory_order_acquire);
 	{
 		std::lock_guard<std::mutex> lock(state.mutex);
 		state.release_first = true;
@@ -1229,8 +1235,11 @@ bool reaper_drains_chained_cleanup_before_shutdown()
 	trace_session_smoke_checkpoint("chained cleanup shutdown: join destroy callback");
 	destroy_thread.join();
 	trace_session_smoke_checkpoint("chained cleanup shutdown: destroy callback joined");
-	return callback_entered && shutdown_waited_for_callback && destroy_returned.load(std::memory_order_acquire) &&
-	       state.first_completed.load(std::memory_order_acquire) &&
+	const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (faithfulframe_test_reaper_shutdown_pending() && std::chrono::steady_clock::now() < drain_deadline)
+		std::this_thread::yield();
+	return callback_entered && shutdown_requested_while_callback_was_blocked &&
+	       !faithfulframe_test_reaper_shutdown_pending() && state.first_completed.load(std::memory_order_acquire) &&
 	       state.second_accepted.load(std::memory_order_acquire) &&
 	       state.second_completed.load(std::memory_order_acquire) &&
 	       faithfulframe_teardown_register_instance() == 0;
@@ -2070,7 +2079,7 @@ int run_smoke()
 	if (!retire_executor_when_available(final_pending_executor) || final_pending_executor)
 		return 90;
 	faithfulframe_teardown_instance_destroyed();
-	if (!final_pending_weak.expired())
+	if (!await_expired(final_pending_weak))
 		return 72;
 	auto late_executor =
 		std::make_shared<faithfulframe_session_executor>(config, ff_identity{108, 208}, generations);
@@ -2123,10 +2132,10 @@ int run_smoke()
 		}
 		unload_destroy_condition.notify_all();
 	});
-	bool unload_destroy_returned_while_join_paused = false;
+	bool unload_destroy_returned_before_join_completed = false;
 	{
 		std::unique_lock<std::mutex> lock(unload_destroy_mutex);
-		unload_destroy_returned_while_join_paused =
+		unload_destroy_returned_before_join_completed =
 			unload_destroy_condition.wait_for(lock, std::chrono::milliseconds(250), [&] {
 				return unload_destroy_returned.load(std::memory_order_acquire);
 			});
@@ -2138,8 +2147,8 @@ int run_smoke()
 	unload_gate.condition.notify_all();
 	unload_destroy_thread.join();
 	faithfulframe_test_set_reaper_join_hook(nullptr, nullptr);
-	if (!unload_join_paused || unload_destroy_returned_while_join_paused ||
-	    !unload_destroy_returned.load(std::memory_order_acquire) || !in_flight_weak.expired() ||
+	if (!unload_join_paused || !unload_destroy_returned_before_join_completed ||
+	    !unload_destroy_returned.load(std::memory_order_acquire) || !await_expired(in_flight_weak) ||
 	    faithfulframe_teardown_register_instance() != 0)
 		return 104;
 
@@ -2217,7 +2226,7 @@ int run_smoke()
 	if (faithfulframe_teardown_register_instance() != 0)
 		return 109;
 	trace_session_smoke_checkpoint("unretired-worker shutdown test");
-	if (!reaper_shutdown_waits_for_unretired_workers(config, generations))
+	if (!reaper_shutdown_does_not_wait_for_unretired_workers(config, generations))
 		return 124;
 	trace_session_smoke_checkpoint("chained-cleanup shutdown test");
 	if (!reaper_drains_chained_cleanup_before_shutdown())

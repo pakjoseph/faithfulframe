@@ -114,6 +114,9 @@ int main()
 	teardown.tracker = tracker;
 	std::atomic<bool> destroy_callback_returned{false};
 	std::atomic<bool> handoff_succeeded{false};
+	// Exercise the real last-source path: module unload has begun, the dlib
+	// worker is blocked, and this destroy callback must still return promptly.
+	faithfulframe_teardown_begin_module_unload();
 	std::thread destroyer([&] {
 		teardown.destroy_thread = std::this_thread::get_id();
 		const bool handed_off =
@@ -137,11 +140,17 @@ int main()
 		teardown.callback_ran_off_destroy_thread.load(std::memory_order_acquire);
 	release_worker.store(true, std::memory_order_release);
 	destroyer.join();
+	const auto cleanup_deadline = steady_clock::now() + std::chrono::seconds(10);
+	while (!teardown.cleanup_complete.load(std::memory_order_acquire) && steady_clock::now() < cleanup_deadline)
+		std::this_thread::yield();
+	const bool reaper_drained = teardown.cleanup_complete.load(std::memory_order_acquire);
+	// Reopening an asynchronously draining reaper is safe once the last instance
+	// is gone, even if its worker has not reached the idle exit barrier yet.
+	const bool reaper_restarted = faithfulframe_executor_reaper_start() == 1;
 	faithfulframe_teardown_begin_module_unload();
 
 	if (!handoff_succeeded.load(std::memory_order_acquire) || !destroy_returned_while_worker_blocked ||
-	    !cleanup_ran_off_destroy_thread || !teardown.cleanup_complete.load(std::memory_order_acquire) ||
-	    teardown.tracker != nullptr) {
+	    !cleanup_ran_off_destroy_thread || !reaper_drained || !reaper_restarted || teardown.tracker != nullptr) {
 		std::fprintf(
 			stderr,
 			"dlib tracker lifetime smoke failed to defer worker teardown (handoff=%d, destroy_returned=%d, "

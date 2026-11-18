@@ -246,14 +246,14 @@ bool faithfulframe_defer_reap_task(faithfulframe_reap_task *task, void (*callbac
 void faithfulframe_activate_reap_task(faithfulframe_reap_task *task);
 std::shared_ptr<faithfulframe_executor_reaper> faithfulframe_acquire_executor_reaper();
 
-/// Starts the asynchronous session-join worker. Module loading must fail if it
-/// cannot be started, so nonblocking OBS callbacks can transfer joins safely.
-/// Repeated calls preserve live source reservations; a draining lifecycle cannot
-/// be restarted until all registered sources have been destroyed.
+/// Starts or reopens the asynchronous session-join worker. Module loading must
+/// fail if it cannot be started, so OBS callbacks can transfer joins safely.
+/// Repeated calls preserve live source reservations; a prior unload can restart
+/// the worker only after registered source instances have been destroyed.
 extern "C" int faithfulframe_executor_reaper_start();
-/// Drains and closes the worker only after module unload has begun and all
-/// registered source-instance cleanup has been handed off. Calls made earlier
-/// are ignored so live source destruction can always retire its executor.
+/// Requests an asynchronous drain after module unload has begun and all
+/// registered source-instance cleanup has been handed off. Never waits for
+/// worker joins when called from an OBS callback.
 extern "C" void faithfulframe_executor_reaper_shutdown();
 /// Reserve before a source/filter create; commit successful creation or cancel
 /// the reservation on failure. Live instances keep the reaper available across
@@ -277,7 +277,7 @@ extern "C" void faithfulframe_test_set_reaper_wait_hook(void (*hook)(void *), vo
 #endif
 
 #ifdef FAITHFULFRAME_TEST_REAPER_SHUTDOWN_HOOK
-extern "C" int faithfulframe_test_reaper_shutdown_waiting(void);
+extern "C" int faithfulframe_test_reaper_shutdown_pending(void);
 #endif
 #ifdef FAITHFULFRAME_TEST_SESSION_WORK_HOOK
 extern "C" void faithfulframe_test_set_session_work_hook(void (*hook)(void *), void *context);
