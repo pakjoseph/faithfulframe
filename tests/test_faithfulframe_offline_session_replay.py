@@ -15,6 +15,30 @@ def write_black_ppm(path: Path, width: int, height: int) -> None:
     path.write_bytes(f"P6\n{width} {height}\n255\n".encode("ascii") + bytes(width * height * 3))
 
 
+def write_two_cartoon_face_scene(path: Path, portrait_path: Path) -> None:
+    magic, dimensions, maximum, portrait = portrait_path.read_bytes().split(b"\n", 3)
+    if magic != b"P6" or maximum != b"255":
+        raise ValueError("synthetic portrait fixture must be an 8-bit P6 PPM")
+    portrait_width, portrait_height = map(int, dimensions.split())
+    if len(portrait) != portrait_width * portrait_height * 3:
+        raise ValueError("synthetic portrait fixture has an invalid pixel payload")
+
+    width, height = 1920, 1080
+    pixels = bytearray([32, 38, 42]) * (width * height)
+    # Duplicate the procedurally drawn, non-identifiable cartoon in a simple
+    # stage scene. This exercises detector candidate enumeration without
+    # storing real-person imagery or biometric data.
+    for x in (320, 1280):
+        y = (height - portrait_height) // 2
+        for row in range(portrait_height):
+            source_start = row * portrait_width * 3
+            target_start = ((y + row) * width + x) * 3
+            pixels[target_start : target_start + portrait_width * 3] = portrait[
+                source_start : source_start + portrait_width * 3
+            ]
+    path.write_bytes(f"P6\n{width} {height}\n255\n".encode("ascii") + pixels)
+
+
 class OfflineSessionReplayTests(unittest.TestCase):
     def test_synthetic_face_flows_through_detection_tracking_and_explicit_selection(self):
         # This checked-in cartoon is procedurally drawn and contains no real
@@ -103,6 +127,88 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 self.assertGreaterEqual(y, 0.0)
                 self.assertLessEqual(x + width, 1.00001)
                 self.assertLessEqual(y + height, 1.00001)
+            self.assertNotIn("pixels", trace_text)
+            self.assertNotIn("frame_path", trace_text)
+
+    def test_two_synthetic_faces_require_explicit_selection(self):
+        portrait = (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "offline-synthetic-person-320x360.ppm"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            scene = temporary / "two-cartoon-faces-1920x1080.ppm"
+            manifest = temporary / "frames.tsv"
+            trace = temporary / "trace.jsonl"
+            write_two_cartoon_face_scene(scene, portrait)
+            manifest.write_text(
+                "monotonic_ms\tframe_path\n"
+                + "".join(f"{frame_index * 40}\t{scene}\n" for frame_index in range(150)),
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    str(self.binary),
+                    "--model",
+                    str(self.model),
+                    "--manifest",
+                    str(manifest),
+                    "--trace",
+                    str(trace),
+                    "--output-width",
+                    "1920",
+                    "--output-height",
+                    "1080",
+                    "--operator-select-first-candidate-at-ms",
+                    "2200",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            failure_context = result.stderr
+            if result.returncode != 0 and trace.is_file():
+                diagnostic_events = [
+                    json.loads(line)
+                    for line in trace.read_text(encoding="utf-8").splitlines()
+                    if '"kind":"tracker_diagnostics"' in line
+                ]
+                failure_context += f"\nDetector/tracker diagnostics: {diagnostic_events}"
+            self.assertEqual(result.returncode, 0, failure_context)
+
+            trace_text = trace.read_text(encoding="utf-8")
+            events = [json.loads(line) for line in trace_text.splitlines()]
+            diagnostics = [event for event in events if event["kind"] == "tracker_diagnostics"]
+            candidates = [event for event in events if event["kind"] == "candidate"]
+            commands = [event for event in events if event["kind"] == "command"]
+            summary = next(event for event in events if event["kind"] == "summary")
+            candidates_by_frame = {}
+            for event in candidates:
+                candidates_by_frame.setdefault(event["frame_index"], []).append(event["candidate"])
+            simultaneous_candidates = max(
+                (len({candidate["handle"] for candidate in group}) for group in candidates_by_frame.values()),
+                default=0,
+            )
+
+            self.assertGreaterEqual(max(event["detection_count"] for event in diagnostics), 2)
+            self.assertGreaterEqual(max(event["candidate_count"] for event in diagnostics), 2)
+            self.assertGreaterEqual(simultaneous_candidates, 2)
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(commands[0]["origin"], "explicit_operator_flag")
+            self.assertTrue(summary["operator_selection_applied"])
+            self.assertEqual(summary["snapshot"]["state"], "locked")
+            self.assertEqual(summary["snapshot"]["selected_handle"], commands[0]["candidate_handle"])
+            selection_index = events.index(commands[0])
+            self.assertTrue(
+                all(
+                    event["snapshot"]["selected_handle"] is None
+                    for event in events[:selection_index]
+                    if "snapshot" in event
+                ),
+                "multiple synthetic detections must not select a target without an operator command",
+            )
             self.assertNotIn("pixels", trace_text)
             self.assertNotIn("frame_path", trace_text)
 
