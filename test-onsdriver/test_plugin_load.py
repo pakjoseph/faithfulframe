@@ -78,9 +78,24 @@ def write_synthetic_person_y4m(output_path):
         magic, dimensions, maximum, rgb_pixels = fixture_file.read().split(b'\n', 3)
     if magic.strip() != b'P6' or maximum.strip() != b'255':
         raise ValueError('synthetic face fixture must be an 8-bit P6 PPM')
-    width, height = map(int, dimensions.split())
-    if len(rgb_pixels) != width * height * 3:
+    source_width, height = map(int, dimensions.split())
+    if len(rgb_pixels) != source_width * height * 3:
         raise ValueError('synthetic face fixture has an invalid pixel payload')
+
+    # Preserve the fixture pixels while adding camera-space margin. The face
+    # itself is intentionally smaller than the frame so the framing controller
+    # can demonstrate a real zoom without violating its target-coverage limit.
+    width = source_width * 2
+    x_offset = source_width // 2
+    padded_pixels = bytearray(width * height * 3)
+    for y in range(height):
+        source_start = y * source_width * 3
+        destination_start = (y * width + x_offset) * 3
+        row_bytes = source_width * 3
+        padded_pixels[destination_start : destination_start + row_bytes] = rgb_pixels[
+            source_start : source_start + row_bytes
+        ]
+    rgb_pixels = padded_pixels
 
     luma = bytearray(width * height)
     chroma_width = width // 2
@@ -681,8 +696,8 @@ class PluginLoadTest(obstest.OBSTest):
                     'target_name': camera_name,
                     'target_uuid': camera_uuid,
                     'safe_tracking_enabled': True,
-                    # Match the offline production-detector fixture's native
-                    # 320x360 pixels instead of testing a second image scale.
+                    # Use the generated 640x360 canvas so the detected face
+                    # leaves enough image margin for a safe crop demonstration.
                     'scale': 1.0,
                 },
             })
