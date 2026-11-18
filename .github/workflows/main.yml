@@ -618,14 +618,15 @@ jobs:
             faithfulframe-deferred-pending-smoke \
             faithfulframe-detector-worker-smoke \
             faithfulframe-tracker-worker-smoke \
-            faithfulframe-worker-log-gate-smoke
+            faithfulframe-worker-log-gate-smoke \
+            faithfulframe-dlib-tracker-lifetime-smoke
 
       - name: Run ThreadSanitizer checks
         env:
           TSAN_OPTIONS: halt_on_error=1
         run: >-
           ctest --test-dir build-tsan --output-on-failure --timeout 30
-          -R '^faithfulframe-(session-executor|active-slot|single-adapter-lease|deferred-pending|detector-worker|tracker-worker|worker-log-gate)-smoke$'
+          -R '^faithfulframe-(session-executor|active-slot|single-adapter-lease|deferred-pending|detector-worker|tracker-worker|worker-log-gate|dlib-tracker-lifetime)-smoke$'
 
   address_sanitizer_tests:
     name: C++ lifetime tests with AddressSanitizer and UBSan
@@ -670,7 +671,8 @@ jobs:
             faithfulframe-deferred-pending-smoke \
             faithfulframe-detector-worker-smoke \
             faithfulframe-tracker-worker-smoke \
-            faithfulframe-worker-log-gate-smoke
+            faithfulframe-worker-log-gate-smoke \
+            faithfulframe-dlib-tracker-lifetime-smoke
 
       - name: Run AddressSanitizer and UBSan checks
         env:
@@ -678,4 +680,4 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: >-
           ctest --test-dir build-asan --output-on-failure --timeout 30
-          -R '^faithfulframe-(session-executor|active-slot|single-adapter-lease|deferred-pending|detector-worker|tracker-worker|worker-log-gate)-smoke$'
+          -R '^faithfulframe-(session-executor|active-slot|single-adapter-lease|deferred-pending|detector-worker|tracker-worker|worker-log-gate|dlib-tracker-lifetime)-smoke$'
