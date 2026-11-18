@@ -41,6 +41,12 @@ static inline std::shared_ptr<texture_object> surface_to_cvtex(struct face_track
 class ft_manager_for_ftf : public face_tracker_manager {
 public:
 	struct face_tracker_filter *ctx;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	// Safe-source adapters hand potentially blocking dlib worker joins to the
+	// module reaper after OBS callbacks have drained. This node is owned by this
+	// manager and remains alive until the reaper callback deletes the manager.
+	faithfulframe_reap_task teardown_task{};
+#endif
 
 public:
 	ft_manager_for_ftf(struct face_tracker_filter *ctx_) { ctx = ctx_; }
@@ -51,6 +57,8 @@ public:
 
 	std::shared_ptr<texture_object> get_cvtex() override
 	{
+		if (!ctx)
+			return nullptr;
 		if (scale < 1.0f)
 			scale = 1.0f;
 		scale_texture(ctx, scale);
@@ -58,6 +66,12 @@ public:
 			return NULL;
 		return surface_to_cvtex(ctx, scale);
 	};
+
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	void detach_obs_context() noexcept { ctx = nullptr; }
+
+	static void destroy_reaped(void *context) { delete static_cast<ft_manager_for_ftf *>(context); }
+#endif
 };
 
 struct faithfulframe_tracker_settings_queue
@@ -825,6 +839,11 @@ static void *fts_create(obs_data_t *settings, obs_source_t *context)
 static void ftf_destroy(void *data)
 {
 	auto *s = (struct face_tracker_filter *)data;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	// Only safe-source adapters reserve a module-reaper lifetime. Legacy filters
+	// keep their original synchronous destruction path.
+	const bool defer_tracker_teardown = s->safe_runtime != nullptr;
+#endif
 	// Stop new hotkey ingress before shutting down the runtime that callbacks
 	// may enqueue commands through.
 	if (s->hotkey_pause != OBS_INVALID_HOTKEY_PAIR_ID) {
@@ -857,10 +876,30 @@ static void ftf_destroy(void *data)
 
 	face_tracker_manager *tracker_manager = s->ftm;
 	s->ftm = nullptr;
-	// libobs runs this destroy callback on its destruction task thread after
-	// source-context callbacks have drained. Joining dlib workers here keeps
-	// their OBS-owned frame cleanup inside a valid callback and off render/UI.
-	delete tracker_manager;
+	// By this point libobs has drained source-context callbacks and the graphics
+	// resources are gone. Safe-adapter dlib workers only own CPU-side frame
+	// copies, so their potentially blocking joins and manager destruction can be
+	// deferred to the module reaper without retaining the OBS filter context.
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	if (defer_tracker_teardown && tracker_manager) {
+		auto *safe_manager = static_cast<ft_manager_for_ftf *>(tracker_manager);
+		safe_manager->detach_obs_context();
+		if (faithfulframe_defer_reap_task(&safe_manager->teardown_task, ft_manager_for_ftf::destroy_reaped,
+						  safe_manager, true)) {
+			faithfulframe_activate_reap_task(&safe_manager->teardown_task);
+		} else {
+			// A live source-instance reservation keeps the reaper available until
+			// this callback completes. Preserve safe ownership if that invariant is
+			// ever violated, rather than abandoning live dlib workers.
+			blog(LOG_ERROR,
+			     "FaithfulFrame could not defer dlib manager teardown; joining on the OBS destruction thread");
+			delete tracker_manager;
+		}
+	} else
+#endif
+	{
+		delete tracker_manager;
+	}
 
 	bfree(s->target_name);
 	obs_weak_source_release(s->target_ref);

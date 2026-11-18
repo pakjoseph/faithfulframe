@@ -296,6 +296,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	endif()
 	add_executable(faithfulframe-dlib-tracker-lifetime-smoke
 		tests/faithfulframe-dlib-tracker-lifetime-smoke.cpp
+		src/faithfulframe-core-bridge.cpp
 		src/face-tracker-base.cpp
 		src/face-tracker-dlib.cpp
 		src/texture-object.cpp)
@@ -303,8 +304,11 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		FAITHFULFRAME_TEST_TRACKER_TEARDOWN_HOOK=1)
 	add_dependencies(faithfulframe-rust-bridge-smoke faithfulframe-rust-ffi-build)
 	add_dependencies(faithfulframe-session-executor-smoke faithfulframe-rust-ffi-build)
+	add_dependencies(faithfulframe-dlib-tracker-lifetime-smoke faithfulframe-rust-ffi-build)
 	target_include_directories(faithfulframe-rust-bridge-smoke PRIVATE src rust/faithfulframe-ffi/include)
 	target_include_directories(faithfulframe-session-executor-smoke PRIVATE src rust/faithfulframe-ffi/include)
+	target_include_directories(faithfulframe-dlib-tracker-lifetime-smoke PRIVATE
+		src rust/faithfulframe-ffi/include)
 	target_include_directories(faithfulframe-detector-worker-smoke PRIVATE ${CMAKE_CURRENT_BINARY_DIR} src)
 	target_include_directories(faithfulframe-tracker-worker-smoke PRIVATE ${CMAKE_CURRENT_BINARY_DIR} src)
 	target_include_directories(faithfulframe-texture-object-smoke PRIVATE ${CMAKE_CURRENT_BINARY_DIR} src)
@@ -328,7 +332,8 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	target_link_libraries(faithfulframe-texture-object-smoke PRIVATE dlib Threads::Threads)
 	target_link_libraries(faithfulframe-offline-replay PRIVATE
 		faithfulframe-offline-frame-sequence dlib Threads::Threads)
-	target_link_libraries(faithfulframe-dlib-tracker-lifetime-smoke PRIVATE dlib Threads::Threads)
+	target_link_libraries(faithfulframe-dlib-tracker-lifetime-smoke PRIVATE
+		dlib faithfulframe-rust-ffi Threads::Threads)
 	if (OS_WINDOWS)
 		target_link_libraries(faithfulframe-dlib-tracker-lifetime-smoke PRIVATE OBS::w32-pthreads)
 		add_custom_command(TARGET faithfulframe-dlib-tracker-lifetime-smoke POST_BUILD
@@ -376,6 +381,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		COMMAND faithfulframe-offline-session-replay --help)
 	add_test(NAME faithfulframe-dlib-tracker-lifetime-smoke
 		COMMAND faithfulframe-dlib-tracker-lifetime-smoke)
+	set_tests_properties(faithfulframe-dlib-tracker-lifetime-smoke PROPERTIES TIMEOUT 20)
 	set(FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL
 		"${CMAKE_CURRENT_SOURCE_DIR}/data/dlib_hog_model/frontal_face_detector.dat"
 		CACHE FILEPATH "Optional dlib HOG model used for the offline detector smoke test")
