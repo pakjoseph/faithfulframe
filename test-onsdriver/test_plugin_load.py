@@ -265,6 +265,21 @@ class PluginLoadTest(obstest.OBSTest):
             self.fail(f'Unable to capture {source_name!r}: {last_error}')
         self.fail(f'Timed out waiting for the expected frame from {source_name!r}')
 
+    def _wait_for_media_input_state(self, client, input_name, expected_state, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        last_state = None
+        while time.monotonic() < deadline:
+            response = client.send('GetMediaInputStatus', {'inputName': input_name})
+            last_state = getattr(response, 'media_state', None)
+            if last_state is None and isinstance(response, dict):
+                last_state = response.get('mediaState') or response.get('media_state')
+            if last_state == expected_state:
+                return response
+            time.sleep(0.1)
+        self.fail(
+            f'OBS media input {input_name!r} did not reach {expected_state!r}: {last_state!r}'
+        )
+
     @staticmethod
     def _find_ui_widget(widgets, accessible_name):
         pending = list(widgets)
@@ -601,6 +616,10 @@ class PluginLoadTest(obstest.OBSTest):
         created_inputs = []
         dock_created = False
         temporary = tempfile.TemporaryDirectory(prefix='faithfulframe-synthetic-face-')
+        # OBS may keep an asynchronous media decoder's file open until process
+        # shutdown, particularly on Windows. unittest cleanups run after
+        # tearDown, which stops OBS, so defer deleting this directory until then.
+        self.addCleanup(temporary.cleanup)
 
         try:
             scene_response = client.send('GetCurrentProgramScene', {})
@@ -634,6 +653,11 @@ class PluginLoadTest(obstest.OBSTest):
                 },
             })
             created_inputs.append(camera_name)
+            client.send('TriggerMediaInputAction', {
+                'inputName': camera_name,
+                'mediaAction': 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART',
+            })
+            self._wait_for_media_input_state(client, camera_name, 'OBS_MEDIA_STATE_PLAYING')
             camera_uuid = self._input_uuid(client, camera_name)
             client.send('CreateInput', {
                 'sceneName': tracked_scene,
@@ -643,6 +667,9 @@ class PluginLoadTest(obstest.OBSTest):
                     'target_name': camera_name,
                     'target_uuid': camera_uuid,
                     'safe_tracking_enabled': True,
+                    # Match the offline production-detector fixture's native
+                    # 320x360 pixels instead of testing a second image scale.
+                    'scale': 1.0,
                 },
             })
             created_inputs.append(adapter_name)
@@ -662,7 +689,22 @@ class PluginLoadTest(obstest.OBSTest):
             self._wait_for_ui_widget(ui, 'Tracking state: Manual')
 
             select_control = 'Select the highlighted face as the speaker'
-            self._wait_for_ui_widget(ui, select_control, enabled=True, timeout=30.0)
+            try:
+                self._wait_for_ui_widget(ui, select_control, enabled=True, timeout=30.0)
+            except AssertionError as selection_error:
+                widgets = ui.request('widget-list', {}).get('children', [])
+                status_widget = self._find_ui_widget(widgets, 'FaithfulFrame tracking status')
+                candidates_widget = self._find_ui_widget(widgets, 'Detected face candidates')
+                media_status = client.send('GetMediaInputStatus', {'inputName': camera_name})
+                media_state = getattr(media_status, 'media_state', None)
+                if media_state is None and isinstance(media_status, dict):
+                    media_state = media_status.get('mediaState') or media_status.get('media_state')
+                self.fail(
+                    f'{selection_error}\n'
+                    f'Synthetic media state: {media_state!r}\n'
+                    f'Tracking status widget: {status_widget!r}\n'
+                    f'Candidate list widget: {candidates_widget!r}'
+                )
             self._invoke_ui_widget(ui, 'accessibleName', 'Detected face candidates', 'setCurrentIndex', arg1=1)
             self._invoke_ui_widget(ui, 'accessibleName', select_control, 'click')
             status = self._wait_for_ui_status(ui, 'Following the selected speaker', timeout=10.0)
@@ -709,7 +751,6 @@ class PluginLoadTest(obstest.OBSTest):
                     client.send('RemoveScene', {'sceneName': tracked_scene})
                 except Exception:
                     pass
-            temporary.cleanup()
 
     def test_safe_adapter_scene_switch_holds_source_isolation(self):
         'Switch away from and back to a bound camera without changing either source'
