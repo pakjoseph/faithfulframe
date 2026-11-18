@@ -78,18 +78,24 @@ def write_synthetic_person_y4m(output_path):
         magic, dimensions, maximum, rgb_pixels = fixture_file.read().split(b'\n', 3)
     if magic.strip() != b'P6' or maximum.strip() != b'255':
         raise ValueError('synthetic face fixture must be an 8-bit P6 PPM')
-    source_width, height = map(int, dimensions.split())
-    if len(rgb_pixels) != source_width * height * 3:
+    source_width, source_height = map(int, dimensions.split())
+    if len(rgb_pixels) != source_width * source_height * 3:
         raise ValueError('synthetic face fixture has an invalid pixel payload')
 
-    # Preserve the fixture pixels while adding camera-space margin. The face
-    # itself is intentionally smaller than the frame so the framing controller
-    # can demonstrate a real zoom without violating its target-coverage limit.
-    width = source_width * 2
-    x_offset = source_width // 2
+    # Preserve the fixture pixels while adding camera-space margin on every
+    # side. Keep a 16:9 source canvas so the selected face leaves enough room
+    # for a visible, safe zoom in the OBS integration test.
+    width = source_width * 3
+    height = width * 9 // 16
+    x_offset = (width - source_width) // 2
+    y_offset = (height - source_height) // 2
+    if x_offset < 0 or y_offset < 0:
+        raise ValueError('synthetic face fixture must fit inside the 16:9 canvas')
     padded_pixels = bytearray(width * height * 3)
     for y in range(height):
-        source_start = y * source_width * 3
+        if y < y_offset or y >= y_offset + source_height:
+            continue
+        source_start = (y - y_offset) * source_width * 3
         destination_start = (y * width + x_offset) * 3
         row_bytes = source_width * 3
         padded_pixels[destination_start : destination_start + row_bytes] = rgb_pixels[
@@ -715,7 +721,7 @@ class PluginLoadTest(obstest.OBSTest):
                     'target_name': camera_name,
                     'target_uuid': camera_uuid,
                     'safe_tracking_enabled': True,
-                    # Use the generated 640x360 canvas so the detected face
+                    # Use the generated 960x540 canvas so the detected face
                     # leaves enough image margin for a safe crop demonstration.
                     'scale': 1.0,
                 },
