@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <cstdlib>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -1943,13 +1942,6 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		candidate.rect = ff_rect{x0, y0, x1 - x0, y1 - y0};
 		if (candidate.detector_confirmed_at_ms && preview_count < preview_candidates.size())
 			preview_candidates[preview_count++] = candidate;
-	}
-	if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS")) {
-		const uint64_t counts = (static_cast<uint64_t>(count) << 32) | static_cast<uint64_t>(preview_count);
-		static std::atomic<uint64_t> last_logged_counts{std::numeric_limits<uint64_t>::max()};
-		if (last_logged_counts.exchange(counts, std::memory_order_relaxed) != counts)
-			blog(LOG_INFO, "[FaithfulFrame test] candidate pipeline trackers=%zu detector_confirmed=%zu",
-			     count, preview_count);
 	}
 	if (count) {
 		if (executor->enqueue_candidates(now, candidates.data(), count)) {

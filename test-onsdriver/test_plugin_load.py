@@ -344,6 +344,19 @@ class PluginLoadTest(obstest.OBSTest):
             time.sleep(0.1)
         self.fail(f'UI widget {accessible_name!r} did not reach enabled={enabled}: {last_widget!r}')
 
+    def _wait_for_ui_item_count(self, ui, accessible_name, minimum_count, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        last_widget = None
+        while time.monotonic() < deadline:
+            response = ui.request('widget-list', {})
+            last_widget = self._find_ui_widget(response.get('children', []), accessible_name)
+            if last_widget is not None and last_widget.get('count', 0) >= minimum_count:
+                return last_widget
+            time.sleep(0.1)
+        self.fail(
+            f'UI widget {accessible_name!r} did not reach count>={minimum_count}: {last_widget!r}'
+        )
+
     def _wait_for_ui_status(self, ui, text, timeout=10.0):
         deadline = time.monotonic() + timeout
         last_status = None
@@ -374,19 +387,7 @@ class PluginLoadTest(obstest.OBSTest):
             self.fail(str(error))
         if setup_was_force_stopped:
             print('Cleared inherited OBS shutdown marker after onsdriver force-stopped setup')
-        diagnostics_name = 'FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS'
-        previous_diagnostics = os.environ.get(diagnostics_name)
-        if self.id().endswith('test_safe_adapter_keyboard_selects_synthetic_speaker'):
-            # The child OBS process inherits this opt-in switch; restore the
-            # runner environment immediately so other tests stay quiet.
-            os.environ[diagnostics_name] = '1'
-        try:
-            self.obs.run()
-        finally:
-            if previous_diagnostics is None:
-                os.environ.pop(diagnostics_name, None)
-            else:
-                os.environ[diagnostics_name] = previous_diagnostics
+        self.obs.run()
         self._startup_succeeded = True
 
     def _preserve_final_log(self):
@@ -703,7 +704,11 @@ class PluginLoadTest(obstest.OBSTest):
 
             select_control = 'Select the highlighted face as the speaker'
             try:
-                self._wait_for_ui_widget(ui, select_control, enabled=True, timeout=30.0)
+                self._wait_for_ui_item_count(ui, 'Detected face candidates', 2, timeout=30.0)
+                self._invoke_ui_widget(
+                    ui, 'accessibleName', 'Detected face candidates', 'setCurrentIndex', arg1=1
+                )
+                self._wait_for_ui_widget(ui, select_control, enabled=True, timeout=5.0)
             except AssertionError as selection_error:
                 widgets = ui.request('widget-list', {}).get('children', [])
                 status_widget = self._find_ui_widget(widgets, 'FaithfulFrame tracking status')
@@ -736,7 +741,6 @@ class PluginLoadTest(obstest.OBSTest):
                     f'Candidate list widget: {candidates_widget!r}\n'
                     f'Synthetic media screenshot: {screenshot_path!r}'
                 )
-            self._invoke_ui_widget(ui, 'accessibleName', 'Detected face candidates', 'setCurrentIndex', arg1=1)
             self._invoke_ui_widget(ui, 'accessibleName', select_control, 'click')
             status = self._wait_for_ui_status(ui, 'Following the selected speaker', timeout=10.0)
             self._wait_for_ui_widget(ui, 'Tracking state: Locked')
