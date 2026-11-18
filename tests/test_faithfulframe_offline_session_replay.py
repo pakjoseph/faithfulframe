@@ -187,14 +187,31 @@ class OfflineSessionReplayTests(unittest.TestCase):
             candidates_by_frame = {}
             for event in candidates:
                 candidates_by_frame.setdefault(event["frame_index"], []).append(event["candidate"])
-            simultaneous_candidates = max(
-                (len({candidate["handle"] for candidate in group}) for group in candidates_by_frame.values()),
-                default=0,
+            simultaneous_group = max(
+                candidates_by_frame.values(),
+                key=lambda group: len({candidate["handle"] for candidate in group}),
+                default=[],
             )
+            simultaneous_by_handle = {candidate["handle"]: candidate for candidate in simultaneous_group}
 
             self.assertGreaterEqual(max(event["detection_count"] for event in diagnostics), 2)
             self.assertGreaterEqual(max(event["candidate_count"] for event in diagnostics), 2)
-            self.assertGreaterEqual(simultaneous_candidates, 2)
+            self.assertGreaterEqual(len(simultaneous_by_handle), 2)
+            center_x = []
+            for candidate in simultaneous_by_handle.values():
+                x, y, width, height = candidate["rect"]
+                self.assertGreater(width, 0.0)
+                self.assertGreater(height, 0.0)
+                self.assertGreaterEqual(x, 0.0)
+                self.assertGreaterEqual(y, 0.0)
+                self.assertLessEqual(x + width, 1.00001)
+                self.assertLessEqual(y + height, 1.00001)
+                center_x.append(x + width / 2)
+            self.assertGreater(
+                max(center_x) - min(center_x),
+                0.25,
+                "the two dlib candidates must represent spatially separate stage positions",
+            )
             self.assertEqual(len(commands), 1)
             self.assertEqual(commands[0]["origin"], "explicit_operator_flag")
             self.assertTrue(summary["operator_selection_applied"])
