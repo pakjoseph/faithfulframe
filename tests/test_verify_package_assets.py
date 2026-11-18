@@ -1,7 +1,9 @@
 import importlib.util
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "ci" / "verify-package-assets.py"
@@ -18,6 +20,17 @@ class PackageAssetVerificationTests(unittest.TestCase):
         for name in verify_package_assets.REQUIRED_FILES:
             content = verify_package_assets.REQUIRED_LICENSE_MARKERS.get(name, b"fixture")
             (self.root / name).write_bytes(content)
+        fixture_hash = hashlib.sha256(b"fixture").hexdigest()
+        self.model_asset_patch = patch.dict(
+            verify_package_assets.ALLOWED_MODEL_ASSETS,
+            {
+                name: (provenance, notice, fixture_hash)
+                for name, (provenance, notice, _sha256)
+                in verify_package_assets.ALLOWED_MODEL_ASSETS.items()
+            },
+        )
+        self.model_asset_patch.start()
+        self.addCleanup(self.model_asset_patch.stop)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -83,9 +96,16 @@ class PackageAssetVerificationTests(unittest.TestCase):
         model_directory = self.root / "nested" / "dlib_face_landmark_model"
         model_directory.mkdir(parents=True)
         model = model_directory / "shape_predictor_5_face_landmarks.dat"
-        model.write_bytes(b"reviewed fixture")
+        model.write_bytes(b"fixture")
         self.assertFalse(
             any("model asset is packaged" in error for error in verify_package_assets.package_errors(self.root))
+        )
+
+    def test_rejects_modified_reviewed_model_asset(self):
+        (self.root / "frontal_face_detector.dat").write_bytes(b"modified model")
+        self.assertIn(
+            "model asset checksum mismatch for frontal_face_detector.dat",
+            "\n".join(verify_package_assets.package_errors(self.root)),
         )
 
     def test_requires_each_model_asset_declared_license_notice(self):

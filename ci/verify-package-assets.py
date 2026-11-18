@@ -2,6 +2,7 @@
 """Fail release checks when required notices or model files are missing."""
 
 import argparse
+import hashlib
 from pathlib import Path
 import sys
 
@@ -28,19 +29,23 @@ REQUIRED_LICENSE_MARKERS = {
 # a fixture that proves it is packaged intentionally. Match by filename so
 # this remains effective regardless of whether a platform installer nests the
 # data directory under a plugin bundle or a package-specific prefix. Values
-# record the upstream provenance and matching packaged notice.
+# record the upstream provenance, matching packaged notice, and SHA-256 of the
+# exact uncompressed file.
 ALLOWED_MODEL_ASSETS = {
     "frontal_face_detector.dat": (
         "norihiro/obs-face-tracker 0.7.0-hogdata",
         "LICENSE-dlib.txt",
+        "f3f7aa833fb4a14a46fc48689f45b98d85ef72d6dfaf8bdc012b7d3c522a5426",
     ),
     "mmod_human_face_detector.dat": (
         "davisking/dlib-models fd81b6308a6a73d4ce08859eb2f4b628a21e27a2",
         "LICENSE-dlib-models",
+        "be467b1a76f482693de3b0f6a1ff91d092319be71523d4d4b0628f6a53fcb87a",
     ),
     "shape_predictor_5_face_landmarks.dat": (
         "davisking/dlib-models fd81b6308a6a73d4ce08859eb2f4b628a21e27a2",
         "LICENSE-dlib-models",
+        "c4b1e9804792707d3a405c2c16a80a20269e6675021f64a41d30fffafbc41888",
     ),
 }
 
@@ -94,11 +99,17 @@ def package_errors(root: Path) -> list[str]:
         if is_model_asset and reviewed_asset is None and path.name not in RESTRICTED_FILES:
             errors.append(f"unreviewed model asset is packaged: {relative_path}")
         elif is_model_asset and reviewed_asset:
-            provenance, required_notice = reviewed_asset
+            provenance, required_notice, expected_sha256 = reviewed_asset
             if required_notice not in names:
                 errors.append(
                     f"model asset from {provenance} is missing its declared license notice "
                     f"{required_notice}: {relative_path}"
+                )
+            actual_sha256 = _sha256_file(path)
+            if actual_sha256 != expected_sha256:
+                errors.append(
+                    f"model asset checksum mismatch for {relative_path}: "
+                    f"expected {expected_sha256}, got {actual_sha256}"
                 )
     errors.extend(f"required package file is empty: {path.relative_to(root)}"
                   for path in files if path.name in REQUIRED_FILES and path.stat().st_size == 0)
@@ -107,6 +118,14 @@ def package_errors(root: Path) -> list[str]:
             if path.name == name and path.stat().st_size and marker not in path.read_bytes():
                 errors.append(f"license notice has unexpected contents: {path.relative_to(root)}")
     return errors
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as asset:
+        for chunk in iter(lambda: asset.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main() -> int:
