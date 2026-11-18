@@ -17,7 +17,10 @@ def write_black_ppm(path: Path, width: int, height: int) -> None:
 
 def write_two_cartoon_face_scene(path: Path, portrait_path: Path) -> None:
     magic, dimensions, maximum, portrait = portrait_path.read_bytes().split(b"\n", 3)
-    if magic != b"P6" or maximum != b"255":
+    # Git may check this text-like header out with CRLF on Windows while the
+    # binary pixel payload remains unchanged. Treat the PPM separators as
+    # whitespace instead of requiring one newline convention.
+    if magic.strip() != b"P6" or maximum.strip() != b"255":
         raise ValueError("synthetic portrait fixture must be an 8-bit P6 PPM")
     portrait_width, portrait_height = map(int, dimensions.split())
     if len(portrait) != portrait_width * portrait_height * 3:
@@ -107,8 +110,17 @@ class OfflineSessionReplayTests(unittest.TestCase):
             self.assertEqual(len(commands), 1)
             self.assertEqual(commands[0]["origin"], "explicit_operator_flag")
             self.assertTrue(summary["operator_selection_applied"])
-            self.assertEqual(summary["snapshot"]["state"], "locked")
-            self.assertEqual(summary["snapshot"]["crop_action"], "track")
+            self.assertEqual(commands[0]["snapshot"]["state"], "locked")
+            self.assertEqual(
+                commands[0]["snapshot"]["selected_handle"], commands[0]["candidate_handle"]
+            )
+            # Detector evidence can legitimately age out during an accelerated
+            # replay. The policy must then hold the selected framing instead
+            # of silently following an unconfirmed target.
+            self.assertIn(summary["snapshot"]["state"], ("locked", "searching"), summary)
+            self.assertEqual(summary["snapshot"]["selected_handle"], commands[0]["candidate_handle"])
+            expected_crop_action = "track" if summary["snapshot"]["state"] == "locked" else "hold"
+            self.assertEqual(summary["snapshot"]["crop_action"], expected_crop_action, summary)
 
             selection_index = events.index(commands[0])
             self.assertTrue(
@@ -215,8 +227,14 @@ class OfflineSessionReplayTests(unittest.TestCase):
             self.assertEqual(len(commands), 1)
             self.assertEqual(commands[0]["origin"], "explicit_operator_flag")
             self.assertTrue(summary["operator_selection_applied"])
-            self.assertEqual(summary["snapshot"]["state"], "locked")
+            self.assertEqual(commands[0]["snapshot"]["state"], "locked")
+            self.assertEqual(
+                commands[0]["snapshot"]["selected_handle"], commands[0]["candidate_handle"]
+            )
+            self.assertIn(summary["snapshot"]["state"], ("locked", "searching"), summary)
             self.assertEqual(summary["snapshot"]["selected_handle"], commands[0]["candidate_handle"])
+            expected_crop_action = "track" if summary["snapshot"]["state"] == "locked" else "hold"
+            self.assertEqual(summary["snapshot"]["crop_action"], expected_crop_action, summary)
             selection_index = events.index(commands[0])
             self.assertTrue(
                 all(
