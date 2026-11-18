@@ -384,6 +384,25 @@ class PluginLoadTest(obstest.OBSTest):
             time.sleep(0.1)
         self.fail(f'FaithfulFrame status did not contain {text!r}: {last_status!r}')
 
+    def _wait_for_ui_zoom_above(self, ui, minimum_zoom, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        last_status = None
+        while time.monotonic() < deadline:
+            response = ui.request('widget-list', {})
+            widget = self._find_ui_widget(response.get('children', []), 'FaithfulFrame tracking status')
+            last_status = widget.get('text') if widget else None
+            if last_status and 'Following the selected speaker' in last_status:
+                zoom_marker = 'Current zoom: '
+                if zoom_marker in last_status:
+                    try:
+                        zoom_text = last_status.split(zoom_marker, 1)[1].split('×', 1)[0]
+                        if float(zoom_text) > minimum_zoom:
+                            return last_status
+                    except ValueError:
+                        pass
+            time.sleep(0.1)
+        self.fail(f'FaithfulFrame zoom did not exceed {minimum_zoom}× after selection: {last_status!r}')
+
     def setUp(self):
         # Keep the OBSExec instance even if startup checking times out, so the
         # failed launch's log and stderr can be saved and its process cleaned up.
@@ -757,13 +776,9 @@ class PluginLoadTest(obstest.OBSTest):
                     f'Synthetic media screenshot: {screenshot_path!r}'
                 )
             self._invoke_ui_widget(ui, 'accessibleName', select_control, 'click')
-            status = self._wait_for_ui_status(ui, 'Following the selected speaker', timeout=10.0)
+            self._wait_for_ui_status(ui, 'Following the selected speaker', timeout=10.0)
             self._wait_for_ui_widget(ui, 'Tracking state: Locked')
-
-            zoom_marker = 'Current zoom: '
-            self.assertIn(zoom_marker, status)
-            zoom_text = status.split(zoom_marker, 1)[1].split('×', 1)[0]
-            self.assertGreater(float(zoom_text), 1.0, 'Selecting the synthetic speaker must produce a crop')
+            self._wait_for_ui_zoom_above(ui, 1.0, timeout=10.0)
             self.assertEqual(
                 self._wait_for_screenshot(client, camera_name, bool),
                 camera_before,
