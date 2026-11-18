@@ -1,4 +1,5 @@
 #include <obs-module.h>
+#include <cstdlib>
 #include <limits>
 #include "plugin-macros.generated.h"
 #include "face-tracker-manager.hpp"
@@ -302,6 +303,9 @@ inline void face_tracker_manager::stage_to_detector(std::shared_ptr<texture_obje
 	// get previous results
 	if (detector_in_progress) {
 		detect->get_faces(detect_rects);
+		if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
+			blog(LOG_INFO, "[FaithfulFrame test] manager received %zu detector rectangles (epoch=%llu)",
+			     detect_rects.size(), (unsigned long long)detect->completed_result_epoch());
 		const uint64_t current_epoch = detection_epoch.load(std::memory_order_acquire);
 		if (face_detector_result_epoch_is_current(detect->completed_result_epoch(), current_epoch)) {
 			detector_result_captured_at_ms = detector_input_captured_at_ms;

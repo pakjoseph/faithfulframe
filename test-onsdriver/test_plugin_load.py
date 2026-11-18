@@ -427,7 +427,18 @@ class PluginLoadTest(obstest.OBSTest):
             self.fail(str(error))
         if setup_was_force_stopped:
             print('Cleared inherited OBS shutdown marker after onsdriver force-stopped setup')
-        self.obs.run()
+        diagnostics_name = 'FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS'
+        previous_diagnostics = os.environ.get(diagnostics_name)
+        if self.id().endswith('test_safe_adapter_keyboard_selects_synthetic_speaker'):
+            # Only the detector integration test enables native diagnostics.
+            os.environ[diagnostics_name] = '1'
+        try:
+            self.obs.run()
+        finally:
+            if previous_diagnostics is None:
+                os.environ.pop(diagnostics_name, None)
+            else:
+                os.environ[diagnostics_name] = previous_diagnostics
         self._startup_succeeded = True
 
     def _preserve_final_log(self):
