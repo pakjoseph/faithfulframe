@@ -5,6 +5,7 @@ Test plugin is loaded
 import glob
 import os
 import shutil
+import struct
 import subprocess
 import tempfile
 import time
@@ -62,6 +63,53 @@ def clear_inherited_setup_shutdown_sentinels(config_path, logsdir):
         'OBS setup profile has an unclean-shutdown sentinel '
         'without an onsdriver force-exit record'
     )
+
+
+def write_synthetic_person_bmp(output_path):
+    """Convert the checked-in non-identifiable PPM cartoon to OBS BMP input."""
+    fixture_path = os.path.join(
+        os.path.dirname(__file__),
+        os.pardir,
+        'tests',
+        'fixtures',
+        'offline-synthetic-person-320x360.ppm',
+    )
+    with open(fixture_path, 'rb') as fixture_file:
+        magic, dimensions, maximum, rgb_pixels = fixture_file.read().split(b'\n', 3)
+    if magic.strip() != b'P6' or maximum.strip() != b'255':
+        raise ValueError('synthetic face fixture must be an 8-bit P6 PPM')
+    width, height = map(int, dimensions.split())
+    if len(rgb_pixels) != width * height * 3:
+        raise ValueError('synthetic face fixture has an invalid pixel payload')
+
+    row_stride = (width * 3 + 3) & ~3
+    pixel_bytes = bytearray()
+    for y in range(height - 1, -1, -1):
+        row = bytearray()
+        row_start = y * width * 3
+        for x in range(width):
+            red, green, blue = rgb_pixels[row_start + x * 3 : row_start + x * 3 + 3]
+            row.extend((blue, green, red))
+        row.extend(b'\0' * (row_stride - len(row)))
+        pixel_bytes.extend(row)
+
+    file_header = struct.pack('<2sIHHI', b'BM', 54 + len(pixel_bytes), 0, 0, 54)
+    dib_header = struct.pack(
+        '<IiiHHIIiiII',
+        40,
+        width,
+        height,
+        1,
+        24,
+        0,
+        len(pixel_bytes),
+        2835,
+        2835,
+        0,
+        0,
+    )
+    with open(output_path, 'wb') as output_file:
+        output_file.write(file_header + dib_header + pixel_bytes)
 
 
 class SetupShutdownSentinelTest(unittest.TestCase):
@@ -532,6 +580,123 @@ class PluginLoadTest(obstest.OBSTest):
                     client.send('RemoveScene', {'sceneName': tracked_scene})
                 except Exception:
                     pass
+
+    def test_safe_adapter_keyboard_selects_synthetic_speaker(self):
+        'Select a detector-confirmed synthetic face and verify only the adapter crops'
+        client = self.obs.get_obsws()
+        ui = obsui.OBSUI(client)
+        suffix = uuid.uuid4().hex
+        tracked_scene = f'FaithfulFrame synthetic speaker {suffix}'
+        camera_name = f'FaithfulFrame synthetic face input {suffix}'
+        adapter_name = f'FaithfulFrame synthetic face adapter {suffix}'
+        original_scene = None
+        scene_created = False
+        created_inputs = []
+        dock_created = False
+        temporary = tempfile.TemporaryDirectory(prefix='faithfulframe-synthetic-face-')
+
+        try:
+            scene_response = client.send('GetCurrentProgramScene', {})
+            original_scene = getattr(scene_response, 'scene_name', None) or getattr(
+                scene_response, 'current_program_scene_name', None
+            )
+            self.assertTrue(original_scene, 'OBS must have an active program scene')
+
+            kinds_response = client.send('GetInputKindList', {'unversioned': False})
+            self.assertIn(
+                'image_source',
+                kinds_response.input_kinds,
+                'OBS image_source is required for hardware-free face-selection testing',
+            )
+            image_path = os.path.join(temporary.name, 'synthetic-person.bmp')
+            write_synthetic_person_bmp(image_path)
+
+            client.send('CreateScene', {'sceneName': tracked_scene})
+            scene_created = True
+            client.send('SetCurrentProgramScene', {'sceneName': tracked_scene})
+            client.send('CreateInput', {
+                'sceneName': tracked_scene,
+                'inputName': camera_name,
+                'inputKind': 'image_source',
+                'inputSettings': {'file': image_path, 'unload': False},
+            })
+            created_inputs.append(camera_name)
+            camera_uuid = self._input_uuid(client, camera_name)
+            client.send('CreateInput', {
+                'sceneName': tracked_scene,
+                'inputName': adapter_name,
+                'inputKind': 'face_tracker_source',
+                'inputSettings': {
+                    'target_name': camera_name,
+                    'target_uuid': camera_uuid,
+                    'safe_tracking_enabled': True,
+                },
+            })
+            created_inputs.append(adapter_name)
+
+            camera_before = self._wait_for_screenshot(client, camera_name, bool)
+            adapter_before = self._wait_for_screenshot(client, adapter_name, bool)
+            menu_tree = ui.menu_list().get('menu', [])
+            dock_menu_path = self._find_menu_path(menu_tree, 'New FaithfulFrame Dock')
+            self.assertIsNotNone(dock_menu_path, 'FaithfulFrame dock action must be available in OBS Tools')
+            ui.request('menu-trigger', {'path': dock_menu_path})
+            dock_created = True
+
+            source_selector_name = 'Camera source with FaithfulFrame tracking filter'
+            self._wait_for_ui_widget(ui, source_selector_name)
+            self._invoke_ui_widget(ui, 'accessibleName', source_selector_name, 'setCurrentIndex', arg1=1)
+            self._wait_for_ui_status(ui, f'Tracking source: {camera_name}')
+            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+
+            select_control = 'Select the highlighted face as the speaker'
+            self._wait_for_ui_widget(ui, select_control, enabled=True, timeout=30.0)
+            self._invoke_ui_widget(ui, 'accessibleName', 'Detected face candidates', 'setCurrentIndex', arg1=1)
+            self._invoke_ui_widget(ui, 'accessibleName', select_control, 'click')
+            status = self._wait_for_ui_status(ui, 'Following the selected speaker', timeout=10.0)
+            self._wait_for_ui_widget(ui, 'Tracking state: Locked')
+
+            zoom_marker = 'Current zoom: '
+            self.assertIn(zoom_marker, status)
+            zoom_text = status.split(zoom_marker, 1)[1].split('×', 1)[0]
+            self.assertGreater(float(zoom_text), 1.0, 'Selecting the synthetic speaker must produce a crop')
+            self.assertEqual(
+                self._wait_for_screenshot(client, camera_name, bool),
+                camera_before,
+                'Tracking must leave the original camera image unchanged',
+            )
+            self._wait_for_screenshot(
+                client,
+                adapter_name,
+                lambda image: bool(image) and image != adapter_before,
+                timeout=10.0,
+            )
+        finally:
+            if dock_created:
+                try:
+                    self._invoke_ui_widget(ui, 'objectName', 'FTDock_ft_dock', 'removeDock')
+                except Exception:
+                    pass
+
+            try:
+                if original_scene:
+                    client.send('SetCurrentProgramScene', {'sceneName': original_scene})
+            except Exception:
+                pass
+
+            try:
+                names = self._input_names(client)
+                for input_name in reversed(created_inputs):
+                    if input_name in names:
+                        client.send('RemoveInput', {'inputName': input_name})
+            except Exception:
+                pass
+
+            if scene_created:
+                try:
+                    client.send('RemoveScene', {'sceneName': tracked_scene})
+                except Exception:
+                    pass
+            temporary.cleanup()
 
     def test_safe_adapter_scene_switch_holds_source_isolation(self):
         'Switch away from and back to a bound camera without changing either source'
