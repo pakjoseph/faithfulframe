@@ -16,6 +16,84 @@ def write_black_ppm(path: Path, width: int, height: int) -> None:
 
 
 class OfflineSessionReplayTests(unittest.TestCase):
+    def test_synthetic_face_flows_through_detection_tracking_and_explicit_selection(self):
+        # This checked-in cartoon is procedurally drawn and contains no real
+        # person, recording, or biometric template.
+        fixture = (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "offline-synthetic-person-320x360.ppm"
+        )
+        self.assertTrue(fixture.is_file(), f"missing synthetic person fixture: {fixture}")
+
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            manifest = temporary / "frames.tsv"
+            trace = temporary / "trace.jsonl"
+            manifest.write_text(
+                "monotonic_ms\tframe_path\n"
+                + "".join(f"{frame_index * 40}\t{fixture}\n" for frame_index in range(70)),
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    str(self.binary),
+                    "--model",
+                    str(self.model),
+                    "--manifest",
+                    str(manifest),
+                    "--trace",
+                    str(trace),
+                    "--output-width",
+                    "1920",
+                    "--output-height",
+                    "1080",
+                    "--operator-select-first-candidate-at-ms",
+                    "2200",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            trace_text = trace.read_text(encoding="utf-8")
+            events = [json.loads(line) for line in trace_text.splitlines()]
+            diagnostics = [event for event in events if event["kind"] == "tracker_diagnostics"]
+            candidates = [event for event in events if event["kind"] == "candidate"]
+            commands = [event for event in events if event["kind"] == "command"]
+            summary = next(event for event in events if event["kind"] == "summary")
+
+            self.assertGreater(max(event["detector_work_count"] for event in diagnostics), 0)
+            self.assertGreater(max(event["detection_count"] for event in diagnostics), 0)
+            self.assertGreater(len(candidates), 0)
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(commands[0]["origin"], "explicit_operator_flag")
+            self.assertTrue(summary["operator_selection_applied"])
+            self.assertEqual(summary["snapshot"]["state"], "locked")
+            self.assertEqual(summary["snapshot"]["crop_action"], "track")
+
+            selection_index = events.index(commands[0])
+            self.assertTrue(
+                all(
+                    event["snapshot"]["selected_handle"] is None
+                    for event in events[:selection_index]
+                    if "snapshot" in event
+                ),
+                "the synthetic detection must not select a target without an operator command",
+            )
+            for event in candidates:
+                x, y, width, height = event["candidate"]["rect"]
+                self.assertGreater(width, 0.0)
+                self.assertGreater(height, 0.0)
+                self.assertGreaterEqual(x, 0.0)
+                self.assertGreaterEqual(y, 0.0)
+                self.assertLessEqual(x + width, 1.00001)
+                self.assertLessEqual(y + height, 1.00001)
+            self.assertNotIn("pixels", trace_text)
+            self.assertNotIn("frame_path", trace_text)
+
     def test_resolution_change_invalidates_geometry_and_stays_safe_wide(self):
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
