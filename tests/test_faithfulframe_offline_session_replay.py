@@ -240,6 +240,16 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 for event in candidates
                 if event["candidate"]["continuity_token"] == selected_continuity
             ]
+            for event in selected_track:
+                center_x = (
+                    event["candidate"]["rect"][0]
+                    + event["candidate"]["rect"][2] / 2
+                )
+                self.assertLess(
+                    center_x,
+                    0.5,
+                    "the selected left-speaker continuity must not drift onto the right speaker",
+                )
             detector_misses = [
                 event
                 for event in selected_track
