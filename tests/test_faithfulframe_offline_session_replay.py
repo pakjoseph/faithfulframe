@@ -32,7 +32,11 @@ class OfflineSessionReplayTests(unittest.TestCase):
             trace = temporary / "trace.jsonl"
             manifest.write_text(
                 "monotonic_ms\tframe_path\n"
-                + "".join(f"{frame_index * 40}\t{fixture}\n" for frame_index in range(70)),
+                # Keep the scene static long enough for the production detector
+                # and correlation-tracker workers to publish a stable candidate
+                # across slower CI hosts. Event time stays deterministic; the
+                # replay does not sleep for the six simulated seconds.
+                + "".join(f"{frame_index * 40}\t{fixture}\n" for frame_index in range(150)),
                 encoding="utf-8",
             )
 
@@ -56,7 +60,15 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
+            failure_context = result.stderr
+            if result.returncode != 0 and trace.is_file():
+                diagnostic_events = [
+                    json.loads(line)
+                    for line in trace.read_text(encoding="utf-8").splitlines()
+                    if '"kind":"tracker_diagnostics"' in line
+                ]
+                failure_context += f"\nDetector/tracker diagnostics: {diagnostic_events}"
+            self.assertEqual(result.returncode, 0, failure_context)
 
             trace_text = trace.read_text(encoding="utf-8")
             events = [json.loads(line) for line in trace_text.splitlines()]
