@@ -108,6 +108,7 @@ pub enum Reason {
     SelectedByOperator,
     ContinuityRecovered,
     TargetEvidenceStale,
+    TargetDetectorUnconfirmed,
     TargetLossDeadlineExpired,
     ResetWide,
     LifecycleInvalidated,
@@ -222,6 +223,10 @@ pub struct Candidate {
     pub observation_version: u64,
     pub generations: Generations,
     pub observed_at: Millis,
+    /// Monotonic timestamp of the most recent detector confirmation for this
+    /// tracker identity. Zero means the latest detector result did not
+    /// confirm it; correlation-tracker updates alone are not confirmation.
+    pub detector_confirmed_at: Millis,
     pub expires_at: Millis,
     pub rect: Rect,
 }
@@ -520,6 +525,7 @@ impl TrackingSession {
                     && observation_version == self.observation_version
                     && let Some(candidate) = self.latest.get(&handle).copied()
                     && candidate.observation_version == observation_version
+                    && candidate.detector_confirmed_at != 0
                     && candidate.expires_at >= at
                     && candidate.observed_at <= at
                     && at.saturating_sub(candidate.observed_at) <= self.config.max_evidence_age_ms
@@ -556,6 +562,7 @@ impl TrackingSession {
             || candidate.identity != self.identity
             || candidate.generations != self.generations
             || candidate.observed_at > at
+            || candidate.detector_confirmed_at > candidate.observed_at
             || candidate.expires_at < at
             || at.saturating_sub(candidate.observed_at) > self.config.max_evidence_age_ms
         {
@@ -611,6 +618,16 @@ impl TrackingSession {
         if let Some(selected) = self.selected {
             if selected.continuity == candidate.continuity
                 && self.state == State::Locked
+                && candidate.detector_confirmed_at == 0
+            {
+                self.state = State::Searching;
+                self.reason = Reason::TargetDetectorUnconfirmed;
+                self.crop_action = CropAction::Hold;
+                self.loss_started_at = Some(at);
+                self.loss_deadline = Some(at.saturating_add(self.config.loss_grace_ms));
+            } else if selected.continuity == candidate.continuity
+                && self.state == State::Locked
+                && candidate.detector_confirmed_at != 0
                 && candidate.observation_version > selected.observation_version
                 && candidate.observed_at > selected.last_seen
             {
@@ -624,6 +641,7 @@ impl TrackingSession {
                 self.crop_action = CropAction::Track;
             } else if selected.continuity == candidate.continuity
                 && self.state == State::Searching
+                && candidate.detector_confirmed_at != 0
                 && candidate.observation_version > selected.observation_version
                 && self
                     .loss_started_at
@@ -919,6 +937,7 @@ impl TrackingEngine {
         let recovered_after_evidence_gap = match event {
             Event::Candidate { candidate, .. } => selected_before.is_some_and(|selected| {
                 selected.continuity == candidate.continuity
+                    && candidate.detector_confirmed_at != 0
                     && candidate.observation_version > selected.observation_version
                     && candidate.observed_at.saturating_sub(selected.last_seen)
                         > self.session.config.max_evidence_age_ms
@@ -967,6 +986,7 @@ impl TrackingEngine {
             }
             Event::Candidate { candidate, .. } => selected_before.is_some_and(|selected| {
                 selected.continuity == candidate.continuity
+                    && candidate.detector_confirmed_at != 0
                     && candidate.observation_version > selected.observation_version
                     && candidate.observed_at > selected.last_seen
             }),
@@ -1156,6 +1176,7 @@ mod tests {
             observation_version,
             generations: generations(),
             observed_at: at,
+            detector_confirmed_at: at,
             expires_at: at + 10,
             rect: rect(),
         }
@@ -2834,6 +2855,7 @@ mod tests {
             observation_version: 2,
             generations: generations(),
             observed_at: first_observation.observed_at,
+            detector_confirmed_at: first_observation.detector_confirmed_at,
             expires_at: first_observation.expires_at,
             rect: Rect::normalized(0.8, 0.2, 0.1, 0.2).unwrap(),
         };
@@ -2899,6 +2921,7 @@ mod tests {
             observation_version: 2,
             generations: generations(),
             observed_at: 5,
+            detector_confirmed_at: 5,
             expires_at: 15,
             rect: Rect::normalized(0.8, 0.2, 0.1, 0.2).unwrap(),
         };
@@ -2915,6 +2938,7 @@ mod tests {
             observation_version: 3,
             generations: generations(),
             observed_at: 6,
+            detector_confirmed_at: 6,
             expires_at: 16,
             rect: Rect::normalized(0.65, 0.2, 0.1, 0.2).unwrap(),
         };
@@ -2933,6 +2957,96 @@ mod tests {
             after_selected_update.crop.y + after_selected_update.crop.height
                 >= selected_update.rect.y + selected_update.rect.height
         );
+    }
+
+    #[test]
+    fn detector_miss_holds_the_crop_and_only_same_continuity_can_recover() {
+        let mut engine = TrackingEngine::new(
+            Config {
+                loss_grace_ms: 100,
+                max_evidence_age_ms: 10,
+                ..Config::default()
+            },
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        let seen = engine.apply(Event::Candidate {
+            at: 2,
+            candidate: candidate(10, 100, 1, 2),
+        });
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: seen.identity,
+                status_version: seen.status_version,
+                generations: seen.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: seen.observation_version,
+                },
+            },
+        });
+        assert_eq!(locked.state, State::Locked);
+
+        let mut detector_miss = candidate(10, 100, 2, 4);
+        detector_miss.detector_confirmed_at = 0;
+        let held = engine.apply(Event::Candidate {
+            at: 4,
+            candidate: detector_miss,
+        });
+        assert_eq!(held.state, State::Searching);
+        assert_eq!(held.reason, Reason::TargetDetectorUnconfirmed);
+        assert_eq!(held.crop_action, CropAction::Hold);
+        assert_eq!(held.selected, Some(10));
+        assert_eq!(held.crop, locked.crop);
+
+        let stale_click = engine.apply(Event::Command {
+            at: 5,
+            envelope: CommandEnvelope {
+                identity: held.identity,
+                status_version: held.status_version,
+                generations: held.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: 2,
+                },
+            },
+        });
+        assert_eq!(
+            stale_click.command_result,
+            CommandResult::Rejected(Reason::StaleCommand)
+        );
+        assert_eq!(stale_click.state, State::Searching);
+        assert_eq!(stale_click.selected, Some(10));
+        assert_eq!(stale_click.crop, locked.crop);
+
+        let other_person = engine.apply(Event::Candidate {
+            at: 6,
+            candidate: candidate(11, 777, 3, 6),
+        });
+        assert_eq!(other_person.state, State::Searching);
+        assert_eq!(other_person.selected, Some(10));
+        assert_eq!(other_person.crop, locked.crop);
+
+        let same_person = engine.apply(Event::Candidate {
+            at: 7,
+            candidate: candidate(12, 100, 4, 7),
+        });
+        assert_eq!(same_person.state, State::Locked);
+        assert_eq!(same_person.reason, Reason::ContinuityRecovered);
+        assert_eq!(same_person.selected, Some(12));
     }
 
     #[test]
@@ -3277,6 +3391,7 @@ mod tests {
             observation_version: 1,
             generations: searching.generations,
             observed_at: 2,
+            detector_confirmed_at: 2,
             expires_at: 20,
             rect: rect(),
         };

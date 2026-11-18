@@ -284,6 +284,8 @@ const char *reason_name(uint32_t value)
 		return "continuity_recovered";
 	case FF_REASON_TARGET_EVIDENCE_STALE:
 		return "target_evidence_stale";
+	case FF_REASON_TARGET_DETECTOR_UNCONFIRMED:
+		return "target_detector_unconfirmed";
 	case FF_REASON_TARGET_LOSS_DEADLINE_EXPIRED:
 		return "target_loss_deadline_expired";
 	case FF_REASON_RESET_WIDE:
@@ -605,7 +607,9 @@ int main(int argc, char **argv)
 		write_snapshot_event(*trace, "tick", frame_index, timestamp_ms, snapshot);
 
 		std::vector<ff_candidate> candidates;
+		std::vector<float> tracker_scores;
 		candidates.reserve(manager->tracker_rects.size());
+		tracker_scores.reserve(manager->tracker_rects.size());
 		for (const auto &tracker : manager->tracker_rects) {
 			if (candidates.size() == faithfulframe_max_candidates)
 				break;
@@ -622,7 +626,8 @@ int main(int argc, char **argv)
 							    : tracker.observed_at_ms + 500;
 			candidates.push_back(ff_candidate{tracker.candidate_handle, tracker.continuity_token, identity,
 							  observation_version, generations, tracker.observed_at_ms,
-							  expires_at, rect});
+							  expires_at, tracker.detector_confirmed_at_ms, rect});
+			tracker_scores.push_back(tracker.rect.score);
 		}
 		std::array<size_t, 6> tracker_state_counts{};
 		for (const auto &tracker : manager->trackers) {
@@ -652,7 +657,8 @@ int main(int argc, char **argv)
 		}
 
 		if (!candidates.empty()) {
-			for (ff_candidate &candidate : candidates) {
+			for (size_t candidate_index = 0; candidate_index < candidates.size(); ++candidate_index) {
+				ff_candidate &candidate = candidates[candidate_index];
 				if (ff_session_publish_candidate(session.get(), timestamp_ms, &candidate, &snapshot) !=
 				    FF_OK) {
 					error = "Rust session rejected a dlib tracker candidate";
@@ -661,10 +667,12 @@ int main(int argc, char **argv)
 				++candidate_observations;
 				*trace << "{\"kind\":\"candidate\",\"frame_index\":" << frame_index
 				       << ",\"at_ms\":" << timestamp_ms
+				       << ",\"tracker_score\":" << tracker_scores[candidate_index]
 				       << ",\"candidate\":{\"handle\":" << candidate.handle
 				       << ",\"continuity_token\":" << candidate.continuity_token
 				       << ",\"observation_version\":" << candidate.observation_version
 				       << ",\"observed_at_ms\":" << candidate.observed_at_ms
+				       << ",\"detector_confirmed_at_ms\":" << candidate.detector_confirmed_at_ms
 				       << ",\"expires_at_ms\":" << candidate.expires_at_ms << ",\"rect\":["
 				       << candidate.rect.x << ',' << candidate.rect.y << ',' << candidate.rect.width
 				       << ',' << candidate.rect.height << "]},";

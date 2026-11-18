@@ -633,6 +633,8 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 			return QString("Command rejected; target loss began independently. Holding framing; same-speaker "
 				       "reacquisition: %1 s, then select again.")
 				.arg(preview.loss_remaining_ms / 1000.0, 0, 'f', 1);
+		if (preview.reason == FF_REASON_TARGET_DETECTOR_UNCONFIRMED)
+			return "Command rejected; detector confirmation was lost independently. Framing is held while it checks for the same speaker.";
 		if (preview.reason == FF_REASON_TARGET_LOSS_DEADLINE_EXPIRED)
 			return "Command rejected; the recovery timer expired independently. Select a face to start following again or reset wide.";
 		if (preview.reason == FF_REASON_FRAMING_FAILURE)
@@ -661,6 +663,8 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 		return "Camera or tracking settings changed; select the speaker again before following";
 	if (preview.reason == FF_REASON_TRACKER_IDENTITY_EXPIRED)
 		return "Tracker identity changed; select the speaker again before following";
+	if (preview.reason == FF_REASON_TARGET_DETECTOR_UNCONFIRMED)
+		return "The detector no longer confirms this speaker; holding framing while it checks for the same person. Select a face again if needed.";
 	switch (preview.state) {
 	case FF_STATE_FROZEN:
 		if (preview.reason == FF_REASON_RESET_WIDE)

@@ -90,6 +90,11 @@ struct faithfulframe_tracker_settings_queue
 #ifdef ENABLE_RUST_CORE_BRIDGE
 static constexpr uint64_t safe_preview_max_snapshot_age_ms = 500;
 static constexpr uint64_t safe_candidate_max_age_ms = 500;
+// The manager schedules dlib detection every two seconds. Confirmation expires
+// one candidate-freshness window after that cadence, so a stalled detector
+// cannot leave correlation-tracker output authorized indefinitely.
+static constexpr uint64_t safe_detector_confirmation_max_age_ms =
+	face_tracker_manager::detector_interval_ms + safe_candidate_max_age_ms;
 
 struct faithfulframe_source_binding;
 static void faithfulframe_bound_source_updated(void *data, calldata_t *params);
@@ -1904,7 +1909,9 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 	const uint64_t version = binding->observation_version + 1;
 
 	std::array<ff_candidate, faithfulframe_session_executor::max_candidates> candidates{};
+	std::array<ff_candidate, faithfulframe_session_executor::max_candidates> preview_candidates{};
 	size_t count = 0;
+	size_t preview_count = 0;
 	for (const auto &tracker : s->ftm->tracker_rects) {
 		if (count == candidates.size() || !tracker.candidate_handle || !tracker.continuity_token)
 			continue;
@@ -1923,11 +1930,18 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		candidate.observation_version = version;
 		candidate.generations = generations;
 		candidate.observed_at_ms = tracker.observed_at_ms;
+		candidate.detector_confirmed_at_ms =
+			faithfulframe_detector_confirmation_is_fresh(tracker.detector_confirmed_at_ms, now,
+								     safe_detector_confirmation_max_age_ms)
+				? tracker.detector_confirmed_at_ms
+				: 0;
 		candidate.expires_at_ms =
 			tracker.observed_at_ms > std::numeric_limits<uint64_t>::max() - safe_candidate_max_age_ms
 				? std::numeric_limits<uint64_t>::max()
 				: tracker.observed_at_ms + safe_candidate_max_age_ms;
 		candidate.rect = ff_rect{x0, y0, x1 - x0, y1 - y0};
+		if (candidate.detector_confirmed_at_ms && preview_count < preview_candidates.size())
+			preview_candidates[preview_count++] = candidate;
 	}
 	if (count) {
 		if (executor->enqueue_candidates(now, candidates.data(), count)) {
@@ -1939,8 +1953,9 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 				binding->preview.generations = generations;
 				binding->preview.observation_version = version;
 				binding->preview.published_at_ms = now;
-				binding->preview.candidate_count = count;
-				std::copy_n(candidates.begin(), count, binding->preview.candidates.begin());
+				binding->preview.candidate_count = preview_count;
+				std::copy_n(preview_candidates.begin(), preview_count,
+					    binding->preview.candidates.begin());
 			}
 		}
 	} else {
@@ -2730,7 +2745,9 @@ static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, co
 		const size_t count = std::min(preview.candidate_count, preview.candidates.size());
 		for (size_t i = 0; i < count; ++i) {
 			const ff_candidate &candidate = preview.candidates[i];
-			if (candidate.expires_at_ms >= now && candidate.observed_at_ms <= now &&
+			if (candidate.detector_confirmed_at_ms &&
+			    candidate.detector_confirmed_at_ms <= candidate.observed_at_ms &&
+			    candidate.expires_at_ms >= now && candidate.observed_at_ms <= now &&
 			    candidate.observation_version == preview.observation_version &&
 			    candidate.identity.source == preview.identity.source &&
 			    candidate.identity.session == preview.identity.session &&
@@ -3240,7 +3257,9 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	set_generation_fields(cd, preview.generations, "candidate_");
 	for (size_t i = 0; i < count; ++i) {
 		const ff_candidate &candidate = preview.candidates[i];
-		if (!ff_preview_observation_is_fresh(candidate.observed_at_ms, now, safe_candidate_max_age_ms) ||
+		if (!candidate.detector_confirmed_at_ms ||
+		    candidate.detector_confirmed_at_ms > candidate.observed_at_ms ||
+		    !ff_preview_observation_is_fresh(candidate.observed_at_ms, now, safe_candidate_max_age_ms) ||
 		    candidate.expires_at_ms < now || !faithfulframe_valid_normalized_rect(candidate.rect))
 			continue;
 		const std::string suffix = std::to_string(i);

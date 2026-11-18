@@ -29,6 +29,12 @@ def read_synthetic_portrait(portrait_path: Path) -> tuple[int, int, bytes]:
 
 
 def write_two_cartoon_face_scene(path: Path, portrait_path: Path) -> None:
+    write_cartoon_faces_scene(path, portrait_path, (320, 1280))
+
+
+def write_cartoon_faces_scene(
+    path: Path, portrait_path: Path, x_positions: tuple[int, ...]
+) -> None:
     portrait_width, portrait_height, portrait = read_synthetic_portrait(portrait_path)
 
     width, height = 1920, 1080
@@ -36,7 +42,9 @@ def write_two_cartoon_face_scene(path: Path, portrait_path: Path) -> None:
     # Duplicate the procedurally drawn, non-identifiable cartoon in a simple
     # stage scene. This exercises detector candidate enumeration without
     # storing real-person imagery or biometric data.
-    for x in (320, 1280):
+    for x in x_positions:
+        if x < 0 or x + portrait_width > width:
+            raise ValueError("synthetic portrait must fit inside the stage frame")
         y = (height - portrait_height) // 2
         for row in range(portrait_height):
             source_start = row * portrait_width * 3
@@ -161,6 +169,110 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 self.assertGreaterEqual(y, 0.0)
                 self.assertLessEqual(x + width, 1.00001)
                 self.assertLessEqual(y + height, 1.00001)
+            self.assertNotIn("pixels", trace_text)
+            self.assertNotIn("frame_path", trace_text)
+
+    def test_detector_miss_holds_selected_crop_without_switching_to_other_face(self):
+        portrait = (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "offline-synthetic-person-320x360.ppm"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            both = temporary / "both-cartoon-faces.ppm"
+            right_only = temporary / "right-cartoon-face.ppm"
+            manifest = temporary / "frames.tsv"
+            trace = temporary / "trace.jsonl"
+            write_cartoon_faces_scene(both, portrait, (320, 1280))
+            write_cartoon_faces_scene(right_only, portrait, (1280,))
+
+            rows = ["monotonic_ms\tframe_path\n"]
+            for frame_index in range(210):
+                if frame_index < 70 or frame_index >= 130:
+                    frame = both
+                else:
+                    frame = right_only
+                rows.append(f"{frame_index * 40}\t{frame}\n")
+            manifest.write_text("".join(rows), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    str(self.binary),
+                    "--model",
+                    str(self.model),
+                    "--manifest",
+                    str(manifest),
+                    "--trace",
+                    str(trace),
+                    "--output-width",
+                    "1920",
+                    "--output-height",
+                    "1080",
+                    "--operator-select-first-candidate-at-ms",
+                    "2200",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            trace_text = trace.read_text(encoding="utf-8")
+            events = [json.loads(line) for line in trace_text.splitlines()]
+            candidates = [event for event in events if event["kind"] == "candidate"]
+            commands = [event for event in events if event["kind"] == "command"]
+            self.assertEqual(len(commands), 1)
+            selected_handle = commands[0]["candidate_handle"]
+            selected_candidate = next(
+                event["candidate"]
+                for event in candidates
+                if event["candidate"]["handle"] == selected_handle
+            )
+            self.assertLess(
+                selected_candidate["rect"][0] + selected_candidate["rect"][2] / 2,
+                0.5,
+                "the first explicit selection should lock the left cartoon speaker",
+            )
+            selected_continuity = selected_candidate["continuity_token"]
+            selected_track = [
+                event
+                for event in candidates
+                if event["candidate"]["continuity_token"] == selected_continuity
+            ]
+            detector_misses = [
+                event
+                for event in selected_track
+                if event["candidate"]["detector_confirmed_at_ms"] == 0
+            ]
+            self.assertTrue(
+                detector_misses,
+                "the detector must mark the selected tracker unconfirmed after the simulated occlusion",
+            )
+            first_miss = detector_misses[0]
+            self.assertEqual(first_miss["snapshot"]["state"], "searching")
+            self.assertEqual(first_miss["snapshot"]["reason"], "target_detector_unconfirmed")
+            self.assertEqual(first_miss["snapshot"]["crop_action"], "hold")
+            held_crop = first_miss["snapshot"]["source_crop"]
+            for event in selected_track:
+                if event["frame_index"] >= first_miss["frame_index"]:
+                    self.assertEqual(event["snapshot"]["source_crop"], held_crop)
+                    self.assertIn(
+                        event["snapshot"]["selected_handle"], (selected_handle, None)
+                    )
+
+            reappeared_left = [
+                event
+                for event in candidates
+                if event["at_ms"] >= 5200
+                and event["candidate"]["detector_confirmed_at_ms"] != 0
+                and event["candidate"]["rect"][0] + event["candidate"]["rect"][2] / 2 < 0.5
+                and event["candidate"]["continuity_token"] != selected_continuity
+            ]
+            self.assertTrue(reappeared_left, "the returning face should get new tracker evidence")
+            for event in reappeared_left:
+                self.assertNotEqual(event["snapshot"]["selected_handle"], event["candidate"]["handle"])
+                self.assertNotEqual(event["snapshot"]["crop_action"], "track")
             self.assertNotIn("pixels", trace_text)
             self.assertNotIn("frame_path", trace_text)
 

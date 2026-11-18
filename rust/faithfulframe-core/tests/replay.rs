@@ -121,6 +121,8 @@ struct FixtureEvent {
     continuity: Option<u64>,
     observation_version: Option<u64>,
     observed_at_ms: Option<u64>,
+    #[serde(default)]
+    detector_confirmed_at_ms: Option<u64>,
     expires_at_ms: Option<u64>,
     rect: Option<FixtureRect>,
     event: Option<FixtureLifecycle>,
@@ -132,6 +134,7 @@ impl FixtureEvent {
             && self.continuity.is_none()
             && self.observation_version.is_none()
             && self.observed_at_ms.is_none()
+            && self.detector_confirmed_at_ms.is_none()
             && self.expires_at_ms.is_none()
             && self.rect.is_none();
         match self.kind {
@@ -370,6 +373,9 @@ fn to_event(event: &FixtureEvent) -> Event {
                     .expect("candidate generations")
                     .into(),
                 observed_at: event.observed_at_ms.expect("candidate observed_at_ms"),
+                detector_confirmed_at: event
+                    .detector_confirmed_at_ms
+                    .unwrap_or_else(|| event.observed_at_ms.expect("candidate observed_at_ms")),
                 expires_at: event.expires_at_ms.expect("candidate expires_at_ms"),
                 rect: event.rect.as_ref().expect("candidate rect").into(),
             },
@@ -463,6 +469,7 @@ fn reason_name(reason: Reason) -> &'static str {
         Reason::SelectedByOperator => "selected_by_operator",
         Reason::ContinuityRecovered => "continuity_recovered",
         Reason::TargetEvidenceStale => "target_evidence_stale",
+        Reason::TargetDetectorUnconfirmed => "target_detector_unconfirmed",
         Reason::TargetLossDeadlineExpired => "target_loss_deadline_expired",
         Reason::ResetWide => "reset_wide",
         Reason::LifecycleInvalidated => "lifecycle_invalidated",

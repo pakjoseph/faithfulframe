@@ -26,3 +26,9 @@ inline bool faithfulframe_tracker_worker_budget_available(std::size_t active, st
 {
 	return active < faithfulframe_max_candidates && idle < faithfulframe_max_candidates - active;
 }
+
+inline bool faithfulframe_detector_confirmation_is_fresh(std::uint64_t confirmed_at_ms, std::uint64_t now_ms,
+							 std::uint64_t maximum_age_ms)
+{
+	return confirmed_at_ms != 0 && confirmed_at_ms <= now_ms && now_ms - confirmed_at_ms <= maximum_age_ms;
+}

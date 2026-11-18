@@ -34,5 +34,10 @@ int main()
 	next = maximum + 1;
 	check(faithfulframe_allocate_candidate_handle(next) == 0);
 	check(next == maximum + 1);
+
+	check(faithfulframe_detector_confirmation_is_fresh(1000, 3500, 2500));
+	check(!faithfulframe_detector_confirmation_is_fresh(1000, 3501, 2500));
+	check(!faithfulframe_detector_confirmation_is_fresh(3501, 3500, 2500));
+	check(!faithfulframe_detector_confirmation_is_fresh(0, 0, 2500));
 	return 0;
 }

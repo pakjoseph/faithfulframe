@@ -127,6 +127,7 @@ inline void face_tracker_manager::attenuate_tracker()
 		if (trackers[i].state != tracker_inst_s::tracker_state_available)
 			continue;
 		struct tracker_inst_s &t = trackers[i];
+		t.detector_confirmed_at_ms = 0;
 
 		int a1 = (t.rect.x1 - t.rect.x0) * (t.rect.y1 - t.rect.y0);
 		float amax = (float)a1 * 0.1f;
@@ -135,6 +136,10 @@ inline void face_tracker_manager::attenuate_tracker()
 			float a = (float)common_area(r, t.rect);
 			if (a > amax)
 				amax = a;
+			if (detector_result_captured_at_ms &&
+			    ff_tracker_boxes_match(ff_tracker_box_i{r.x0, r.y0, r.x1, r.y1},
+						   ff_tracker_box_i{t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1}))
+				t.detector_confirmed_at_ms = detector_result_captured_at_ms;
 		}
 
 		t.att *= powf(amax / a1, 0.1f); // if no faces, remove the tracker
@@ -216,6 +221,7 @@ inline void face_tracker_manager::copy_detector_to_tracker()
 		tracker.tracker->set_landmark_detection(landmark_detection_data);
 		tracker.tracker->unlock();
 		tracker.observed_at_ms = 0;
+		tracker.detector_confirmed_at_ms = detector_result_captured_at_ms;
 		tracker.rect = detection;
 		tracker.seed_texture.reset();
 		if (!tracker.tracker->start())
@@ -298,6 +304,7 @@ inline void face_tracker_manager::stage_to_detector(std::shared_ptr<texture_obje
 		detect->get_faces(detect_rects);
 		const uint64_t current_epoch = detection_epoch.load(std::memory_order_acquire);
 		if (face_detector_result_epoch_is_current(detect->completed_result_epoch(), current_epoch)) {
+			detector_result_captured_at_ms = detector_input_captured_at_ms;
 			for (size_t i = 0; i < detect_rects.size(); i++)
 				debug_detect("stage_to_detector: detect_rects %d %d %d %d %d %f", i, detect_rects[i].x0,
 					     detect_rects[i].y0, detect_rects[i].x1, detect_rects[i].y1,
@@ -329,6 +336,7 @@ inline void face_tracker_manager::stage_to_detector(std::shared_ptr<texture_obje
 			return;
 		}
 		detect->set_texture(cvtex, detector_crop_l, detector_crop_r, detector_crop_t, detector_crop_b);
+		detector_input_captured_at_ms = cvtex->captured_at_ms;
 		if (detector_engine == engine_dlib_hog) {
 			if (auto *d = dynamic_cast<face_detector_dlib_hog *>(detect))
 				d->set_model(detector_dlib_hog_model.c_str());
@@ -472,6 +480,7 @@ static inline void make_tracker_rects(std::vector<face_tracker_manager::tracker_
 		r.candidate_handle = trackers[i].candidate_handle;
 		r.continuity_token = trackers[i].continuity_token;
 		r.observed_at_ms = trackers[i].observed_at_ms;
+		r.detector_confirmed_at_ms = trackers[i].detector_confirmed_at_ms;
 		r.rect = trackers[i].rect;
 		r.rect.score = score;
 		r.crop_rect = trackers[i].crop_rect;
@@ -495,7 +504,8 @@ void face_tracker_manager::tick(float second)
 	}
 
 	if (detect_tick == tick_cnt)
-		next_tick_stage_to_detector = tick_cnt + (int)(2.0f / second); // detect for each _ second(s).
+		next_tick_stage_to_detector =
+			tick_cnt + (int)(detector_interval_seconds / second); // detector scan cadence.
 
 	tick_cnt += 1;
 

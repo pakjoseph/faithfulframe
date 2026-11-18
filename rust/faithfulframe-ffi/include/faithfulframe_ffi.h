@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-enum { FAITHFULFRAME_FFI_ABI_VERSION = 9 };
+enum { FAITHFULFRAME_FFI_ABI_VERSION = 10 };
 
 typedef enum ff_result { FF_OK = 0, FF_INVALID_ARGUMENT = 1, FF_PANIC = 2 } ff_result;
 
@@ -82,7 +82,8 @@ typedef enum ff_status_reason {
 	FF_REASON_SESSION_CLOSED = 16,
 	FF_REASON_STALE_LIFECYCLE = 17,
 	FF_REASON_INVALID_LIFECYCLE = 18,
-	FF_REASON_FRAMING_FAILURE = 19
+	FF_REASON_FRAMING_FAILURE = 19,
+	FF_REASON_TARGET_DETECTOR_UNCONFIRMED = 20
 } ff_status_reason;
 
 typedef struct ff_generations
@@ -146,6 +147,8 @@ typedef struct ff_candidate
 	ff_generations generations;
 	uint64_t observed_at_ms;
 	uint64_t expires_at_ms;
+	/* Zero means a detector observation did not confirm this track. */
+	uint64_t detector_confirmed_at_ms;
 	ff_rect rect;
 } ff_candidate;
 
@@ -219,7 +222,7 @@ static_assert(sizeof(ff_generations) == 40, "ff_generations ABI layout changed")
 static_assert(sizeof(ff_identity) == 16, "ff_identity ABI layout changed");
 static_assert(sizeof(ff_rect) == 16, "ff_rect ABI layout changed");
 static_assert(sizeof(ff_session_config) == 72, "ff_session_config ABI layout changed");
-static_assert(sizeof(ff_candidate) == 112, "ff_candidate ABI layout changed");
+static_assert(sizeof(ff_candidate) == 120, "ff_candidate ABI layout changed");
 static_assert(sizeof(ff_command) == 88, "ff_command ABI layout changed");
 static_assert(sizeof(ff_lifecycle) == 72, "ff_lifecycle ABI layout changed");
 static_assert(sizeof(ff_snapshot) == 152, "ff_snapshot ABI layout changed");
@@ -229,7 +232,8 @@ static_assert(alignof(ff_snapshot) == 8, "ff_snapshot alignment changed");
 static_assert(offsetof(ff_session_config, dead_zone_fraction) == 60, "ff_session_config field offset changed");
 static_assert(offsetof(ff_session_config, zoom_smoothing) == 64, "ff_session_config field offset changed");
 static_assert(offsetof(ff_candidate, generations) == 40, "ff_candidate field offset changed");
-static_assert(offsetof(ff_candidate, rect) == 96, "ff_candidate field offset changed");
+static_assert(offsetof(ff_candidate, detector_confirmed_at_ms) == 96, "ff_candidate field offset changed");
+static_assert(offsetof(ff_candidate, rect) == 104, "ff_candidate field offset changed");
 static_assert(offsetof(ff_command, generations) == 32, "ff_command field offset changed");
 static_assert(offsetof(ff_lifecycle, generations) == 24, "ff_lifecycle field offset changed");
 static_assert(offsetof(ff_snapshot, crop) == 76, "ff_snapshot field offset changed");

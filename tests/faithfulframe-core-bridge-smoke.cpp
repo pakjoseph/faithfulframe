@@ -9,12 +9,13 @@ static_assert(sizeof(ff_rect) == 16);
 static_assert(sizeof(ff_session_config) == 72);
 static_assert(offsetof(ff_session_config, dead_zone_fraction) == 60);
 static_assert(offsetof(ff_session_config, zoom_smoothing) == 64);
-static_assert(sizeof(ff_candidate) == 112);
+static_assert(sizeof(ff_candidate) == 120);
 static_assert(sizeof(ff_command) == 88);
 static_assert(sizeof(ff_lifecycle) == 72);
 static_assert(sizeof(ff_snapshot) == 152);
 static_assert(offsetof(ff_candidate, generations) == 40);
-static_assert(offsetof(ff_candidate, rect) == 96);
+static_assert(offsetof(ff_candidate, detector_confirmed_at_ms) == 96);
+static_assert(offsetof(ff_candidate, rect) == 104);
 static_assert(offsetof(ff_command, generations) == 32);
 static_assert(offsetof(ff_lifecycle, generations) == 24);
 static_assert(offsetof(ff_snapshot, crop) == 76);
@@ -49,7 +50,7 @@ int main()
 	if (bridge.apply_command(2, enable, snapshot) != FF_OK || snapshot.state != FF_STATE_SEARCHING)
 		return 3;
 
-	const ff_candidate candidate{22, 1001, identity, 1, generations, 3, 500, {0.4f, 0.2f, 0.1f, 0.2f}};
+	const ff_candidate candidate{22, 1001, identity, 1, generations, 3, 500, 3, {0.4f, 0.2f, 0.1f, 0.2f}};
 	if (bridge.publish_candidate(3, candidate, snapshot) != FF_OK || snapshot.observation_version != 1)
 		return 4;
 
@@ -182,8 +183,8 @@ int main()
 					 0};
 	if (deadline_bridge.apply_command(2, deadline_enable, deadline_snapshot) != FF_OK)
 		return 21;
-	const ff_candidate deadline_candidate{31, 3001, deadline_identity,       1, deadline_generations,
-					      3,  500,  {0.4f, 0.2f, 0.1f, 0.2f}};
+	const ff_candidate deadline_candidate{31,  3001, deadline_identity,       1, deadline_generations, 3,
+					      500, 3,    {0.4f, 0.2f, 0.1f, 0.2f}};
 	if (deadline_bridge.publish_candidate(3, deadline_candidate, deadline_snapshot) != FF_OK)
 		return 22;
 	const ff_command deadline_select{FF_COMMAND_SELECT_CANDIDATE,      deadline_identity,

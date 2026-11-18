@@ -1039,6 +1039,7 @@ bool control_work_is_admitted_during_detector_backlog(const ff_session_config &c
 						     generations,
 						     at,
 						     at + config.max_evidence_age_ms,
+						     at,
 						     {0.4f, 0.2f, 0.1f, 0.2f}};
 			background_queued = executor.enqueue_candidates(at, &candidate, 1) && background_queued;
 		} else {
@@ -1046,10 +1047,9 @@ bool control_work_is_admitted_during_detector_backlog(const ff_session_config &c
 		}
 	}
 	const uint64_t next_version = faithfulframe_session_executor::max_queued_background_work / 2 + 1;
-	const ff_candidate excess_candidate{next_version, 1000 + next_version,
-					    identity,     next_version,
-					    generations,  32,
-					    532,          {0.5f, 0.2f, 0.1f, 0.2f}};
+	const ff_candidate excess_candidate{
+		next_version, 1000 + next_version,     identity, next_version, generations, 32, 532,
+		32,           {0.5f, 0.2f, 0.1f, 0.2f}};
 	const bool excess_background_rejected = !executor.enqueue_candidates(32, &excess_candidate, 1);
 	ff_generations inactive_generations{};
 	const bool lifecycle_generations_valid = faithfulframe_next_lifecycle_generations(
@@ -1335,7 +1335,7 @@ int run_smoke()
 							    snapshot))
 		return 2;
 
-	const ff_candidate candidate{22, 1001, identity, 1, generations, 3, 500, {0.4f, 0.2f, 0.1f, 0.2f}};
+	const ff_candidate candidate{22, 1001, identity, 1, generations, 3, 500, 3, {0.4f, 0.2f, 0.1f, 0.2f}};
 	if (!executor.enqueue_candidates(3, &candidate, 1) || !await_snapshot(
 								      executor,
 								      [](const ff_snapshot &value) {
@@ -1500,8 +1500,8 @@ int run_smoke()
 				      0,
 				      0};
 	const ff_candidate multi_candidates[] = {
-		{31, 310, multi_identity, 1, generations, 3, 503, {0.2f, 0.2f, 0.1f, 0.2f}},
-		{32, 320, multi_identity, 1, generations, 2, 502, {0.7f, 0.2f, 0.1f, 0.2f}},
+		{31, 310, multi_identity, 1, generations, 3, 503, 3, {0.2f, 0.2f, 0.1f, 0.2f}},
+		{32, 320, multi_identity, 1, generations, 2, 502, 2, {0.7f, 0.2f, 0.1f, 0.2f}},
 	};
 	if (!multi_face.enqueue_command(2, multi_enable) ||
 	    !await_snapshot(
@@ -1540,8 +1540,8 @@ int run_smoke()
 	const ff_command queued_enable{FF_COMMAND_ENABLE_AUTO_FOLLOW, ff_identity{102, 202}, 0, generations, 0, 0};
 	if (!queued.enqueue_command(20, queued_enable))
 		return 9;
-	const ff_candidate queued_candidate{23, 1002, ff_identity{102, 202},   1, generations,
-					    21, 500,  {0.3f, 0.2f, 0.2f, 0.3f}};
+	const ff_candidate queued_candidate{23,  1002, ff_identity{102, 202},   1, generations, 21,
+					    500, 21,   {0.3f, 0.2f, 0.2f, 0.3f}};
 	if (!queued.enqueue_candidates(21, &queued_candidate, 1))
 		return 10;
 	const ff_command stale_dock_command{FF_COMMAND_SELECT_CANDIDATE, ff_identity{102, 202}, 0, generations, 23, 1};
@@ -1654,8 +1654,8 @@ int run_smoke()
 		    deadline_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_SEARCHING; },
 		    deadline_snapshot))
 		return 26;
-	const ff_candidate initial_candidate{77, 900, deadline_snapshot.identity, 1, generations,
-					     2,  502, {0.4f, 0.2f, 0.1f, 0.2f}};
+	const ff_candidate initial_candidate{77,  900, deadline_snapshot.identity, 1, generations, 2,
+					     502, 2,   {0.4f, 0.2f, 0.1f, 0.2f}};
 	if (!deadline_executor.enqueue_candidates(2, &initial_candidate, 1) ||
 	    !await_snapshot(
 		    deadline_executor, [](const ff_snapshot &value) { return value.observation_version == 1; },
@@ -1669,8 +1669,8 @@ int run_smoke()
 		    deadline_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_LOCKED; },
 		    deadline_snapshot))
 		return 28;
-	const ff_candidate late_candidate{78,   900,  deadline_snapshot.identity, 2, generations,
-					  5503, 6003, {0.5f, 0.2f, 0.1f, 0.2f}};
+	const ff_candidate late_candidate{78,   900,  deadline_snapshot.identity, 2, generations, 5503,
+					  6003, 5503, {0.5f, 0.2f, 0.1f, 0.2f}};
 	if (!deadline_executor.enqueue_candidates(5503, &late_candidate, 1) ||
 	    !await_snapshot(
 		    deadline_executor,
@@ -1773,8 +1773,8 @@ int run_smoke()
 				      scene_snapshot.generations,
 				      0,
 				      0};
-	const ff_candidate scene_candidate{81, 810, scene_identity,          1, initial_generations,
-					   3,  503, {0.4f, 0.2f, 0.1f, 0.2f}};
+	const ff_candidate scene_candidate{81,  810, scene_identity,          1, initial_generations, 3,
+					   503, 3,   {0.4f, 0.2f, 0.1f, 0.2f}};
 	if (!scene_executor.enqueue_command(2, scene_enable) ||
 	    !await_snapshot(
 		    scene_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_SEARCHING; },
@@ -1844,8 +1844,8 @@ int run_smoke()
 		    },
 		    scene_snapshot))
 		return 57;
-	const ff_candidate after_scene_candidate{82, 820, scene_identity,          4, active_generations,
-						 8,  508, {0.5f, 0.2f, 0.1f, 0.2f}};
+	const ff_candidate after_scene_candidate{82,  820, scene_identity,          4, active_generations, 8,
+						 508, 8,   {0.5f, 0.2f, 0.1f, 0.2f}};
 	if (!scene_executor.enqueue_candidates(8, &after_scene_candidate, 1) ||
 	    !await_snapshot(
 		    scene_executor,
@@ -1970,8 +1970,8 @@ int run_smoke()
 						0};
 		if (!preview_executor.enqueue_command(1, preview_enable))
 			return 76;
-		const ff_candidate preview_candidate{41, 4001, preview_snapshot.identity, 1, generations,
-						     2,  502,  {0.4f, 0.2f, 0.1f, 0.2f}};
+		const ff_candidate preview_candidate{41,  4001, preview_snapshot.identity, 1, generations, 2,
+						     502, 2,    {0.4f, 0.2f, 0.1f, 0.2f}};
 		if (!preview_executor.enqueue_candidates(2, &preview_candidate, 1) ||
 		    !await_snapshot(
 			    preview_executor, [](const ff_snapshot &value) { return value.observation_version == 1; },
@@ -2009,8 +2009,9 @@ int run_smoke()
 			return 80;
 		// Refresh the selected tracker inside its grace period so the later
 		// stale-result check does not coincide with an independent loss deadline.
-		const ff_candidate fresh_continuity_candidate{43,   4001, preview_snapshot.identity, 3, generations,
-							      1600, 2100, {0.42f, 0.2f, 0.1f, 0.2f}};
+		const ff_candidate fresh_continuity_candidate{43,   4001,        preview_snapshot.identity,
+							      3,    generations, 1600,
+							      2100, 1600,        {0.42f, 0.2f, 0.1f, 0.2f}};
 		if (!preview_executor.enqueue_candidates(1600, &fresh_continuity_candidate, 1) ||
 		    !await_snapshot(
 			    preview_executor,
@@ -2028,8 +2029,8 @@ int run_smoke()
 			    preview_snapshot))
 			return 124;
 		const ff_snapshot before_late_candidate = preview_snapshot;
-		const ff_candidate late_candidate{44,   4002, preview_snapshot.identity, 4, generations,
-						  2006, 2506, {0.6f, 0.2f, 0.1f, 0.2f}};
+		const ff_candidate late_candidate{44,   4002, preview_snapshot.identity, 4, generations, 2006,
+						  2506, 2006, {0.6f, 0.2f, 0.1f, 0.2f}};
 		if (!preview_executor.enqueue_candidates(2006, &late_candidate, 1))
 			return 91;
 		// Candidate-event rejections are not retained as operator notices. Wait

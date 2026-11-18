@@ -8,6 +8,9 @@
 
 class face_tracker_manager {
 public:
+	static constexpr uint64_t detector_interval_ms = 2000;
+	static constexpr float detector_interval_seconds = 2.0f;
+
 	enum detector_engine_e {
 		engine_dlib_hog = 0,
 		engine_dlib_cnn = 1,
@@ -19,6 +22,7 @@ public:
 		uint64_t candidate_handle;
 		uint64_t continuity_token;
 		uint64_t observed_at_ms;
+		uint64_t detector_confirmed_at_ms;
 		rect_s rect;
 		rectf_s crop_rect;
 		std::vector<pointf_s> landmark;
@@ -30,6 +34,7 @@ public:
 		uint64_t continuity_token;
 		class face_tracker_base *tracker;
 		uint64_t observed_at_ms;
+		uint64_t detector_confirmed_at_ms;
 		rect_s rect;
 		rectf_s crop_tracker; // crop corresponding to current processing image
 		rectf_s crop_rect;    // crop corresponding to rect
@@ -77,6 +82,8 @@ public: /* not sure they are necessary to be public */
 	uint64_t next_candidate_handle;
 	std::atomic<uint64_t> detection_epoch{1};
 	std::atomic<uint64_t> detector_input_epoch{0};
+	uint64_t detector_input_captured_at_ms = 0;
+	uint64_t detector_result_captured_at_ms = 0;
 	std::atomic<uint64_t> stagesurface_map_count{0};
 	std::atomic<uint64_t> stagesurface_map_failure_count{0};
 	std::atomic<uint64_t> stagesurface_map_last_us{0};

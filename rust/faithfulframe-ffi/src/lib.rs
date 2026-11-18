@@ -68,6 +68,7 @@ pub struct FfCandidate {
     generations: FfGenerations,
     observed_at_ms: u64,
     expires_at_ms: u64,
+    detector_confirmed_at_ms: u64,
     rect: FfRect,
 }
 
@@ -121,7 +122,7 @@ const _: () = {
     assert!(std::mem::size_of::<FfIdentity>() == 16);
     assert!(std::mem::size_of::<FfRect>() == 16);
     assert!(std::mem::size_of::<FfSessionConfig>() == 72);
-    assert!(std::mem::size_of::<FfCandidate>() == 112);
+    assert!(std::mem::size_of::<FfCandidate>() == 120);
     assert!(std::mem::size_of::<FfCommand>() == 88);
     assert!(std::mem::size_of::<FfLifecycle>() == 72);
     assert!(std::mem::size_of::<FfSnapshot>() == 152);
@@ -188,6 +189,7 @@ fn map_reason(value: Reason) -> u32 {
         Reason::StaleLifecycle => 17,
         Reason::InvalidLifecycle => 18,
         Reason::FramingFailure => 19,
+        Reason::TargetDetectorUnconfirmed => 20,
     }
 }
 fn map_crop(value: CropAction) -> u32 {
@@ -310,7 +312,7 @@ fn lifecycle_kind(value: u32) -> Result<LifecycleKind, i32> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn faithfulframe_ffi_abi_version() -> u32 {
-    9
+    10
 }
 
 #[unsafe(no_mangle)]
@@ -473,6 +475,7 @@ pub unsafe extern "C" fn ff_session_publish_candidate(
             observation_version: input.observation_version,
             generations: generations(input.generations),
             observed_at: input.observed_at_ms,
+            detector_confirmed_at: input.detector_confirmed_at_ms,
             expires_at: input.expires_at_ms,
             rect: candidate_rect,
         };
@@ -607,7 +610,7 @@ mod tests {
 
     #[test]
     fn abi_version_is_stable() {
-        assert_eq!(faithfulframe_ffi_abi_version(), 9);
+        assert_eq!(faithfulframe_ffi_abi_version(), 10);
     }
 
     #[test]
@@ -703,6 +706,7 @@ mod tests {
         assert_eq!(map_reason(Reason::LifecycleInvalidated), 9);
         assert_eq!(map_reason(Reason::TrackerIdentityExpired), 14);
         assert_eq!(map_reason(Reason::FramingFailure), 19);
+        assert_eq!(map_reason(Reason::TargetDetectorUnconfirmed), 20);
     }
 
     #[test]
@@ -876,6 +880,7 @@ mod tests {
             generations,
             observed_at_ms: 2,
             expires_at_ms: 12,
+            detector_confirmed_at_ms: 2,
             rect: FfRect {
                 x: 0.2,
                 y: 0.2,
@@ -983,7 +988,7 @@ mod tests {
         assert_eq!(size_of::<FfIdentity>(), 16);
         assert_eq!(size_of::<FfRect>(), 16);
         assert_eq!(size_of::<FfSessionConfig>(), 72);
-        assert_eq!(size_of::<FfCandidate>(), 112);
+        assert_eq!(size_of::<FfCandidate>(), 120);
         assert_eq!(size_of::<FfCommand>(), 88);
         assert_eq!(size_of::<FfLifecycle>(), 72);
         assert_eq!(size_of::<FfSnapshot>(), 152);
@@ -991,7 +996,8 @@ mod tests {
         assert_eq!(align_of::<FfIdentity>(), 8);
         assert_eq!(align_of::<FfSnapshot>(), 8);
         assert_eq!(offset_of!(FfCandidate, generations), 40);
-        assert_eq!(offset_of!(FfCandidate, rect), 96);
+        assert_eq!(offset_of!(FfCandidate, detector_confirmed_at_ms), 96);
+        assert_eq!(offset_of!(FfCandidate, rect), 104);
         assert_eq!(offset_of!(FfSessionConfig, dead_zone_fraction), 60);
         assert_eq!(offset_of!(FfSessionConfig, zoom_smoothing), 64);
         assert_eq!(offset_of!(FfCommand, generations), 32);
