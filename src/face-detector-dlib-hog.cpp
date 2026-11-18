@@ -7,6 +7,7 @@
 #include "faithfulframe-worker-log.hpp"
 
 #include <dlib/image_processing/frontal_face_detector.h>
+#include <cstdlib>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -53,6 +54,7 @@ void face_detector_dlib_hog::set_texture(std::shared_ptr<texture_object> &tex, i
 
 void face_detector_dlib_hog::detect_main()
 {
+	const bool test_diagnostics = std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS") != nullptr;
 	// A failed frame must not leave the previous detections looking current.
 	p->rects.clear();
 	std::shared_ptr<texture_object> tex = std::move(p->tex);
@@ -61,8 +63,12 @@ void face_detector_dlib_hog::detect_main()
 		return;
 
 	dlib::matrix<dlib::rgb_pixel> img;
-	if (!tex->get_dlib_rgb_image(img))
+	if (!tex->get_dlib_rgb_image(img)) {
+		if (test_diagnostics)
+			faithfulframe_worker_log(LOG_INFO,
+						 "[FaithfulFrame test] HOG input could not be converted to RGB");
 		return;
+	}
 
 	int x0 = 0, y0 = 0;
 	if (p->crop_l > 0 || p->crop_r > 0 || p->crop_t > 0 || p->crop_b > 0) {
@@ -111,6 +117,9 @@ void face_detector_dlib_hog::detect_main()
 	if (!p->has_error) {
 		std::vector<std::pair<double, dlib::rectangle>> dets;
 		p->detector(img, dets);
+		if (test_diagnostics)
+			faithfulframe_worker_log(LOG_INFO, "[FaithfulFrame test] HOG input=%dx%d detections=%zu",
+						 (int)img.nc(), (int)img.nr(), dets.size());
 		p->rects.resize(dets.size());
 		for (size_t i = 0; i < dets.size(); i++) {
 			rect_s &r = p->rects[i];
