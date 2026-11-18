@@ -5,7 +5,6 @@ Test plugin is loaded
 import glob
 import os
 import shutil
-import struct
 import subprocess
 import tempfile
 import time
@@ -65,8 +64,8 @@ def clear_inherited_setup_shutdown_sentinels(config_path, logsdir):
     )
 
 
-def write_synthetic_person_bmp(output_path):
-    """Convert the checked-in non-identifiable PPM cartoon to OBS BMP input."""
+def write_synthetic_person_y4m(output_path):
+    """Create a short looping OBS video from the checked-in cartoon fixture."""
     fixture_path = os.path.join(
         os.path.dirname(__file__),
         os.pardir,
@@ -82,34 +81,42 @@ def write_synthetic_person_bmp(output_path):
     if len(rgb_pixels) != width * height * 3:
         raise ValueError('synthetic face fixture has an invalid pixel payload')
 
-    row_stride = (width * 3 + 3) & ~3
-    pixel_bytes = bytearray()
-    for y in range(height - 1, -1, -1):
-        row = bytearray()
-        row_start = y * width * 3
-        for x in range(width):
-            red, green, blue = rgb_pixels[row_start + x * 3 : row_start + x * 3 + 3]
-            row.extend((blue, green, red))
-        row.extend(b'\0' * (row_stride - len(row)))
-        pixel_bytes.extend(row)
+    luma = bytearray(width * height)
+    chroma_width = width // 2
+    chroma_height = height // 2
+    chroma_u = bytearray(chroma_width * chroma_height)
+    chroma_v = bytearray(chroma_width * chroma_height)
 
-    file_header = struct.pack('<2sIHHI', b'BM', 54 + len(pixel_bytes), 0, 0, 54)
-    dib_header = struct.pack(
-        '<IiiHHIIiiII',
-        40,
-        width,
-        height,
-        1,
-        24,
-        0,
-        len(pixel_bytes),
-        2835,
-        2835,
-        0,
-        0,
-    )
+    def rgb_to_yuv(red, green, blue):
+        return (
+            max(16, min(235, int(16 + 0.257 * red + 0.504 * green + 0.098 * blue + 0.5))),
+            max(16, min(240, int(128 - 0.148 * red - 0.291 * green + 0.439 * blue + 0.5))),
+            max(16, min(240, int(128 + 0.439 * red - 0.368 * green - 0.071 * blue + 0.5))),
+        )
+
+    for y in range(height):
+        for x in range(width):
+            offset = (y * width + x) * 3
+            luma[y * width + x] = rgb_to_yuv(*rgb_pixels[offset : offset + 3])[0]
+
+    for y in range(0, height, 2):
+        for x in range(0, width, 2):
+            samples = []
+            for dy in range(2):
+                for dx in range(2):
+                    offset = ((y + dy) * width + x + dx) * 3
+                    samples.append(rgb_to_yuv(*rgb_pixels[offset : offset + 3]))
+            chroma_index = (y // 2) * chroma_width + x // 2
+            chroma_u[chroma_index] = sum(sample[1] for sample in samples) // 4
+            chroma_v[chroma_index] = sum(sample[2] for sample in samples) // 4
+
     with open(output_path, 'wb') as output_file:
-        output_file.write(file_header + dib_header + pixel_bytes)
+        output_file.write(f'YUV4MPEG2 W{width} H{height} F30:1 Ip A1:1 C420jpeg\n'.encode('ascii'))
+        for _ in range(30):
+            output_file.write(b'FRAME\n')
+            output_file.write(luma)
+            output_file.write(chroma_u)
+            output_file.write(chroma_v)
 
 
 class SetupShutdownSentinelTest(unittest.TestCase):
@@ -604,12 +611,12 @@ class PluginLoadTest(obstest.OBSTest):
 
             kinds_response = client.send('GetInputKindList', {'unversioned': False})
             self.assertIn(
-                'image_source',
+                'ffmpeg_source',
                 kinds_response.input_kinds,
-                'OBS image_source is required for hardware-free face-selection testing',
+                'OBS Media Source is required for hardware-free face-selection testing',
             )
-            image_path = os.path.join(temporary.name, 'synthetic-person.bmp')
-            write_synthetic_person_bmp(image_path)
+            video_path = os.path.join(temporary.name, 'synthetic-person.y4m')
+            write_synthetic_person_y4m(video_path)
 
             client.send('CreateScene', {'sceneName': tracked_scene})
             scene_created = True
@@ -617,8 +624,14 @@ class PluginLoadTest(obstest.OBSTest):
             client.send('CreateInput', {
                 'sceneName': tracked_scene,
                 'inputName': camera_name,
-                'inputKind': 'image_source',
-                'inputSettings': {'file': image_path, 'unload': False},
+                'inputKind': 'ffmpeg_source',
+                'inputSettings': {
+                    'local_file': video_path,
+                    'is_local_file': True,
+                    'looping': True,
+                    'restart_on_activate': True,
+                    'clear_on_media_end': False,
+                },
             })
             created_inputs.append(camera_name)
             camera_uuid = self._input_uuid(client, camera_name)
