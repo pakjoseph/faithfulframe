@@ -641,6 +641,7 @@ jobs:
           $password = [Guid]::NewGuid().ToString('N')
           $securePassword = ConvertTo-SecureString -String $password -Force -AsPlainText
           $certificate = $null
+          $trustedRoot = $null
           $trustStore = $null
           $trustStoreOpened = $false
           try {
@@ -651,14 +652,17 @@ jobs:
               -CertStoreLocation 'Cert:\CurrentUser\My' `
               -KeyExportPolicy Exportable `
               -NotAfter (Get-Date).AddDays(1)
+            $trustedRoot = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+              $certificate.RawData
+            )
             $trustStore = [System.Security.Cryptography.X509Certificates.X509Store]::new(
               [System.Security.Cryptography.X509Certificates.StoreName]::Root,
               [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
             )
             $trustStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
             $trustStoreOpened = $true
-            Write-Host 'Trusting temporary certificate for this smoke test'
-            $trustStore.Add($certificate)
+            Write-Host 'Trusting the public certificate for this smoke test'
+            $trustStore.Add($trustedRoot)
             Write-Host 'Exporting temporary signing certificate'
             Export-PfxCertificate -Cert $certificate -FilePath $pfxPath -Password $securePassword | Out-Null
 
@@ -670,8 +674,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Authenticode helper smoke test failed with exit code $LASTEXITCODE" }
             Write-Host 'Temporary-certificate signing helper smoke test passed'
           } finally {
-            if ($trustStoreOpened -and $certificate) { $trustStore.Remove($certificate) }
+            if ($trustStoreOpened -and $trustedRoot) { $trustStore.Remove($trustedRoot) }
             if ($trustStore) { $trustStore.Close(); $trustStore.Dispose() }
+            if ($trustedRoot) { $trustedRoot.Dispose() }
             if ($certificate) {
               Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
               $certificate.Dispose()
