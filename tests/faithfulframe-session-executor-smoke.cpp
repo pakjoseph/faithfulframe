@@ -2220,8 +2220,24 @@ int run_smoke()
 		    preview_snapshot.crop.x != before_late_candidate.crop.x ||
 		    preview_snapshot.crop.y != before_late_candidate.crop.y ||
 		    preview_snapshot.crop.width != before_late_candidate.crop.width ||
-		    preview_snapshot.crop.height != before_late_candidate.crop.height)
+		    preview_snapshot.crop.height != before_late_candidate.crop.height) {
+			std::fprintf(stderr,
+				     "late candidate changed snapshot: state=%u->%u selected=%llu->%llu "
+				     "status=%llu->%llu observation=%llu->%llu "
+				     "crop=(%.6f,%.6f,%.6f,%.6f)->(%.6f,%.6f,%.6f,%.6f)\n",
+				     before_late_candidate.state, preview_snapshot.state,
+				     static_cast<unsigned long long>(before_late_candidate.selected_handle),
+				     static_cast<unsigned long long>(preview_snapshot.selected_handle),
+				     static_cast<unsigned long long>(before_late_candidate.status_version),
+				     static_cast<unsigned long long>(preview_snapshot.status_version),
+				     static_cast<unsigned long long>(before_late_candidate.observation_version),
+				     static_cast<unsigned long long>(preview_snapshot.observation_version),
+				     before_late_candidate.crop.x, before_late_candidate.crop.y,
+				     before_late_candidate.crop.width, before_late_candidate.crop.height,
+				     preview_snapshot.crop.x, preview_snapshot.crop.y, preview_snapshot.crop.width,
+				     preview_snapshot.crop.height);
 			return 93;
+		}
 	}
 	// The first destroy callback leaves cleanup available for the second active
 	// source. The last callback drains and closes the reaper.
