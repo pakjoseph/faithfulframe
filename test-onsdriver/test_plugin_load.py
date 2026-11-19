@@ -1055,6 +1055,11 @@ class PluginLoadTest(obstest.OBSTest):
                     camera_image,
                     'Returning to the bound scene must restore only its original camera view',
                 )
+                self._wait_for_ui_status(
+                    ui, 'Camera or tracking settings changed; select a speaker again before following'
+                )
+                self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+                self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
                 self.assertEqual(self._screenshot(client, camera_name), camera_image)
                 if cycle < 2:
                     client.send('SetCurrentProgramScene', {'sceneName': fallback_scene})
