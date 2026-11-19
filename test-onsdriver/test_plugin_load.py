@@ -767,10 +767,18 @@ class PluginLoadTest(obstest.OBSTest):
                 # current candidate is available instead of turning one stale
                 # poll into a flaky failure (or weakening production expiry).
                 selection_deadline = time.monotonic() + 30.0
-                selection_ready = False
+                selection_applied = False
                 last_selection_error = None
                 while time.monotonic() < selection_deadline:
                     widgets = ui.request('widget-list', {}).get('children', [])
+                    status_widget = self._find_ui_widget(widgets, 'FaithfulFrame tracking status')
+                    status_text = status_widget.get('text', '') if status_widget else ''
+                    if 'Following the selected speaker' in status_text or self._find_ui_widget(
+                        widgets, 'Tracking state: Locked'
+                    ):
+                        selection_applied = True
+                        break
+
                     candidates_widget = self._find_ui_widget(widgets, 'Detected face candidates')
                     if candidates_widget and candidates_widget.get('count', 0) >= 2:
                         self._invoke_ui_widget(
@@ -782,14 +790,39 @@ class PluginLoadTest(obstest.OBSTest):
                         )
                         try:
                             self._wait_for_ui_widget(ui, select_control, enabled=True, timeout=0.25)
-                            selection_ready = True
-                            break
+                            self._invoke_ui_widget(ui, 'accessibleName', select_control, 'click')
                         except AssertionError as error:
                             last_selection_error = error
-                    time.sleep(0.1)
-                if not selection_ready:
+                            time.sleep(0.05)
+                            continue
+
+                        # Candidate observations are deliberately short-lived.
+                        # The command may safely no-op if they expire while
+                        # crossing the UI bridge, so wait briefly for LOCKED
+                        # and retry only from a newly published candidate.
+                        attempt_deadline = min(time.monotonic() + 0.75, selection_deadline)
+                        while time.monotonic() < attempt_deadline:
+                            attempt_widgets = ui.request('widget-list', {}).get('children', [])
+                            attempt_status = self._find_ui_widget(
+                                attempt_widgets, 'FaithfulFrame tracking status'
+                            )
+                            attempt_status_text = attempt_status.get('text', '') if attempt_status else ''
+                            if (
+                                'Following the selected speaker' in attempt_status_text
+                                or self._find_ui_widget(attempt_widgets, 'Tracking state: Locked')
+                            ):
+                                selection_applied = True
+                                break
+                            time.sleep(0.05)
+                        if selection_applied:
+                            break
+                        last_selection_error = AssertionError(
+                            f'Selection was rejected or expired; status remained {attempt_status_text!r}'
+                        )
+                    time.sleep(0.05)
+                if not selection_applied:
                     raise AssertionError(
-                        f'No fresh candidate remained selectable: {last_selection_error!s}'
+                        f'No fresh candidate selection was accepted: {last_selection_error!s}'
                     )
             except AssertionError as selection_error:
                 widgets = ui.request('widget-list', {}).get('children', [])
@@ -823,7 +856,6 @@ class PluginLoadTest(obstest.OBSTest):
                     f'Candidate list widget: {candidates_widget!r}\n'
                     f'Synthetic media screenshot: {screenshot_path!r}'
                 )
-            self._invoke_ui_widget(ui, 'accessibleName', select_control, 'click')
             self._wait_for_ui_status(ui, 'Following the selected speaker', timeout=10.0)
             self._wait_for_ui_widget(ui, 'Tracking state: Locked')
             self._wait_for_ui_zoom_above(ui, 1.0, timeout=10.0)
