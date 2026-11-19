@@ -1073,7 +1073,11 @@ void faithfulframe_session_executor::run()
 			work_item item;
 			{
 				std::unique_lock<std::mutex> lock(queue_mutex);
-				queue_condition.wait(lock, [this] {
+				// request_shutdown() deliberately never takes queue_mutex, so its
+				// notification can race with the condition-variable wait transition.
+				// A short timed recheck makes the atomic close request durable even if
+				// that notification lands just before this worker begins waiting.
+				queue_condition.wait_for(lock, std::chrono::milliseconds(10), [this] {
 					return queue_size != 0 || closing ||
 					       closing_requested.load(std::memory_order_acquire);
 				});
