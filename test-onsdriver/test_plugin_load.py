@@ -430,8 +430,10 @@ class PluginLoadTest(obstest.OBSTest):
             print('Cleared inherited OBS shutdown marker after onsdriver force-stopped setup')
         diagnostics_name = 'FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS'
         previous_diagnostics = os.environ.get(diagnostics_name)
-        if self.id().endswith('test_safe_adapter_keyboard_selects_synthetic_speaker'):
-            # Only the detector integration test enables native diagnostics.
+        if self.id().split('.')[-1].startswith('test_safe_adapter_'):
+            # Safe-adapter OBS tests keep native lifecycle diagnostics so CI
+            # failures can distinguish a source-binding problem from detector
+            # candidate churn.
             os.environ[diagnostics_name] = '1'
         try:
             self.obs.run()

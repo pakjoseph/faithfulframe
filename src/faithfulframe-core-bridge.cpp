@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
@@ -484,6 +486,10 @@ void faithfulframe_session_executor::request_shutdown(uint32_t terminal_lifecycl
 	if (!shutdown_request_claimed.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
 							      std::memory_order_acquire))
 		return;
+	if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
+		std::fprintf(stderr, "[FaithfulFrame test] session shutdown source=%llu session=%llu lifecycle=%u\n",
+			     static_cast<unsigned long long>(identity.source),
+			     static_cast<unsigned long long>(identity.session), terminal_lifecycle_kind);
 	shutdown_lifecycle_kind.store(terminal_lifecycle_kind, std::memory_order_relaxed);
 	shutdown_source_width.store(source_width, std::memory_order_relaxed);
 	shutdown_source_height.store(source_height, std::memory_order_relaxed);
@@ -1055,12 +1061,25 @@ void faithfulframe_session_executor::run()
 		ff_result result = FF_OK;
 		faithfulframe_core_bridge bridge(config, identity, initial_generations, result);
 		if (result != FF_OK) {
+			if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
+				std::fprintf(
+					stderr,
+					"[FaithfulFrame test] session create failed source=%llu session=%llu result=%d\n",
+					static_cast<unsigned long long>(identity.source),
+					static_cast<unsigned long long>(identity.session), result);
 			mark_stopped();
 			return;
 		}
 
 		ff_snapshot snapshot{};
-		if (bridge.snapshot(snapshot) != FF_OK) {
+		result = bridge.snapshot(snapshot);
+		if (result != FF_OK) {
+			if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
+				std::fprintf(
+					stderr,
+					"[FaithfulFrame test] initial snapshot failed source=%llu session=%llu result=%d\n",
+					static_cast<unsigned long long>(identity.source),
+					static_cast<unsigned long long>(identity.session), result);
 			mark_stopped();
 			return;
 		}
@@ -1182,6 +1201,14 @@ void faithfulframe_session_executor::run()
 				break;
 			}
 			if (call_result != FF_OK) {
+				if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
+					std::fprintf(
+						stderr,
+						"[FaithfulFrame test] session event failed source=%llu session=%llu "
+						"kind=%u result=%d\n",
+						static_cast<unsigned long long>(identity.source),
+						static_cast<unsigned long long>(identity.session),
+						static_cast<unsigned int>(item.kind), call_result);
 				// A valid executor owns a valid session, so a bridge error means the
 				// policy result cannot be trusted. Stop publishing snapshots; the OBS
 				// adapter will detect the failed worker and use its safe-wide fallback.
@@ -1227,6 +1254,12 @@ void faithfulframe_session_executor::run()
 							 item.lifecycle.kind == FF_LIFECYCLE_ADAPTER_DESTROYED ||
 							 item.lifecycle.kind == FF_LIFECYCLE_OBS_SHUTDOWN);
 			if (terminal_lifecycle) {
+				if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
+					std::fprintf(
+						stderr,
+						"[FaithfulFrame test] terminal lifecycle source=%llu session=%llu kind=%u\n",
+						static_cast<unsigned long long>(identity.source),
+						static_cast<unsigned long long>(identity.session), item.lifecycle.kind);
 				{
 					std::lock_guard<std::mutex> lock(queue_mutex);
 					closing_requested.store(true, std::memory_order_release);
@@ -1241,6 +1274,12 @@ void faithfulframe_session_executor::run()
 			}
 		}
 	} catch (...) {
+		if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
+			std::fprintf(
+				stderr,
+				"[FaithfulFrame test] session worker caught an exception source=%llu session=%llu\n",
+				static_cast<unsigned long long>(identity.source),
+				static_cast<unsigned long long>(identity.session));
 		// Never allow a C++ exception to escape the worker entry point.
 	}
 	mark_stopped();

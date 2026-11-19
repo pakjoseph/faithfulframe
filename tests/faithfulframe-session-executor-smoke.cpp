@@ -518,10 +518,13 @@ bool snapshot_publication_is_consistent(const ff_session_config &config, const f
 	std::barrier start(static_cast<std::ptrdiff_t>(reader_count + 1));
 	std::atomic<bool> finished{false};
 	std::atomic<bool> inconsistent{false};
+	std::atomic<bool> invalid_snapshot_recorded{false};
 	std::atomic<uint64_t> successful_reads{0};
+	std::array<uint64_t, reader_count> reads_by_reader{};
+	ff_snapshot first_inconsistent_snapshot{};
 	std::array<std::thread, reader_count> readers;
-	for (auto &reader : readers) {
-		reader = std::thread([&] {
+	for (size_t reader_index = 0; reader_index < reader_count; ++reader_index) {
+		readers[reader_index] = std::thread([&, reader_index] {
 			start.arrive_and_wait();
 			uint64_t previous_version = 0;
 			while (!finished.load(std::memory_order_acquire)) {
@@ -554,9 +557,15 @@ bool snapshot_publication_is_consistent(const ff_session_config &config, const f
 					observed.crop.width == 1.0f && observed.crop.height == 1.0f &&
 					observed.viewport.x == 0.0f && observed.viewport.y == 0.0f &&
 					observed.viewport.width == 1.0f && observed.viewport.height == 1.0f;
-				if (!consistent)
+				if (!consistent) {
+					bool expected = false;
+					if (invalid_snapshot_recorded.compare_exchange_strong(
+						    expected, true, std::memory_order_acq_rel))
+						first_inconsistent_snapshot = observed;
 					inconsistent.store(true, std::memory_order_release);
+				}
 				previous_version = observed.status_version;
+				++reads_by_reader[reader_index];
 				successful_reads.fetch_add(1, std::memory_order_relaxed);
 			}
 		});
@@ -590,8 +599,32 @@ bool snapshot_publication_is_consistent(const ff_session_config &config, const f
 	for (auto &reader : readers)
 		reader.join();
 	executor.shutdown();
-	return !inconsistent.load(std::memory_order_acquire) &&
-	       successful_reads.load(std::memory_order_relaxed) > reader_count;
+	const bool was_inconsistent = inconsistent.load(std::memory_order_acquire);
+	const uint64_t read_count = successful_reads.load(std::memory_order_relaxed);
+	const bool passed = !was_inconsistent && read_count > reader_count;
+	if (!passed) {
+		std::fprintf(
+			stderr,
+			"snapshot publication check failed: inconsistent=%d reads=%llu per_reader=%llu/%llu/%llu/%llu\n",
+			was_inconsistent, static_cast<unsigned long long>(read_count),
+			static_cast<unsigned long long>(reads_by_reader[0]),
+			static_cast<unsigned long long>(reads_by_reader[1]),
+			static_cast<unsigned long long>(reads_by_reader[2]),
+			static_cast<unsigned long long>(reads_by_reader[3]));
+		if (invalid_snapshot_recorded.load(std::memory_order_acquire))
+			std::fprintf(stderr,
+				     "first inconsistent snapshot: state=%u reason=%u crop_action=%u version=%llu "
+				     "crop=(%.3f,%.3f,%.3f,%.3f) viewport=(%.3f,%.3f,%.3f,%.3f)\n",
+				     first_inconsistent_snapshot.state, first_inconsistent_snapshot.reason,
+				     first_inconsistent_snapshot.crop_action,
+				     static_cast<unsigned long long>(first_inconsistent_snapshot.status_version),
+				     first_inconsistent_snapshot.crop.x, first_inconsistent_snapshot.crop.y,
+				     first_inconsistent_snapshot.crop.width, first_inconsistent_snapshot.crop.height,
+				     first_inconsistent_snapshot.viewport.x, first_inconsistent_snapshot.viewport.y,
+				     first_inconsistent_snapshot.viewport.width,
+				     first_inconsistent_snapshot.viewport.height);
+	}
+	return passed;
 }
 
 bool retirement_handoffs_are_concurrent(const ff_session_config &config, const ff_generations &generations)
