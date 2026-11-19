@@ -971,7 +971,7 @@ bool rejected_command_notice_expires_without_policy_change(const ff_session_conf
 	    !await_snapshot(
 		    executor,
 		    [version = rejected.status_version](const ff_snapshot &value) {
-			    return value.status_version > version && value.command_result == FF_COMMAND_REJECTED &&
+			    return value.status_version == version && value.command_result == FF_COMMAND_REJECTED &&
 				   value.rejection_reason == FF_REJECTION_STALE_COMMAND;
 		    },
 		    snapshot) ||
@@ -983,12 +983,13 @@ bool rejected_command_notice_expires_without_policy_change(const ff_session_conf
 
 	// The two-second rejection notice expires exactly at this monotonic tick.
 	// The selection grace deadline is later, so only transient notice metadata
-	// should change; tracking state and framing must remain the same.
+	// should change; tracking state, framing, and command authorization version
+	// must remain the same.
 	return executor.enqueue_tick(2004) &&
 	       await_snapshot(
 		       executor,
 		       [latched_status_version](const ff_snapshot &value) {
-			       return value.status_version > latched_status_version &&
+			       return value.status_version == latched_status_version &&
 				      value.command_result == FF_COMMAND_NOT_APPLICABLE &&
 				      value.rejection_reason == FF_REJECTION_NONE;
 		       },

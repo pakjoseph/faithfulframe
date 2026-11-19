@@ -78,7 +78,8 @@ int main()
 	    snapshot.command_result != FF_COMMAND_NOT_APPLICABLE || snapshot.state != before_empty_preview.state ||
 	    snapshot.selected_handle != before_empty_preview.selected_handle ||
 	    snapshot.observation_version != candidate.observation_version + 1 ||
-	    snapshot.status_version != before_empty_preview.status_version + 1 ||
+	    // Candidate freshness is a separate authorization fence from control state.
+	    snapshot.status_version != before_empty_preview.status_version ||
 	    snapshot.crop.x != before_empty_preview.crop.x || snapshot.crop.y != before_empty_preview.crop.y ||
 	    snapshot.crop.width != before_empty_preview.crop.width ||
 	    snapshot.crop.height != before_empty_preview.crop.height)
