@@ -59,6 +59,15 @@ face_tracker_manager::~face_tracker_manager()
 
 inline void face_tracker_manager::retire_tracker(int ix)
 {
+	if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS")) {
+		const auto &tracker = trackers[ix];
+		blog(LOG_INFO,
+		     "[FaithfulFrame test] retire tracker handle=%llu continuity=%llu state=%d att=%.3f score=%.3f "
+		     "rect=(%d,%d,%d,%d)",
+		     (unsigned long long)tracker.candidate_handle, (unsigned long long)tracker.continuity_token,
+		     static_cast<int>(tracker.state), tracker.att, tracker.rect.score, tracker.rect.x0, tracker.rect.y0,
+		     tracker.rect.x1, tracker.rect.y1);
+	}
 	debug_track_thread("%p retire_tracker(%d %p)", this, ix, trackers[ix].tracker);
 	tracker_inst_s retired = trackers[ix];
 	retired.seed_texture.reset();
@@ -129,6 +138,7 @@ inline void face_tracker_manager::attenuate_tracker()
 			continue;
 		struct tracker_inst_s &t = trackers[i];
 		t.detector_confirmed_at_ms = 0;
+		bool detector_match = false;
 
 		int a1 = (t.rect.x1 - t.rect.x0) * (t.rect.y1 - t.rect.y0);
 		float amax = (float)a1 * 0.1f;
@@ -139,11 +149,20 @@ inline void face_tracker_manager::attenuate_tracker()
 				amax = a;
 			if (detector_result_captured_at_ms &&
 			    ff_tracker_boxes_match(ff_tracker_box_i{r.x0, r.y0, r.x1, r.y1},
-						   ff_tracker_box_i{t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1}))
+						   ff_tracker_box_i{t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1})) {
 				t.detector_confirmed_at_ms = detector_result_captured_at_ms;
+				detector_match = true;
+			}
 		}
 
+		const float previous_attention = t.att;
 		t.att *= powf(amax / a1, 0.1f); // if no faces, remove the tracker
+		if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
+			blog(LOG_INFO,
+			     "[FaithfulFrame test] association handle=%llu detections=%zu match=%d attention=%.3f->%.3f "
+			     "score=%.3f rect=(%d,%d,%d,%d)",
+			     (unsigned long long)t.candidate_handle, detect_rects.size(), detector_match,
+			     previous_attention, t.att, t.rect.score, t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1);
 	}
 
 	float score_max = 1e-17f;

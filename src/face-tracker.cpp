@@ -1947,9 +1947,16 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 	if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS")) {
 		const uint64_t counts = (static_cast<uint64_t>(count) << 32) | static_cast<uint64_t>(preview_count);
 		static std::atomic<uint64_t> last_logged_counts{std::numeric_limits<uint64_t>::max()};
-		if (last_logged_counts.exchange(counts, std::memory_order_relaxed) != counts)
-			blog(LOG_INFO, "[FaithfulFrame test] candidate pipeline trackers=%zu detector_confirmed=%zu",
-			     count, preview_count);
+		if (last_logged_counts.exchange(counts, std::memory_order_relaxed) != counts) {
+			const ff_candidate &first = count ? candidates[0] : ff_candidate{};
+			blog(LOG_INFO,
+			     "[FaithfulFrame test] candidate pipeline trackers=%zu detector_confirmed=%zu first_handle=%llu "
+			     "continuity=%llu observed=%llu confirmed=%llu rect=(%.3f,%.3f,%.3f,%.3f)",
+			     count, preview_count, (unsigned long long)first.handle,
+			     (unsigned long long)first.continuity_token, (unsigned long long)first.observed_at_ms,
+			     (unsigned long long)first.detector_confirmed_at_ms, first.rect.x, first.rect.y,
+			     first.rect.width, first.rect.height);
+		}
 	}
 	if (count) {
 		if (executor->enqueue_candidates(now, candidates.data(), count)) {
