@@ -60,6 +60,7 @@ struct arguments
 	uint32_t output_width = 1920;
 	uint32_t output_height = 1080;
 	bool has_operator_selection_time = false;
+	bool select_leftmost_candidate = false;
 	uint64_t operator_selection_time_ms = 0;
 	size_t operator_candidate_index = 0;
 };
@@ -90,7 +91,8 @@ void usage(std::ostream &out)
 	out << "Usage: faithfulframe-offline-session-replay --model <frontal_face_detector.dat> "
 	       "(--manifest <frames.tsv> | --ppm-stdin [--fps <1..120>]) [--trace <trace.jsonl>] "
 	       "[--output-width <pixels>] [--output-height <pixels>] "
-	       "[--operator-select-first-candidate-at-ms <timestamp>]\n"
+	       "[--operator-select-first-candidate-at-ms <timestamp> | "
+	       "--operator-select-leftmost-candidate-at-ms <timestamp>]\n"
 	    << "Manifest format: monotonic_ms<TAB>relative-or-absolute-frame-path. Frames must be P6 PPM, max value 255.\n"
 	    << "The replay uses the production dlib HOG detector, face_tracker_manager, dlib correlation trackers, and Rust session policy.\n"
 	    << "It records numeric candidate and crop traces only; it does not save video frames or face imagery. "
@@ -147,11 +149,13 @@ bool parse_arguments(int argc, char **argv, arguments &args)
 				args.output_width = static_cast<uint32_t>(parsed);
 			else
 				args.output_height = static_cast<uint32_t>(parsed);
-		} else if (option == "--operator-select-first-candidate-at-ms") {
+		} else if (option == "--operator-select-first-candidate-at-ms" ||
+			   option == "--operator-select-leftmost-candidate-at-ms") {
 			if (!parse_integer(value, args.operator_selection_time_ms)) {
 				std::cerr << option << " must be a non-negative integer timestamp\n";
 				return false;
 			}
+			args.select_leftmost_candidate = option == "--operator-select-leftmost-candidate-at-ms";
 			args.has_operator_selection_time = true;
 		} else {
 			std::cerr << "Unknown option: " << option << '\n';
@@ -703,7 +707,20 @@ int main(int argc, char **argv)
 				error = "The requested operator candidate index is not present in this frame";
 				return false;
 			}
-			const ff_candidate &candidate = candidates[args.operator_candidate_index];
+			size_t selected_index = args.operator_candidate_index;
+			if (args.select_leftmost_candidate) {
+				for (size_t i = 1; i < candidates.size(); ++i) {
+					const ff_rect &candidate_rect = candidates[i].rect;
+					const ff_rect &selected_rect = candidates[selected_index].rect;
+					const float candidate_center = candidate_rect.x + candidate_rect.width * 0.5f;
+					const float selected_center = selected_rect.x + selected_rect.width * 0.5f;
+					if (candidate_center < selected_center ||
+					    (candidate_center == selected_center &&
+					     candidates[i].handle < candidates[selected_index].handle))
+						selected_index = i;
+				}
+			}
+			const ff_candidate &candidate = candidates[selected_index];
 			const ff_command command{FF_COMMAND_SELECT_CANDIDATE,
 						 identity,
 						 snapshot.status_version,

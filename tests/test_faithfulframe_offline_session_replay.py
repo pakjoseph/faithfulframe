@@ -209,7 +209,7 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     "1920",
                     "--output-height",
                     "1080",
-                    "--operator-select-first-candidate-at-ms",
+                    "--operator-select-leftmost-candidate-at-ms",
                     "2200",
                 ],
                 capture_output=True,
