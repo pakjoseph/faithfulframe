@@ -233,6 +233,8 @@ static QString obs_performance_metrics()
 
 struct obs_performance_sample
 {
+	bool stream_active = false;
+	bool record_active = false;
 	bool video_configuration_available = false;
 	std::string graphics_module;
 	int64_t fps_num = -1;
@@ -258,6 +260,8 @@ struct obs_performance_sample
 static obs_performance_sample read_obs_performance_sample()
 {
 	obs_performance_sample result;
+	result.stream_active = obs_frontend_streaming_active();
+	result.record_active = obs_frontend_recording_active() && !obs_frontend_recording_paused();
 	obs_video_info video_info{};
 	if (obs_get_video_info(&video_info)) {
 		result.video_configuration_available = true;
@@ -288,7 +292,7 @@ static obs_performance_sample read_obs_performance_sample()
 		result.encode_frames = static_cast<int64_t>(video_output_get_total_frames(video));
 		result.encode_skipped_frames = static_cast<int64_t>(video_output_get_skipped_frames(video));
 	}
-	if (obs_frontend_streaming_active()) {
+	if (result.stream_active) {
 		obs_output_t *stream = obs_frontend_get_streaming_output();
 		if (stream) {
 			result.stream_frames = obs_output_get_total_frames(stream);
@@ -1548,6 +1552,8 @@ void FTDock::updateState()
 					sample.encode_skipped_frames = obs_metrics.encode_skipped_frames;
 					sample.stream_frames = obs_metrics.stream_frames;
 					sample.stream_dropped_frames = obs_metrics.stream_dropped_frames;
+					sample.stream_active = obs_metrics.stream_active;
+					sample.record_active = obs_metrics.record_active;
 					sample.queue_depth = safe_preview.executor_queue_depth;
 					sample.queue_high_water = safe_preview.executor_queue_high_water;
 					sample.queue_oldest_age_microseconds =
@@ -1893,6 +1899,11 @@ void FTDock::performanceRecordButtonClicked()
 	if (performanceHardwareAndWorkloadNotes.isEmpty()) {
 		showOperatorNotice(
 			"Enter the computer/GPU, non-secret OBS encoder settings, and test workload before recording. Do not include stream keys or server URLs.");
+		return;
+	}
+	if (!obs_frontend_streaming_active() &&
+	    !(obs_frontend_recording_active() && !obs_frontend_recording_paused())) {
+		showOperatorNotice("Start OBS recording or streaming before recording comparable performance data.");
 		return;
 	}
 	performanceSpool = std::make_unique<faithfulframe::performance::csv_spool>();

@@ -80,6 +80,8 @@ def fixture_row(elapsed_ms, cpu, resident, render_frames, render_lag, plugin_ver
             "stagesurface_map_failure_count": str(elapsed_ms // 10_000),
             "last_stagesurface_map_microseconds": "450",
             "max_stagesurface_map_microseconds": "1200",
+            "stream_active": "1",
+            "record_active": "0",
         }
     )
     if elapsed_ms == 0:
@@ -153,7 +155,7 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
     def test_loads_schema_v2_without_render_thread_metric(self):
         row = fixture_row(0, 10.0, 1_000_000, 1000, 5, "1.0")
         row["schema_version"] = "2"
-        old_columns = analyzer.EXPECTED_COLUMNS[:-6]
+        old_columns = analyzer.SCHEMA_V4_COLUMNS[:-6]
         path = self.root / "schema-v2.csv"
         with path.open("w", encoding="utf-8", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=old_columns)
@@ -170,7 +172,7 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
     def test_loads_schema_v3_without_stagesurface_metrics(self):
         row = fixture_row(0, 10.0, 1_000_000, 1000, 5, "1.0")
         row["schema_version"] = "3"
-        old_columns = analyzer.EXPECTED_COLUMNS[:-4]
+        old_columns = analyzer.SCHEMA_V4_COLUMNS[:-4]
         path = self.root / "schema-v3.csv"
         with path.open("w", encoding="utf-8", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=old_columns)
@@ -183,6 +185,20 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         self.assertEqual(report["metrics"]["last_render_thread_tracker_work_microseconds"]["count"], 1)
         self.assertEqual(report["metrics"]["last_stagesurface_map_microseconds"]["count"], 0)
         self.assertIsNone(report["diagnostic_rates_percent"]["stagesurface_map_failure_percent"])
+
+    def test_loads_schema_v4_but_cannot_claim_output_mode_match(self):
+        row = fixture_row(0, 10.0, 1_000_000, 1000, 5, "1.0")
+        row["schema_version"] = "4"
+        path = self.root / "schema-v4.csv"
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=analyzer.SCHEMA_V4_COLUMNS)
+            writer.writeheader()
+            writer.writerow({column: row[column] for column in analyzer.SCHEMA_V4_COLUMNS})
+
+        report = analyzer.load_log(path)
+
+        self.assertEqual(report["schema_version"], 4)
+        self.assertIsNone(report["output_mode"])
 
     def test_summarizes_metrics_and_counter_deltas(self):
         path = self.write_log(
@@ -242,6 +258,7 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         )
 
         self.assertTrue(comparison["matched_context"])
+        self.assertEqual(comparison["output_mode"], {"stream_active": True, "record_active": False})
         self.assertFalse(comparison["thresholds_applied"])
         self.assertFalse(comparison["rehearsal_duration_gate"]["both_meet_minimum"])
         self.assertEqual(comparison["measurements"]["stagesurface_map_failure_percent"]["difference"], 0.0)
@@ -478,6 +495,65 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
             writer.writeheader()
             writer.writerows([first, second])
         with self.assertRaisesRegex(analyzer.PerformanceLogError, "output mode changed"):
+            analyzer.load_log(path)
+
+    def test_rejects_mismatched_baseline_and_candidate_output_modes(self):
+        baseline_path = self.root / "recording-baseline.csv"
+        baseline_rows = [
+            baseline_row(0, 10.0, 2_000_000_000, 1000, 5, 990, 4),
+            baseline_row(60_000, 12.0, 2_100_000_000, 2000, 15, 1980, 14),
+        ]
+        for row in baseline_rows:
+            row["stream_active"] = "0"
+            row["record_active"] = "1"
+            row["stream_total_frames"] = ""
+            row["stream_skipped_frames"] = ""
+        with baseline_path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=analyzer.BASELINE_COLUMNS)
+            writer.writeheader()
+            writer.writerows(baseline_rows)
+
+        candidate_rows = [
+            fixture_row(0, 10.0, 1_000_000, 1000, 5, "faithfulframe"),
+            fixture_row(60_000, 12.0, 1_100_000, 2000, 15, "faithfulframe"),
+        ]
+        candidate_rows[0]["hardware_and_workload_notes"] = baseline_rows[0]["hardware_and_workload_notes"]
+        candidate_rows[1]["run_metadata_present"] = "0"
+        for column in analyzer.METADATA_COLUMNS:
+            candidate_rows[1][column] = ""
+        candidate_path = self.write_log("streaming-candidate.csv", candidate_rows)
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "output_mode"):
+            analyzer.compare_logs(analyzer.load_log(baseline_path), analyzer.load_log(candidate_path))
+
+    def test_rejects_comparison_when_candidate_output_mode_changes(self):
+        baseline_path = self.root / "streaming-baseline.csv"
+        with baseline_path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=analyzer.BASELINE_COLUMNS)
+            writer.writeheader()
+            writer.writerows([
+                baseline_row(0, 10.0, 2_000_000_000, 1000, 5, 990, 4),
+                baseline_row(60_000, 12.0, 2_100_000_000, 2000, 15, 1980, 14),
+            ])
+        first = fixture_row(0, 10.0, 1_000_000, 1000, 5, "faithfulframe")
+        second = fixture_row(60_000, 12.0, 1_100_000, 2000, 15, "faithfulframe")
+        first["hardware_and_workload_notes"] = "Church PC A; fixed 4K camera to 720p; one moving speaker"
+        second["run_metadata_present"] = "0"
+        for column in analyzer.METADATA_COLUMNS:
+            second[column] = ""
+        second["stream_active"] = "0"
+        second["record_active"] = "1"
+        candidate_path = self.write_log("changing-candidate-mode.csv", [first, second])
+
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "output mode is unavailable"):
+            analyzer.compare_logs(analyzer.load_log(baseline_path), analyzer.load_log(candidate_path))
+
+    def test_rejects_faithfulframe_sample_without_active_output(self):
+        first = fixture_row(0, 10.0, 1_000_000, 1000, 5, "faithfulframe")
+        first["stream_active"] = "0"
+        first["record_active"] = "0"
+        path = self.write_log("no-active-output.csv", [first])
+
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "no active recording or stream"):
             analyzer.load_log(path)
 
     def test_rejects_resolution_change_in_a_baseline_recording(self):

@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 MINIMUM_REHEARSAL_DURATION_HOURS = 2.0
 RECOMMENDED_REHEARSAL_DURATION_HOURS = 3.0
 EXPECTED_COLUMNS = [
@@ -91,9 +91,12 @@ EXPECTED_COLUMNS = [
     "last_stagesurface_map_microseconds",
     "max_stagesurface_map_microseconds",
 ]
+SCHEMA_V4_COLUMNS = EXPECTED_COLUMNS.copy()
+EXPECTED_COLUMNS.extend(("stream_active", "record_active"))
 SUPPORTED_SCHEMAS = {
-    2: EXPECTED_COLUMNS[:-6],
-    3: EXPECTED_COLUMNS[:-4],
+    2: SCHEMA_V4_COLUMNS[:-6],
+    3: SCHEMA_V4_COLUMNS[:-4],
+    4: SCHEMA_V4_COLUMNS,
     SCHEMA_VERSION: EXPECTED_COLUMNS,
 }
 BASELINE_SCHEMA_VERSION = 1
@@ -373,6 +376,10 @@ def _load_baseline_rows(path: Path, raw_rows: list[dict]) -> dict:
         "log_kind": "obs_baseline",
         "schema_version": BASELINE_SCHEMA_VERSION,
         "metadata": metadata,
+        "output_mode": {
+            "stream_active": samples[0]["stream_active"],
+            "record_active": samples[0]["record_active"],
+        },
         "obs_video_configuration_complete": False,
         "obs_video_configuration_stable": len(unique_video_configurations) == 1,
         "comparison_video_configuration_stable": len(unique_video_configurations) == 1,
@@ -643,6 +650,17 @@ def load_log(path: str | Path) -> dict:
             sample[column] = _number(raw.get(column), column, row_number, integer=True)
             if sample[column] is not None and sample[column] < 0:
                 raise PerformanceLogError(f"{path}: row {row_number} has a negative {column}")
+        if schema_version >= 5:
+            for column in ("stream_active", "record_active"):
+                active = _number(raw[column], column, row_number, integer=True)
+                if active not in (0, 1):
+                    raise PerformanceLogError(f"{path}: row {row_number} has an invalid {column}")
+                sample[column] = bool(active)
+            if not sample["stream_active"] and not sample["record_active"]:
+                raise PerformanceLogError(f"{path}: row {row_number} has no active recording or stream output")
+        else:
+            sample["stream_active"] = None
+            sample["record_active"] = None
         samples.append(sample)
 
     if metadata is None:
@@ -655,6 +673,14 @@ def load_log(path: str | Path) -> dict:
         len(obs_video_configurations) == len(samples)
         and all(configuration is not None for configuration in obs_video_configurations)
         and len(known_obs_video_configurations) == 1
+    )
+    output_modes = {
+        (row["stream_active"], row["record_active"])
+        for row in samples
+        if row["stream_active"] is not None and row["record_active"] is not None
+    }
+    output_mode_stable = len(output_modes) == 1 and all(
+        row["stream_active"] is not None and row["record_active"] is not None for row in samples
     )
     # Elapsed values are measured from run start. The first FaithfulFrame
     # sample can arrive after the first timer interval, so subtracting it would
@@ -731,6 +757,15 @@ def load_log(path: str | Path) -> dict:
         "log_kind": "faithfulframe",
         "schema_version": schema_version,
         "metadata": metadata,
+        "output_mode": (
+            {
+                "stream_active": next(iter(output_modes))[0],
+                "record_active": next(iter(output_modes))[1],
+            }
+            if output_mode_stable
+            else None
+        ),
+        "output_mode_stable": output_mode_stable,
         "obs_video_configuration_complete": all(
             configuration is not None for configuration in obs_video_configurations
         ),
@@ -783,6 +818,10 @@ def load_log(path: str | Path) -> dict:
 def compare_logs(reference: dict, candidate: dict) -> dict:
     reference_resolution = reference["resolutions"]
     candidate_resolution = candidate["resolutions"]
+    if reference.get("output_mode") is None or candidate.get("output_mode") is None:
+        raise PerformanceLogError(
+            "runs are not comparable; stable stream/record output mode is unavailable"
+        )
     context_mismatches = []
     for field in ("operating_system", "cpu_architecture", "obs_version", "hardware_and_workload_notes"):
         if reference["metadata"][field] != candidate["metadata"][field]:
@@ -803,6 +842,8 @@ def compare_logs(reference: dict, candidate: dict) -> dict:
         context_mismatches.append("obs_video_configuration")
     if reference_resolution != candidate_resolution:
         context_mismatches.append("video_resolutions")
+    if reference["output_mode"] != candidate["output_mode"]:
+        context_mismatches.append("output_mode")
     if context_mismatches:
         raise PerformanceLogError(
             "runs are not comparable; mismatched context: " + ", ".join(context_mismatches)
@@ -890,6 +931,7 @@ def compare_logs(reference: dict, candidate: dict) -> dict:
         "candidate_input_resolution_basis": candidate["input_resolution_basis"],
         "reference_plugin_version": reference["metadata"]["plugin_version"],
         "candidate_plugin_version": candidate["metadata"]["plugin_version"],
+        "output_mode": reference["output_mode"],
         "matched_context": True,
         "reference_duration_hours": reference["duration_hours"],
         "candidate_duration_hours": candidate["duration_hours"],

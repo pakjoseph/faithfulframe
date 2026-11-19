@@ -11,7 +11,7 @@
 
 namespace faithfulframe::performance {
 
-inline constexpr uint32_t schema_version = 4;
+inline constexpr uint32_t schema_version = 5;
 inline constexpr size_t max_samples = 12 * 60 * 60;
 
 struct sample
@@ -81,6 +81,8 @@ struct sample
 	uint64_t stagesurface_map_failure_count = 0;
 	uint64_t last_stagesurface_map_microseconds = 0;
 	uint64_t max_stagesurface_map_microseconds = 0;
+	bool stream_active = false;
+	bool record_active = false;
 };
 
 inline std::string csv_field(const std::string &value)
@@ -121,7 +123,7 @@ inline std::string csv_header()
 	       "max_queue_wait_microseconds,last_policy_microseconds,max_policy_microseconds,detector_work_count,"
 	       "last_detector_microseconds,max_detector_microseconds,last_render_thread_tracker_work_microseconds,"
 	       "max_render_thread_tracker_work_microseconds,stagesurface_map_count,stagesurface_map_failure_count,"
-	       "last_stagesurface_map_microseconds,max_stagesurface_map_microseconds\n";
+	       "last_stagesurface_map_microseconds,max_stagesurface_map_microseconds,stream_active,record_active\n";
 }
 
 inline std::string csv_row(const sample &value)
@@ -204,7 +206,8 @@ inline std::string csv_row(const sample &value)
 	    << value.max_detector_microseconds << ',' << value.last_render_thread_tracker_work_microseconds << ','
 	    << value.max_render_thread_tracker_work_microseconds << ',' << value.stagesurface_map_count << ','
 	    << value.stagesurface_map_failure_count << ',' << value.last_stagesurface_map_microseconds << ','
-	    << value.max_stagesurface_map_microseconds << '\n';
+	    << value.max_stagesurface_map_microseconds << ',' << (value.stream_active ? 1 : 0) << ','
+	    << (value.record_active ? 1 : 0) << '\n';
 	return row.str();
 }
 

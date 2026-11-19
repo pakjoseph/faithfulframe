@@ -49,6 +49,7 @@ int main()
 	CHECK(header.find("hardware_and_workload_notes") != std::string::npos);
 	CHECK(header.find("obs_video_configuration_available") != std::string::npos);
 	CHECK(header.find("obs_canvas_output_width") != std::string::npos);
+	CHECK(header.ends_with("stream_active,record_active\n"));
 	CHECK(header.find("candidate") == std::string::npos);
 	CHECK(header.find("image") == std::string::npos);
 	CHECK(max_samples == 43200);
@@ -103,10 +104,11 @@ int main()
 	value.stagesurface_map_failure_count = 2;
 	value.last_stagesurface_map_microseconds = 450;
 	value.max_stagesurface_map_microseconds = 1200;
+	value.stream_active = true;
 	const std::string row = csv_row(value);
 	CHECK(row.starts_with(
-		"4,1,2026-11-12T12:34:56.789Z,1000,7,9,2,macOS 26.0,arm64,33.0.1,0.9.1,\"Mac mini, 4K \"\"stage\"\" -> 1080p\",3,4,5,6,10,1,2,3840,2160,1920,1080,1,libobs-opengl,30,1,1920,1080,1280,720,2,2,0,0,1,12,22.50,4096,8192,59.940,"));
-	CHECK(row.ends_with(",7000,300,700,100,2,450,1200\n"));
+		"5,1,2026-11-12T12:34:56.789Z,1000,7,9,2,macOS 26.0,arm64,33.0.1,0.9.1,\"Mac mini, 4K \"\"stage\"\" -> 1080p\",3,4,5,6,10,1,2,3840,2160,1920,1080,1,libobs-opengl,30,1,1920,1080,1280,720,2,2,0,0,1,12,22.50,4096,8192,59.940,"));
+	CHECK(row.ends_with(",7000,300,700,100,2,450,1200,1,0\n"));
 	CHECK(csv_field_count(header) == csv_field_count(row));
 
 	value.utc_timestamp = "sample,with\"quote\r\nline";
