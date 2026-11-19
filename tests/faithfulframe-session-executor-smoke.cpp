@@ -1386,7 +1386,7 @@ int run_smoke()
 	    !await_snapshot(
 		    executor,
 		    [rejected_status_version](const ff_snapshot &value) {
-			    return value.status_version > rejected_status_version &&
+			    return value.status_version == rejected_status_version &&
 				   value.command_result == FF_COMMAND_REJECTED &&
 				   value.rejection_reason == FF_REJECTION_STALE_COMMAND;
 		    },
@@ -1431,19 +1431,34 @@ int run_smoke()
 		    ordered, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, ordered_snapshot))
 		return 20;
 	const uint64_t initial_version = ordered_snapshot.status_version;
-	if (!ordered.enqueue_tick(100) ||
+	const ff_command enable_at_100{FF_COMMAND_ENABLE_AUTO_FOLLOW,
+				       ordered_snapshot.identity,
+				       initial_version,
+				       ordered_snapshot.generations,
+				       0,
+				       0};
+	if (!ordered.enqueue_tick(100) || !ordered.enqueue_command(100, enable_at_100) ||
 	    !await_snapshot(
 		    ordered,
-		    [initial_version](const ff_snapshot &value) { return value.status_version > initial_version; },
+		    [initial_version](const ff_snapshot &value) {
+			    return value.status_version > initial_version && value.state == FF_STATE_SEARCHING &&
+				   value.command_result == FF_COMMAND_APPLIED;
+		    },
 		    ordered_snapshot))
 		return 21;
 	uint64_t first_published_at = 0;
 	if (!ordered.try_snapshot(ordered_snapshot, &first_published_at) || first_published_at != 100)
 		return 22;
 	const uint64_t first_version = ordered_snapshot.status_version;
-	if (!ordered.enqueue_tick(99) ||
+	const ff_command freeze_after_older_tick{
+		FF_COMMAND_FREEZE, ordered_snapshot.identity, first_version, ordered_snapshot.generations, 0, 0};
+	if (!ordered.enqueue_tick(99) || !ordered.enqueue_command(99, freeze_after_older_tick) ||
 	    !await_snapshot(
-		    ordered, [first_version](const ff_snapshot &value) { return value.status_version > first_version; },
+		    ordered,
+		    [first_version](const ff_snapshot &value) {
+			    return value.status_version > first_version && value.state == FF_STATE_FROZEN &&
+				   value.command_result == FF_COMMAND_APPLIED;
+		    },
 		    ordered_snapshot))
 		return 23;
 	uint64_t second_published_at = 0;
