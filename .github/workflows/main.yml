@@ -346,6 +346,12 @@ jobs:
           # shipped model, locale, and license resources.
           codesign --force --sign "$identity" "${signing_options[@]}" "$bundle"
           codesign --verify --deep --strict --verbose=2 "$bundle"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            signature_info="$(codesign -dv --verbose=4 "$bundle" 2>&1)"
+            printf '%s\n' "$signature_info"
+            grep -q '^Authority=Developer ID Application:' <<< "$signature_info"
+            grep -q '^flags=.*runtime' <<< "$signature_info"
+          fi
 
       - name: Package
         run: |
@@ -371,6 +377,9 @@ jobs:
           set -e
           productsign --sign "${{ secrets.MACOS_SIGNING_INSTALLER_IDENTITY }}" $pkgfile package/${PLUGIN_NAME}-signed.pkg
           mv package/${PLUGIN_NAME}-signed.pkg $pkgfile
+          signature_info="$(pkgutil --check-signature "$pkgfile")"
+          printf '%s\n' "$signature_info"
+          grep -q 'Developer ID Installer:' <<< "$signature_info"
 
       - name: Notarize
         if: ${{ startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' && steps.setup.outputs.haveNotarizationUser == 'true' }}
