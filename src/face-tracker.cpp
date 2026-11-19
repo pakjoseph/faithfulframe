@@ -3007,6 +3007,10 @@ static void fts_render(void *data, gs_effect_t *)
 	auto *s = (struct face_tracker_filter *)data;
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	const bool safety_policy_enabled = s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire);
+	// Keep the detector/tracker association policy aligned with the same mode
+	// that selects the crop input. Publish before post_render can advance a face
+	// tracker, including when safe tracking was just toggled on or off.
+	s->ftm->safety_policy_enabled.store(safety_policy_enabled, std::memory_order_release);
 	if (faithfulframe_select_crop_input(safety_policy_enabled) == faithfulframe_crop_input::safe_session) {
 		auto binding_lease = s->safe_runtime->active.read();
 		faithfulframe_source_binding *binding = binding_lease.get();
