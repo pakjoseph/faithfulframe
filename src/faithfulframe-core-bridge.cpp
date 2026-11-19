@@ -1232,6 +1232,23 @@ void faithfulframe_session_executor::run()
 				return;
 			}
 			if (call_result == FF_OK) {
+				// Keep stale-command diagnosis available in OBS CI logs without exposing
+				// these internal counters during normal production operation.
+				if (item.kind == work_kind::command && snapshot.command_result == FF_COMMAND_REJECTED &&
+				    std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS")) {
+					std::fprintf(stderr,
+						     "[FaithfulFrame test] command rejected kind=%u handle=%llu "
+						     "submitted_status=%llu submitted_observation=%llu "
+						     "published_status=%llu published_observation=%llu "
+						     "published_state=%u rejection=%u\n",
+						     static_cast<unsigned int>(item.command.kind),
+						     static_cast<unsigned long long>(item.command.candidate_handle),
+						     static_cast<unsigned long long>(item.command.status_version),
+						     static_cast<unsigned long long>(item.command.observation_version),
+						     static_cast<unsigned long long>(snapshot.status_version),
+						     static_cast<unsigned long long>(snapshot.observation_version),
+						     snapshot.state, snapshot.rejection_reason);
+				}
 				if (item.kind == work_kind::command &&
 				    snapshot.command_result != FF_COMMAND_NOT_APPLICABLE) {
 					last_command_result = snapshot.command_result;
