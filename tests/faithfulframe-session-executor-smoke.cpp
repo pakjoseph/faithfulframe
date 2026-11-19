@@ -511,8 +511,12 @@ bool snapshot_publication_is_consistent(const ff_session_config &config, const f
 	const ff_identity identity{150, 250};
 	faithfulframe_session_executor executor(config, identity, generations);
 	ff_snapshot snapshot{};
-	if (!await_snapshot(executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, snapshot))
+	if (!await_snapshot(
+		    executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, snapshot)) {
+		std::fprintf(stdout, "snapshot publication initial snapshot timed out; worker_available=%d\n",
+			     executor.worker_available());
 		return false;
+	}
 
 	constexpr size_t reader_count = 4;
 	std::barrier start(static_cast<std::ptrdiff_t>(reader_count + 1));
@@ -579,14 +583,23 @@ bool snapshot_publication_is_consistent(const ff_session_config &config, const f
 			const uint64_t previous_version = snapshot.status_version;
 			const ff_command command{
 				kind, snapshot.identity, snapshot.status_version, snapshot.generations, 0, 0};
-			if (!executor.enqueue_command(at++, command) ||
-			    !await_snapshot(
-				    executor,
-				    [previous_version](const ff_snapshot &value) {
-					    return value.status_version > previous_version &&
-						   value.command_result == FF_COMMAND_APPLIED;
-				    },
-				    snapshot)) {
+			const bool enqueued = executor.enqueue_command(at++, command);
+			const bool published = enqueued &&
+					       await_snapshot(
+						       executor,
+						       [previous_version](const ff_snapshot &value) {
+							       return value.status_version > previous_version &&
+								      value.command_result == FF_COMMAND_APPLIED;
+						       },
+						       snapshot);
+			if (!published) {
+				std::fprintf(
+					stdout,
+					"snapshot publication command failed: iteration=%zu kind=%u enqueued=%d "
+					"previous_version=%llu observed_version=%llu result=%u state=%u worker_available=%d\n",
+					i, kind, enqueued, static_cast<unsigned long long>(previous_version),
+					static_cast<unsigned long long>(snapshot.status_version),
+					snapshot.command_result, snapshot.state, executor.worker_available());
 				finished.store(true, std::memory_order_release);
 				for (auto &reader : readers)
 					reader.join();
