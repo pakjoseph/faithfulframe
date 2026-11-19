@@ -633,6 +633,47 @@ jobs:
           cmake --install build --config RelWithDebInfo --prefix "$(Resolve-Path -Path .)/release"
           if ($LASTEXITCODE -ne 0) { throw "CMake install failed with exit code $LASTEXITCODE" }
 
+      - name: Exercise Authenticode helper with a temporary test certificate
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'FaithfulFrameSigningSmoke.pfx'
+          $smokeFile = Join-Path $env:RUNNER_TEMP 'FaithfulFrameSigningSmoke.dll'
+          $password = [Guid]::NewGuid().ToString('N')
+          $securePassword = ConvertTo-SecureString -String $password -Force -AsPlainText
+          $certificate = $null
+          $trustStore = $null
+          $trustStoreOpened = $false
+          try {
+            $certificate = New-SelfSignedCertificate `
+              -Type CodeSigningCert `
+              -Subject 'CN=FaithfulFrame CI signing smoke test' `
+              -CertStoreLocation 'Cert:\CurrentUser\My' `
+              -KeyExportPolicy Exportable `
+              -NotAfter (Get-Date).AddDays(1)
+            $trustStore = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+              [System.Security.Cryptography.X509Certificates.StoreName]::Root,
+              [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+            )
+            $trustStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+            $trustStoreOpened = $true
+            $trustStore.Add($certificate)
+            Export-PfxCertificate -Cert $certificate -FilePath $pfxPath -Password $securePassword | Out-Null
+
+            $env:WINDOWS_SIGNING_CERTIFICATE_PATH = $pfxPath
+            $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD = $password
+            Copy-Item 'release/face-tracker/face-tracker.dll' $smokeFile
+            & ./ci/windows/sign-authenticode.ps1 -Files @($smokeFile) -NoTimestamp
+            if ($LASTEXITCODE -ne 0) { throw "Authenticode helper smoke test failed with exit code $LASTEXITCODE" }
+          } finally {
+            if ($trustStoreOpened -and $certificate) { $trustStore.Remove($certificate) }
+            if ($trustStore) { $trustStore.Close(); $trustStore.Dispose() }
+            if ($certificate) {
+              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+              $certificate.Dispose()
+            }
+            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $smokeFile -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Sign Windows plugin binary
         if: ${{ github.event_name != 'pull_request' && steps.windows_signing.outputs.hasCertificate == 'true' }}
         env:

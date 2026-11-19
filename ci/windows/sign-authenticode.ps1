@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string[]]$Files,
     [string]$TimestampUrl = 'http://timestamp.digicert.com',
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [switch]$NoTimestamp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,8 +52,16 @@ foreach ($file in $Files) {
     $resolvedFile = (Resolve-Path -LiteralPath $file).Path
 
     if (-not $VerifyOnly) {
-        & $signTool sign /fd SHA256 /f $env:WINDOWS_SIGNING_CERTIFICATE_PATH `
-            /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD /tr $TimestampUrl /td SHA256 $resolvedFile
+        $signArguments = @(
+            'sign', '/fd', 'SHA256', '/f', $env:WINDOWS_SIGNING_CERTIFICATE_PATH,
+            '/p', $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD
+        )
+        if (-not $NoTimestamp) {
+            $signArguments += @('/tr', $TimestampUrl, '/td', 'SHA256')
+        }
+        $signArguments += $resolvedFile
+
+        & $signTool @signArguments
         if ($LASTEXITCODE -ne 0) {
             throw "SignTool failed to sign $resolvedFile with exit code $LASTEXITCODE"
         }
