@@ -204,11 +204,14 @@ private:
 	size_t queue_size = 0;
 	uint64_t last_submitted_ms = 0;
 	mutable std::mutex queue_mutex;
-	std::mutex shutdown_request_mutex;
 	std::mutex shutdown_mutex;
 	std::condition_variable queue_condition;
 	bool closing = false;
+	std::atomic<bool> shutdown_request_claimed{false};
 	std::atomic<bool> closing_requested{false};
+	std::atomic<uint32_t> shutdown_lifecycle_kind{FF_LIFECYCLE_ADAPTER_DESTROYED};
+	std::atomic<uint32_t> shutdown_source_width{0};
+	std::atomic<uint32_t> shutdown_source_height{0};
 	std::thread worker;
 	std::atomic<bool> worker_started{false};
 	snapshot_publisher published;
@@ -281,4 +284,7 @@ extern "C" int faithfulframe_test_reaper_shutdown_pending(void);
 #endif
 #ifdef FAITHFULFRAME_TEST_SESSION_WORK_HOOK
 extern "C" void faithfulframe_test_set_session_work_hook(void (*hook)(void *), void *context);
+#endif
+#ifdef FAITHFULFRAME_TEST_SESSION_ENQUEUE_LOCK_HOOK
+extern "C" void faithfulframe_test_set_session_enqueue_lock_hook(void (*hook)(void *), void *context);
 #endif

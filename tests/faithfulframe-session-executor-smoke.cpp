@@ -66,6 +66,15 @@ struct session_work_test_gate
 	bool release_work = false;
 };
 
+struct session_enqueue_lock_test_gate
+{
+	std::mutex mutex;
+	std::condition_variable condition;
+	std::atomic<bool> pause_claimed{false};
+	bool queue_lock_held = false;
+	bool release_queue_lock = false;
+};
+
 struct reaper_cleanup_test_context
 {
 	faithfulframe_reap_task task{};
@@ -210,6 +219,17 @@ void pause_session_work(void *context)
 	gate->work_paused = true;
 	gate->condition.notify_all();
 	gate->condition.wait(lock, [gate] { return gate->release_work; });
+}
+
+void pause_session_enqueue_lock(void *context)
+{
+	auto *gate = static_cast<session_enqueue_lock_test_gate *>(context);
+	if (gate->pause_claimed.exchange(true, std::memory_order_acq_rel))
+		return;
+	std::unique_lock<std::mutex> lock(gate->mutex);
+	gate->queue_lock_held = true;
+	gate->condition.notify_all();
+	gate->condition.wait(lock, [gate] { return gate->release_queue_lock; });
 }
 
 template<typename Predicate>
@@ -1106,6 +1126,71 @@ bool control_work_is_admitted_during_detector_backlog(const ff_session_config &c
 	return passed;
 }
 
+bool shutdown_request_is_nonblocking_when_session_queue_is_locked(const ff_session_config &config,
+								  const ff_generations &generations)
+{
+	auto executor = std::make_shared<faithfulframe_session_executor>(config, ff_identity{158, 258}, generations);
+	ff_snapshot snapshot{};
+	if (!await_snapshot(
+		    *executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, snapshot))
+		return false;
+
+	session_enqueue_lock_test_gate gate;
+	faithfulframe_test_set_session_enqueue_lock_hook(pause_session_enqueue_lock, &gate);
+	std::atomic<bool> enqueue_finished{false};
+	std::atomic<bool> enqueue_accepted{true};
+	std::thread producer([&] {
+		enqueue_accepted.store(executor->enqueue_tick(1), std::memory_order_release);
+		enqueue_finished.store(true, std::memory_order_release);
+		gate.condition.notify_all();
+	});
+	bool queue_lock_was_held = false;
+	{
+		std::unique_lock<std::mutex> lock(gate.mutex);
+		queue_lock_was_held =
+			gate.condition.wait_for(lock, std::chrono::seconds(2), [&] { return gate.queue_lock_held; });
+	}
+
+	std::atomic<bool> shutdown_finished{false};
+	std::thread shutdown_caller([&] {
+		executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+		shutdown_finished.store(true, std::memory_order_release);
+		gate.condition.notify_all();
+	});
+	bool shutdown_returned_while_queue_locked = false;
+	{
+		std::unique_lock<std::mutex> lock(gate.mutex);
+		shutdown_returned_while_queue_locked =
+			gate.condition.wait_for(lock, std::chrono::milliseconds(250),
+						[&] { return shutdown_finished.load(std::memory_order_acquire); });
+		gate.release_queue_lock = true;
+	}
+	gate.condition.notify_all();
+	producer.join();
+	shutdown_caller.join();
+	faithfulframe_test_set_session_enqueue_lock_hook(nullptr, nullptr);
+
+	ff_snapshot closed_snapshot{};
+	const bool terminal_state_published =
+		await_snapshot(*executor, [](const ff_snapshot &value) { return value.closed != 0; }, closed_snapshot);
+	std::weak_ptr<faithfulframe_session_executor> weak = executor;
+	const bool retired = retire_executor_when_available(executor) && !executor;
+	const bool joined_off_caller = retired && await_expired(weak);
+	const bool passed = queue_lock_was_held && shutdown_returned_while_queue_locked &&
+			    enqueue_finished.load(std::memory_order_acquire) &&
+			    !enqueue_accepted.load(std::memory_order_acquire) && terminal_state_published &&
+			    joined_off_caller;
+	if (!passed)
+		std::fprintf(stderr,
+			     "nonblocking executor shutdown: queue_lock=%d shutdown_returned=%d enqueue=%d/%d "
+			     "terminal=%d retired=%d\n",
+			     queue_lock_was_held, shutdown_returned_while_queue_locked,
+			     enqueue_finished.load(std::memory_order_acquire),
+			     enqueue_accepted.load(std::memory_order_acquire), terminal_state_published,
+			     joined_off_caller);
+	return passed;
+}
+
 bool reaper_shutdown_does_not_wait_for_unretired_workers(const ff_session_config &config,
 							 const ff_generations &generations)
 {
@@ -1281,6 +1366,9 @@ int run_smoke()
 	trace_session_smoke_checkpoint("operator notice expiry");
 	if (!rejected_command_notice_expires_without_policy_change(config, ff_generations{1, 1, 1, 1, 1}))
 		return 117;
+	trace_session_smoke_checkpoint("nonblocking session shutdown request");
+	if (!shutdown_request_is_nonblocking_when_session_queue_is_locked(config, ff_generations{1, 1, 1, 1, 1}))
+		return 126;
 	trace_session_smoke_checkpoint("control queue under detector backlog");
 	if (!control_work_is_admitted_during_detector_backlog(config, ff_generations{1, 1, 1, 1, 1}))
 		return 118;
@@ -1562,20 +1650,42 @@ int run_smoke()
 	trace_session_smoke_checkpoint("queued work teardown");
 	faithfulframe_session_executor queued(config, ff_identity{102, 202}, generations);
 	ff_snapshot queued_snapshot{};
-	const ff_command queued_enable{FF_COMMAND_ENABLE_AUTO_FOLLOW, ff_identity{102, 202}, 0, generations, 0, 0};
-	if (!queued.enqueue_command(20, queued_enable))
+	if (!await_snapshot(
+		    queued, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, queued_snapshot))
 		return 9;
+	session_work_test_gate queued_work_gate;
+	faithfulframe_test_set_session_work_hook(pause_session_work, &queued_work_gate);
+	const ff_command queued_enable{FF_COMMAND_ENABLE_AUTO_FOLLOW,
+				       queued_snapshot.identity,
+				       queued_snapshot.status_version,
+				       generations,
+				       0,
+				       0};
+	const bool queued_enable_accepted = queued.enqueue_command(20, queued_enable);
+	bool worker_paused_before_command = false;
+	{
+		std::unique_lock<std::mutex> lock(queued_work_gate.mutex);
+		worker_paused_before_command = queued_work_gate.condition.wait_for(
+			lock, std::chrono::seconds(2), [&queued_work_gate] { return queued_work_gate.work_paused; });
+	}
 	const ff_candidate queued_candidate{23,  1002, ff_identity{102, 202},   1, generations, 21,
 					    500, 21,   {0.3f, 0.2f, 0.2f, 0.3f}};
-	if (!queued.enqueue_candidates(21, &queued_candidate, 1))
-		return 10;
+	const bool candidate_accepted = queued.enqueue_candidates(21, &queued_candidate, 1);
 	const ff_command stale_dock_command{FF_COMMAND_SELECT_CANDIDATE, ff_identity{102, 202}, 0, generations, 23, 1};
-	if (!queued.enqueue_command(21, stale_dock_command))
-		return 11;
+	const bool stale_command_accepted = queued.enqueue_command(21, stale_dock_command);
 	queued.request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
-	if (queued.enqueue_tick(22) || queued.enqueue_command(22, stale_dock_command))
-		return 14;
+	const bool rejected_after_shutdown = !queued.enqueue_tick(22) &&
+					     !queued.enqueue_command(22, stale_dock_command);
+	{
+		std::lock_guard<std::mutex> lock(queued_work_gate.mutex);
+		queued_work_gate.release_work = true;
+	}
+	queued_work_gate.condition.notify_all();
 	queued.shutdown();
+	faithfulframe_test_set_session_work_hook(nullptr, nullptr);
+	if (!queued_enable_accepted || !worker_paused_before_command || !candidate_accepted ||
+	    !stale_command_accepted || !rejected_after_shutdown)
+		return 14;
 	if (!queued.try_snapshot(queued_snapshot) || !queued_snapshot.closed || queued_snapshot.has_selected ||
 	    queued_snapshot.state != FF_STATE_MANUAL || queued_snapshot.crop_action != FF_CROP_WIDE)
 		return 12;

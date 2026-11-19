@@ -121,6 +121,34 @@ void faithfulframe_test_run_session_work_hook()
 } // namespace
 #endif
 
+#ifdef FAITHFULFRAME_TEST_SESSION_ENQUEUE_LOCK_HOOK
+namespace {
+std::mutex faithfulframe_test_session_enqueue_lock_hook_mutex;
+void (*faithfulframe_test_session_enqueue_lock_hook)(void *) = nullptr;
+void *faithfulframe_test_session_enqueue_lock_hook_context = nullptr;
+
+void faithfulframe_test_run_session_enqueue_lock_hook()
+{
+	void (*hook)(void *) = nullptr;
+	void *context = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(faithfulframe_test_session_enqueue_lock_hook_mutex);
+		hook = faithfulframe_test_session_enqueue_lock_hook;
+		context = faithfulframe_test_session_enqueue_lock_hook_context;
+	}
+	if (hook)
+		hook(context);
+}
+} // namespace
+
+extern "C" void faithfulframe_test_set_session_enqueue_lock_hook(void (*hook)(void *), void *context)
+{
+	std::lock_guard<std::mutex> lock(faithfulframe_test_session_enqueue_lock_hook_mutex);
+	faithfulframe_test_session_enqueue_lock_hook = hook;
+	faithfulframe_test_session_enqueue_lock_hook_context = context;
+}
+#endif
+
 static void update_max(std::atomic<uint64_t> &maximum, uint64_t value)
 {
 	uint64_t current = maximum.load(std::memory_order_relaxed);
@@ -212,6 +240,8 @@ ff_result faithfulframe_core_bridge::lifecycle(uint64_t monotonic_ms, const ff_l
 }
 
 static_assert(std::atomic<uint64_t>::is_always_lock_free, "OBS render snapshots require lock-free 64-bit atomics");
+static_assert(std::atomic<bool>::is_always_lock_free, "OBS teardown requests require lock-free atomic flags");
+static_assert(std::atomic<uint32_t>::is_always_lock_free, "OBS teardown requests require lock-free lifecycle metadata");
 
 static bool faithfulframe_reserve_reaper_worker(const std::shared_ptr<faithfulframe_executor_reaper> &reaper);
 static void faithfulframe_release_reaper_worker(const std::shared_ptr<faithfulframe_executor_reaper> &reaper);
@@ -351,6 +381,9 @@ bool faithfulframe_session_executor::enqueue(work_item item, bool coalesce, bool
 	// A try-lock here would silently drop valid operator commands under ordinary
 	// worker contention, even when the bounded queue still has capacity.
 	std::unique_lock<std::mutex> lock(queue_mutex);
+#ifdef FAITHFULFRAME_TEST_SESSION_ENQUEUE_LOCK_HOOK
+	faithfulframe_test_run_session_enqueue_lock_hook();
+#endif
 	if (closing || closing_requested.load(std::memory_order_acquire)) {
 		rejected_work.fetch_add(1, std::memory_order_relaxed);
 		return false;
@@ -447,37 +480,17 @@ ff_executor_diagnostics faithfulframe_session_executor::diagnostics() const
 void faithfulframe_session_executor::request_shutdown(uint32_t terminal_lifecycle_kind, uint32_t source_width,
 						      uint32_t source_height)
 {
-	std::lock_guard<std::mutex> request_lock(shutdown_request_mutex);
-	if (closing_requested.load(std::memory_order_acquire))
+	bool expected = false;
+	if (!shutdown_request_claimed.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+							      std::memory_order_acquire))
 		return;
+	shutdown_lifecycle_kind.store(terminal_lifecycle_kind, std::memory_order_relaxed);
+	shutdown_source_width.store(source_width, std::memory_order_relaxed);
+	shutdown_source_height.store(source_height, std::memory_order_relaxed);
 	closing_requested.store(true, std::memory_order_release);
-	{
-		std::lock_guard<std::mutex> lock(queue_mutex);
-		closing = true;
-		// Pending detector results and operator commands are neutralized. The
-		// worker will derive the destroy generation from Rust's latest state.
-		queue_head = 0;
-		queue_size = 0;
-		queue_depth.store(0, std::memory_order_relaxed);
-		if (worker_started.load(std::memory_order_acquire)) {
-			work_item stop;
-			stop.kind = work_kind::stop;
-			stop.enqueued_at = std::chrono::steady_clock::now();
-			stop.lifecycle.kind = terminal_lifecycle_kind;
-			stop.lifecycle.source_width = source_width;
-			stop.lifecycle.source_height = source_height;
-			stop.monotonic_ms = last_submitted_ms == std::numeric_limits<uint64_t>::max()
-						    ? last_submitted_ms
-						    : last_submitted_ms + 1;
-			queue[0] = stop;
-			queue_size = 1;
-			queue_depth.store(1, std::memory_order_relaxed);
-			update_oldest_queue_timestamp_locked();
-			update_max(queue_high_water, 1);
-		}
-		if (!queue_size)
-			update_oldest_queue_timestamp_locked();
-	}
+	// OBS callbacks may request teardown from time-sensitive threads. Only the
+	// session worker touches its queue here: it observes closing_requested,
+	// discards pending work, and creates the terminal lifecycle item itself.
 	queue_condition.notify_one();
 }
 
@@ -1060,7 +1073,41 @@ void faithfulframe_session_executor::run()
 			work_item item;
 			{
 				std::unique_lock<std::mutex> lock(queue_mutex);
-				queue_condition.wait(lock, [this] { return queue_size != 0 || closing; });
+				queue_condition.wait(lock, [this] {
+					return queue_size != 0 || closing ||
+					       closing_requested.load(std::memory_order_acquire);
+				});
+				if (closing_requested.load(std::memory_order_acquire) && !closing) {
+					closing = true;
+					// Shutdown neutralizes queued candidates, commands, and ticks on
+					// their sole owner thread, then applies the terminal lifecycle to
+					// Rust's latest serialized session state.
+					queue_head = 0;
+					queue_size = 0;
+					queue_depth.store(0, std::memory_order_relaxed);
+					if (worker_started.load(std::memory_order_acquire)) {
+						work_item stop;
+						stop.kind = work_kind::stop;
+						stop.enqueued_at = std::chrono::steady_clock::now();
+						stop.lifecycle.kind =
+							shutdown_lifecycle_kind.load(std::memory_order_relaxed);
+						stop.lifecycle.source_width =
+							shutdown_source_width.load(std::memory_order_relaxed);
+						stop.lifecycle.source_height =
+							shutdown_source_height.load(std::memory_order_relaxed);
+						stop.monotonic_ms = last_submitted_ms ==
+										    std::numeric_limits<uint64_t>::max()
+									    ? last_submitted_ms
+									    : last_submitted_ms + 1;
+						queue[0] = stop;
+						queue_size = 1;
+						queue_depth.store(1, std::memory_order_relaxed);
+						update_oldest_queue_timestamp_locked();
+						update_max(queue_high_water, 1);
+					} else {
+						update_oldest_queue_timestamp_locked();
+					}
+				}
 				if (!queue_size)
 					break;
 				item = queue[queue_head];
@@ -1075,6 +1122,15 @@ void faithfulframe_session_executor::run()
 			last_queue_wait_us.store(elapsed_microseconds(item.enqueued_at), std::memory_order_relaxed);
 			update_max(max_queue_wait_us, last_queue_wait_us.load(std::memory_order_relaxed));
 			const auto processing_started = std::chrono::steady_clock::now();
+			if (closing_requested.load(std::memory_order_acquire) && item.kind != work_kind::stop) {
+				// A teardown request can arrive after dequeue but before policy
+				// processing. In that ordering, discard the in-flight item too; the
+				// next loop iteration creates and applies the terminal event.
+				last_processing_us.store(elapsed_microseconds(processing_started),
+							 std::memory_order_relaxed);
+				update_max(max_processing_us, last_processing_us.load(std::memory_order_relaxed));
+				continue;
+			}
 
 			if (item.kind == work_kind::stop) {
 				ff_lifecycle destroyed{};
