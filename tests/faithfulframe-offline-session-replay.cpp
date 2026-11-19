@@ -568,6 +568,7 @@ int main(int argc, char **argv)
 				return false;
 			}
 			manager = std::make_unique<offline_tracking_manager>();
+			manager->safety_policy_enabled.store(true, std::memory_order_release);
 			manager->upsize_l = 0.2f;
 			manager->upsize_r = 0.2f;
 			manager->upsize_t = 0.3f;

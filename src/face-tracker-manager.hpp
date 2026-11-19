@@ -55,6 +55,9 @@ public:
 
 public: // properties
 	float upsize_l, upsize_r, upsize_t, upsize_b;
+	// Safety tracking treats overlapping identities as ambiguous and retires
+	// both candidates. Keep the upstream legacy association policy when disabled.
+	std::atomic<bool> safety_policy_enabled{false};
 	std::atomic<float> scale{0.0f};
 	std::atomic<bool> reset_requested{false};
 	float tracking_threshold;
@@ -129,6 +132,7 @@ protected:
 private:
 	inline void retire_tracker(int ix);
 	inline bool is_low_confident(const tracker_inst_s &t, float th1);
+	void remove_duplicated_tracker();
 	void retire_ambiguous_trackers();
 	void attenuate_tracker();
 	void copy_detector_to_tracker();

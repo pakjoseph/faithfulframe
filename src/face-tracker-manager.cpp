@@ -106,6 +106,29 @@ inline bool face_tracker_manager::is_low_confident(const tracker_inst_s &t, floa
 	return false;
 }
 
+void face_tracker_manager::remove_duplicated_tracker()
+{
+	for (size_t i = 0; i < trackers.size(); i++) {
+		if (trackers[i].state != tracker_inst_s::tracker_state_available)
+			continue;
+
+		rect_s r = trackers[i].rect;
+		int a0 = (r.x1 - r.x0) * (r.y1 - r.y0);
+		int a_overlap_sum = 0;
+		for (size_t j = i + 1; j < trackers.size(); j++) {
+			if (trackers[j].state != tracker_inst_s::tracker_state_available)
+				continue;
+			int a = common_area(r, trackers[j].rect);
+			a_overlap_sum += a;
+			if (a * 10 > a0 && a_overlap_sum * 2 > a0) {
+				// Preserve upstream legacy behavior when the safety policy is off.
+				retire_tracker(j);
+				j--;
+			}
+		}
+	}
+}
+
 void face_tracker_manager::retire_ambiguous_trackers()
 {
 	for (size_t i = 0; i < trackers.size();) {
@@ -441,6 +464,7 @@ inline int face_tracker_manager::stage_surface_to_tracker(struct tracker_inst_s 
 
 inline void face_tracker_manager::stage_to_trackers(std::shared_ptr<texture_object> &frame, bool &capture_attempted)
 {
+	bool have_new_tracker = false;
 	for (size_t i = 0; i < trackers.size();) {
 		struct tracker_inst_s &t = trackers[i];
 		if (t.tracker->has_failed()) {
@@ -473,6 +497,7 @@ inline void face_tracker_manager::stage_to_trackers(std::shared_ptr<texture_obje
 				t.tracker->unlock();
 				if (ret) {
 					t.state = tracker_inst_s::tracker_state_available;
+					have_new_tracker = true;
 				}
 			}
 		} else if (t.state == tracker_inst_s::tracker_state_available) {
@@ -492,10 +517,14 @@ inline void face_tracker_manager::stage_to_trackers(std::shared_ptr<texture_obje
 		++i;
 	}
 
-	// Check every tracker update. A collision can occur after the candidates
-	// were initialized, and waiting for the next detector-created tracker
-	// leaves a window where the selected identity may drift onto another face.
-	retire_ambiguous_trackers();
+	if (safety_policy_enabled.load(std::memory_order_acquire)) {
+		// Check every tracker update. A collision can occur after the candidates
+		// were initialized, and waiting for the next detector-created tracker
+		// leaves a window where the selected identity may drift onto another face.
+		retire_ambiguous_trackers();
+	} else if (have_new_tracker) {
+		remove_duplicated_tracker();
+	}
 }
 
 static inline void make_tracker_rects(std::vector<face_tracker_manager::tracker_rect_s> &tracker_rects,
@@ -595,6 +624,7 @@ static void update_detector(face_tracker_manager *ftm, enum face_tracker_manager
 
 void face_tracker_manager::update(obs_data_t *settings)
 {
+	safety_policy_enabled.store(obs_data_get_bool(settings, "safe_tracking_enabled"), std::memory_order_release);
 	upsize_l = obs_data_get_double(settings, "upsize_l");
 	upsize_r = obs_data_get_double(settings, "upsize_r");
 	upsize_t = obs_data_get_double(settings, "upsize_t");
