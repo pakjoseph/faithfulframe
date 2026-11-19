@@ -318,20 +318,34 @@ jobs:
             --cmake-cache build/CMakeCache.txt
 
       - name: Codesign
-        if: ${{ github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' }}
+        env:
+          HAVE_CODESIGN_IDENTITY: ${{ steps.setup.outputs.haveCodesignIdent }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}
         run: |
           . build/ci/ci_includes.generated.sh
           set -ex
+          bundle=release/${PLUGIN_NAME}.plugin
+          if [[ "$GITHUB_EVENT_NAME" != 'pull_request' && "$HAVE_CODESIGN_IDENTITY" == 'true' ]]; then
+            identity="$MACOS_CODESIGN_IDENTITY"
+            signing_options=(--options runtime --timestamp)
+          else
+            # Non-release builds still exercise bundle sealing with an ad-hoc
+            # signature. Tagged releases fail earlier unless Developer ID and
+            # notarization credentials are configured.
+            identity=-
+            signing_options=(--options runtime)
+          fi
           files=(
-            $(find release/${PLUGIN_NAME}.plugin/ -name '*.dylib')
-            release/${PLUGIN_NAME}.plugin/Contents/MacOS/${PLUGIN_NAME}
+            $(find "$bundle" -name '*.dylib')
+            "$bundle/Contents/MacOS/${PLUGIN_NAME}"
           )
-          for dylib in "${files[@]}"; do
-            codesign --force --sign "${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}" "$dylib"
+          for code in "${files[@]}"; do
+            codesign --force --sign "$identity" "${signing_options[@]}" "$code"
           done
-          for dylib in "${files[@]}"; do
-            codesign -vvv --deep --strict "$dylib"
-          done
+          # Sign the outer plugin bundle last to seal Info.plist and all
+          # shipped model, locale, and license resources.
+          codesign --force --sign "$identity" "${signing_options[@]}" "$bundle"
+          codesign --verify --deep --strict --verbose=2 "$bundle"
 
       - name: Package
         run: |
