@@ -30,7 +30,6 @@
 #include "faithfulframe-adapter-lease.hpp"
 #include "faithfulframe-config-guard.hpp"
 #include "faithfulframe-crop-selector.hpp"
-#include "faithfulframe-deferred-pending.hpp"
 #include "faithfulframe-preview-geometry.hpp"
 #include "faithfulframe-source-identity.hpp"
 #endif
@@ -174,13 +173,25 @@ struct faithfulframe_source_binding
 	// connect_ref keeps the source signal handler alive. Disconnect serializes
 	// with an in-flight callback before this binding can be destroyed.
 	signal_handler_t *target_update_handler = nullptr;
+	// libobs references are released only from an OBS callback. The module reaper
+	// may destroy this C++ object after obs_module_unload, so its destructor must
+	// never call into libobs.
+	std::atomic<bool> obs_resources_released{false};
+	std::atomic<bool> cleanup_reservation{false};
 	std::mutex preview_mutex;
 	preview_payload preview;
 	faithfulframe_reap_task reap_task{};
 
 	static void destroy_reaped_binding(void *context)
 	{
-		delete static_cast<faithfulframe_source_binding *>(context);
+		auto *binding = static_cast<faithfulframe_source_binding *>(context);
+		if (!binding)
+			return;
+		const bool release_cleanup_reservation =
+			binding->cleanup_reservation.exchange(false, std::memory_order_acq_rel);
+		delete binding;
+		if (release_cleanup_reservation)
+			faithfulframe_teardown_instance_destroyed();
 	}
 
 	bool set_active_child(bool active)
@@ -216,6 +227,8 @@ struct faithfulframe_source_binding
 	{
 		if (!closed.load(std::memory_order_acquire))
 			return false;
+		if (!obs_resources_released.load(std::memory_order_acquire))
+			return false;
 		auto session = std::atomic_load_explicit(&executor, std::memory_order_acquire);
 		if (session && !faithfulframe_retire_session_executor(session, wait_for_reaper))
 			return false;
@@ -223,10 +236,21 @@ struct faithfulframe_source_binding
 		return faithfulframe_defer_reap_task(&reap_task, destroy_reaped_binding, this, wait_for_reaper);
 	}
 
-	~faithfulframe_source_binding()
+	void release_obs_resources()
 	{
-		closed.store(true, std::memory_order_release);
-		set_active_child(false);
+		std::lock_guard<std::mutex> lock(active_child_mutex);
+		if (obs_resources_released.load(std::memory_order_acquire))
+			return;
+
+		if (active_child_registered && parent_context && target) {
+			obs_source_t *source = obs_weak_source_get_source(target);
+			if (source) {
+				obs_source_remove_active_child(parent_context, source);
+				obs_source_release(source);
+			}
+		}
+		active_child_registered = false;
+
 		if (target_update_handler) {
 			signal_handler_disconnect(target_update_handler, "update", faithfulframe_bound_source_updated,
 						  this);
@@ -235,25 +259,65 @@ struct faithfulframe_source_binding
 			target_update_handler = nullptr;
 		}
 		render_executor.store(nullptr, std::memory_order_release);
+		if (target) {
+			obs_weak_source_release(target);
+			target = nullptr;
+		}
+		parent_context = nullptr;
+		obs_resources_released.store(true, std::memory_order_release);
+	}
+
+	~faithfulframe_source_binding()
+	{
+		closed.store(true, std::memory_order_release);
+		render_executor.store(nullptr, std::memory_order_release);
 		auto session = std::atomic_exchange_explicit(
 			&executor, std::shared_ptr<faithfulframe_session_executor>{}, std::memory_order_acq_rel);
 		if (session && !executor_handed_to_reaper.load(std::memory_order_acquire)) {
 			session->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
-			// A binding is destroyed either by the reaper cleanup task or from
-			// OBS's deferred source-destruction callback, after video readers drain.
-			// Wait for transient queue-lock contention here so it cannot turn into
-			// an inline worker join on an OBS callback thread.
-			if (!faithfulframe_retire_session_executor(session, true)) {
-				blog(LOG_ERROR,
-				     "FaithfulFrame could not hand off a session from deferred source destruction; "
-				     "joining on the OBS destruction thread");
+			// The OBS handles have already been released by an OBS callback. Wait
+			// for transient queue-lock contention here so this fallback cannot turn
+			// into an inline worker join on an OBS callback thread.
+			if (!faithfulframe_retire_session_executor(session, true))
 				session->shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
-			}
 		}
-		if (target)
-			obs_weak_source_release(target);
 	}
 };
+
+// Retired bindings are first released on OBS's destroy-task executor, where
+// libobs references and signal callbacks may be disconnected safely. Only then
+// may the module reaper destroy the C++ binding after module unload.
+static void release_and_reap_binding_on_obs_destroy_queue(void *context)
+{
+	auto *binding = static_cast<faithfulframe_source_binding *>(context);
+	if (!binding)
+		return;
+	binding->release_obs_resources();
+	if (binding->handoff_binding_for_reclamation(true)) {
+		faithfulframe_activate_reap_task(&binding->reap_task);
+		return;
+	}
+	blog(LOG_ERROR, "FaithfulFrame could not hand off a cleaned binding; reclaiming on OBS destroy queue");
+	const bool release_cleanup_reservation =
+		binding->cleanup_reservation.exchange(false, std::memory_order_acq_rel);
+	delete binding;
+	if (release_cleanup_reservation)
+		faithfulframe_teardown_instance_destroyed();
+}
+
+static bool schedule_binding_reclamation(std::unique_ptr<faithfulframe_source_binding> &binding)
+{
+	if (!binding)
+		return true;
+	if (!faithfulframe_teardown_register_cleanup())
+		return false;
+	binding->cleanup_reservation.store(true, std::memory_order_release);
+	auto *raw = binding.release();
+	// This is a nonblocking enqueue from OBS video callbacks. OBS runs the task
+	// on its serialized destroy executor, which drains before libobs shuts down.
+	obs_queue_task(OBS_TASK_DESTROY, release_and_reap_binding_on_obs_destroy_queue, raw, false);
+	return true;
+}
 
 static void faithfulframe_bound_source_updated(void *data, calldata_t *params)
 {
@@ -316,7 +380,6 @@ struct faithfulframe_source_runtime
 	uint64_t processed_configuration_version = 0;
 	uint64_t processed_tracker_configuration_version = 0;
 	faithfulframe_active_slot<faithfulframe_source_binding> active;
-	faithfulframe_deferred_pending<faithfulframe_source_binding> deferred_reclamation;
 	std::mutex bindings_mutex;
 	// Owns the active binding and retired bindings until lock-free readers drain.
 	std::vector<std::unique_ptr<faithfulframe_source_binding>> bindings;
@@ -325,29 +388,11 @@ struct faithfulframe_source_runtime
 	{
 		// Stop new callback access before releasing any binding. Request shutdown
 		// for every session first so queued commands/results are neutralized before
-		// binding destructors transfer workers to the shared reaper.
+		// OBS references are released and C++ reclamation transfers to the reaper.
 		enabled.store(false, std::memory_order_release);
 		reconfiguration_pending.store(true, std::memory_order_release);
 		active.exchange(nullptr);
 		active.wait_until_drained();
-		auto *deferred = deferred_reclamation.take();
-		if (deferred) {
-			deferred->set_active_child(false);
-			deferred->transition_pending.store(true, std::memory_order_release);
-			deferred->closed.store(true, std::memory_order_release);
-			deferred->render_executor.store(nullptr, std::memory_order_release);
-			if (auto executor = std::atomic_load_explicit(&deferred->executor, std::memory_order_acquire))
-				executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
-		}
-		if (deferred) {
-			if (deferred->handoff_binding_for_reclamation(true)) {
-				auto *task = &deferred->reap_task;
-				faithfulframe_activate_reap_task(task);
-			} else {
-				blog(LOG_ERROR, "FaithfulFrame could not hand off a deferred binding during teardown");
-				delete deferred;
-			}
-		}
 		{
 			std::lock_guard<std::mutex> bindings_lock(bindings_mutex);
 			for (auto &owned_binding : bindings) {
@@ -367,6 +412,7 @@ struct faithfulframe_source_runtime
 				if (!owned_binding)
 					continue;
 				auto *binding = owned_binding.get();
+				binding->release_obs_resources();
 				if (binding->handoff_binding_for_reclamation(true)) {
 					auto *task = &binding->reap_task;
 					owned_binding.release();
@@ -387,16 +433,6 @@ struct faithfulframe_source_runtime
 	{
 		if (active.reader_count() != 0)
 			return;
-		std::unique_ptr<faithfulframe_source_binding> deferred(deferred_reclamation.take());
-		if (deferred) {
-			if (deferred->handoff_binding_for_reclamation()) {
-				auto *task = &deferred->reap_task;
-				deferred.release();
-				faithfulframe_activate_reap_task(task);
-			} else if (!deferred_reclamation.try_store(deferred)) {
-				blog(LOG_ERROR, "FaithfulFrame could not restore its deferred binding owner");
-			}
-		}
 		std::unique_lock<std::mutex> lock(bindings_mutex, std::try_to_lock);
 		if (!lock.owns_lock() || active.reader_count() != 0)
 			return;
@@ -407,46 +443,34 @@ struct faithfulframe_source_runtime
 				continue;
 			}
 
-			// Signal disconnection and child-source cleanup can wait for callbacks.
-			// Transfer the whole binding to the module reaper so none of its OBS
-			// resource teardown runs from this graphics-tick callback.
-			if (!(*it)->handoff_binding_for_reclamation()) {
+			// Signal disconnection and OBS handle release can wait for callbacks.
+			// Move this work to libobs's destroy-task executor; the module reaper
+			// receives the binding only after its OBS resources have been released.
+			if (!schedule_binding_reclamation(*it)) {
 				++it;
 				continue;
 			}
-			auto *task = &(*it)->reap_task;
-			it->release();
 			it = bindings.erase(it);
-			faithfulframe_activate_reap_task(task);
 		}
 	}
 };
 
 // Setup can discover a legacy filter after it has already started a session.
-// This helper runs on the OBS video tick, where the binding destructor's
-// shutdown fallback must not join a session worker. Retire immediately when
-// possible; if the nonblocking handoff is refused, retain the closed binding
-// in the runtime so a later tick or controlled destroy callback can retry.
-static faithfulframe_reap_task *
-retire_unpublished_binding_on_tick(faithfulframe_source_runtime *runtime,
-				   std::unique_ptr<faithfulframe_source_binding> &binding)
+// Close the session on the video tick, then route OBS resource release through
+// libobs's destroy-task executor before transferring the binding to the reaper.
+static void retire_unpublished_binding_on_tick(faithfulframe_source_runtime *runtime,
+					       std::unique_ptr<faithfulframe_source_binding> &binding)
 {
 	if (!runtime || !binding)
-		return nullptr;
+		return;
 	fail_source_binding_closed(binding.get());
-	if (binding->handoff_binding_for_reclamation()) {
-		auto *task = &binding->reap_task;
-		binding.release();
-		return task;
-	}
-	if (!runtime->deferred_reclamation.try_store(binding)) {
-		// A second binding can fail setup before the next video tick retries the
-		// deferred slot. Keep its OBS resources owned by the runtime so this tick
-		// never falls through to the binding destructor and joins a session worker.
+	if (!schedule_binding_reclamation(binding)) {
+		// Keep ownership in the runtime. Its OBS destroy callback will release
+		// resources directly while the source-instance reservation still pins
+		// the module reaper.
 		std::lock_guard<std::mutex> bindings_lock(runtime->bindings_mutex);
 		runtime->bindings.push_back(std::move(binding));
 	}
-	return nullptr;
 }
 
 static std::atomic<uint64_t> faithfulframe_next_identity{1};
@@ -1693,10 +1717,6 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		revision = runtime->configuration_version.load(std::memory_order_acquire);
 		if (revision == runtime->processed_configuration_version)
 			return;
-		// A prior failed handoff owns one closed binding. Drain it before making
-		// another; this keeps the frame-side pending owner bounded and unambiguous.
-		if (runtime->deferred_reclamation.occupied())
-			return;
 		tracker_revision = runtime->tracker_configuration_version.load(std::memory_order_acquire);
 		enabled = runtime->enabled.load(std::memory_order_acquire);
 		target_uuid = runtime->requested_target_uuid;
@@ -1817,6 +1837,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 			std::memory_order_release);
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
+		retire_unpublished_binding_on_tick(runtime, binding);
 		clear_reconfiguration();
 		return;
 	}
@@ -1846,6 +1867,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		blog(LOG_WARNING, "FaithfulFrame rejected a source with an incompatible tracker filter");
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
+		retire_unpublished_binding_on_tick(runtime, binding);
 		clear_reconfiguration();
 		return;
 	}
@@ -1869,8 +1891,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		blog(LOG_WARNING, "FaithfulFrame rejected a source after an incompatible tracker filter was added");
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
-		if (auto *task = retire_unpublished_binding_on_tick(runtime, binding))
-			faithfulframe_activate_reap_task(task);
+		retire_unpublished_binding_on_tick(runtime, binding);
 		clear_reconfiguration();
 		return;
 	}
@@ -1885,8 +1906,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 			std::memory_order_release);
 		faithfulframe::single_adapter_lease::release(runtime);
 		obs_source_release(target);
-		if (auto *task = retire_unpublished_binding_on_tick(runtime, binding))
-			faithfulframe_activate_reap_task(task);
+		retire_unpublished_binding_on_tick(runtime, binding);
 		clear_reconfiguration();
 		return;
 	}

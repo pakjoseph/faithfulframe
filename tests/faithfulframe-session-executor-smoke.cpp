@@ -1406,6 +1406,51 @@ bool reaper_drains_chained_cleanup_before_shutdown()
 	       faithfulframe_teardown_register_instance() == 0;
 }
 
+struct deferred_obs_cleanup_reservation_test
+{
+	faithfulframe_reap_task task{};
+	std::atomic<bool> completed{false};
+};
+
+void complete_deferred_obs_cleanup_reservation(void *context)
+{
+	auto *state = static_cast<deferred_obs_cleanup_reservation_test *>(context);
+	faithfulframe_teardown_instance_destroyed();
+	state->completed.store(true, std::memory_order_release);
+}
+
+bool obs_cleanup_reservation_keeps_reaper_open()
+{
+	trace_session_smoke_checkpoint("OBS cleanup reservation: setup");
+	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
+		return false;
+	faithfulframe_teardown_instance_created();
+	if (faithfulframe_teardown_register_cleanup() != 1) {
+		faithfulframe_teardown_begin_module_unload();
+		faithfulframe_teardown_instance_destroyed();
+		return false;
+	}
+	deferred_obs_cleanup_reservation_test cleanup;
+	if (!enqueue_reap_task_when_available(&cleanup.task, complete_deferred_obs_cleanup_reservation, &cleanup)) {
+		faithfulframe_teardown_begin_module_unload();
+		faithfulframe_teardown_instance_destroyed();
+		faithfulframe_teardown_instance_destroyed();
+		return false;
+	}
+
+	faithfulframe_teardown_begin_module_unload();
+	faithfulframe_teardown_instance_destroyed();
+	const bool source_destroy_did_not_close_reaper = !faithfulframe_test_reaper_shutdown_pending();
+	faithfulframe_activate_reap_task(&cleanup.task);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while ((!cleanup.completed.load(std::memory_order_acquire) || faithfulframe_test_reaper_shutdown_pending()) &&
+	       std::chrono::steady_clock::now() < deadline)
+		std::this_thread::yield();
+	const bool cleanup_drained = cleanup.completed.load(std::memory_order_acquire) &&
+				     !faithfulframe_test_reaper_shutdown_pending();
+	return source_destroy_did_not_close_reaper && cleanup_drained && faithfulframe_executor_reaper_start() == 1;
+}
+
 void trace_session_smoke_checkpoint(const char *name)
 {
 	std::fprintf(stderr, "session executor smoke checkpoint: %s\n", name);
@@ -2451,6 +2496,9 @@ int run_smoke()
 	trace_session_smoke_checkpoint("chained-cleanup shutdown test");
 	if (!reaper_drains_chained_cleanup_before_shutdown())
 		return 125;
+	trace_session_smoke_checkpoint("deferred OBS cleanup reservation test");
+	if (!obs_cleanup_reservation_keeps_reaper_open())
+		return 129;
 	return 0;
 }
 

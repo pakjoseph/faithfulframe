@@ -906,6 +906,19 @@ extern "C" int faithfulframe_teardown_register_instance()
 	return 1;
 }
 
+extern "C" int faithfulframe_teardown_register_cleanup()
+{
+	// Unlike new source creation, cleanup reservations remain valid while module
+	// unload is in progress. An existing source reservation keeps the reaper
+	// accepting work until its destroy callback returns, and this nested count
+	// carries that guarantee through OBS's separately queued destroy task.
+	std::lock_guard<std::mutex> lock(faithfulframe_module_lifecycle_mutex);
+	if (faithfulframe_live_instances == 0 || faithfulframe_live_instances == std::numeric_limits<size_t>::max())
+		return 0;
+	++faithfulframe_live_instances;
+	return 1;
+}
+
 #ifdef FAITHFULFRAME_TEST_REAPER_JOIN_HOOK
 extern "C" void faithfulframe_test_set_reaper_join_hook(void (*hook)(void *), void *context)
 {
