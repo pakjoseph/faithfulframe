@@ -66,7 +66,7 @@ def clear_inherited_setup_shutdown_sentinels(config_path, logsdir):
 
 
 def write_synthetic_person_y4m(output_path):
-    """Create a short looping OBS video from the checked-in cartoon fixture."""
+    """Create a short looping two-person OBS video from the cartoon fixture."""
     fixture_path = os.path.join(
         os.path.dirname(__file__),
         os.pardir,
@@ -90,20 +90,21 @@ def write_synthetic_person_y4m(output_path):
     height = width * 9 // 16
     person_width = max(1, (source_width * 4 + 2) // 5)
     person_height = max(1, (source_height * 4 + 2) // 5)
-    x_offset = (width - person_width) // 2
     y_offset = (height - person_height) // 2
-    if x_offset < 0 or y_offset < 0:
+    x_offsets = (width // 4 - person_width // 2, 3 * width // 4 - person_width // 2)
+    if y_offset < 0 or any(x_offset < 0 or x_offset + person_width > width for x_offset in x_offsets):
         raise ValueError('synthetic face fixture must fit inside the 16:9 canvas')
     padded_pixels = bytearray(width * height * 3)
-    for y in range(person_height):
-        source_y = min(source_height - 1, ((2 * y + 1) * source_height) // (2 * person_height))
-        for x in range(person_width):
-            source_x = min(source_width - 1, ((2 * x + 1) * source_width) // (2 * person_width))
-            source_offset = (source_y * source_width + source_x) * 3
-            destination_offset = ((y + y_offset) * width + x + x_offset) * 3
-            padded_pixels[destination_offset : destination_offset + 3] = rgb_pixels[
-                source_offset : source_offset + 3
-            ]
+    for x_offset in x_offsets:
+        for y in range(person_height):
+            source_y = min(source_height - 1, ((2 * y + 1) * source_height) // (2 * person_height))
+            for x in range(person_width):
+                source_x = min(source_width - 1, ((2 * x + 1) * source_width) // (2 * person_width))
+                source_offset = (source_y * source_width + source_x) * 3
+                destination_offset = ((y + y_offset) * width + x + x_offset) * 3
+                padded_pixels[destination_offset : destination_offset + 3] = rgb_pixels[
+                    source_offset : source_offset + 3
+                ]
     rgb_pixels = padded_pixels
 
     luma = bytearray(width * height)
@@ -794,7 +795,9 @@ class PluginLoadTest(obstest.OBSTest):
 
                     candidates_widget = self._find_ui_widget(widgets, 'Detected face candidates')
                     last_candidates_widget = candidates_widget
-                    if candidates_widget and candidates_widget.get('count', 0) >= 2:
+                    # The first combo item is the placeholder; require two
+                    # detected faces before selecting one of them.
+                    if candidates_widget and candidates_widget.get('count', 0) >= 3:
                         candidate_visible_polls += 1
                         # Candidate observations expire quickly. Reuse this
                         # widget tree for both actions instead of making more
