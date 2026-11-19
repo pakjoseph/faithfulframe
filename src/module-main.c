@@ -99,9 +99,10 @@ void obs_module_unload()
 	// Keep teardown active until libobs destroys remaining source/filter
 	// instances after this function returns.
 #ifdef ENABLE_RUST_CORE_BRIDGE
-	blog(LOG_INFO, "FaithfulFrame module unload: stopping session executor reaper");
+	blog(LOG_INFO, "FaithfulFrame module unload: establishing session executor teardown barrier");
 	faithfulframe_teardown_begin_module_unload();
-	blog(LOG_INFO, "FaithfulFrame module unload: session executor reaper stopped");
+	blog(LOG_INFO,
+	     "FaithfulFrame module unload: teardown barrier established; executor reaper drains asynchronously");
 #endif
 #ifdef WITH_DOCK
 	blog(LOG_INFO, "FaithfulFrame module unload: releasing Qt docks");
