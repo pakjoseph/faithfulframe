@@ -86,7 +86,7 @@ def write_synthetic_person_y4m(output_path):
     # smaller canvas. The full-resolution face was too large for the framing
     # assertion, while the 2/3-size normalization was too small for reliable
     # HOG tracking on slower Windows OBS runners.
-    width = source_width * 2
+    width = source_width * 4
     height = width * 9 // 16
     person_width = max(1, (source_width * 4 + 2) // 5)
     person_height = max(1, (source_height * 4 + 2) // 5)
@@ -747,10 +747,10 @@ class PluginLoadTest(obstest.OBSTest):
                     'target_name': camera_name,
                     'target_uuid': camera_uuid,
                     'safe_tracking_enabled': True,
-                    # Keep the two synthetic people at the known detectable
-                    # pixel size while using a smaller canvas for this UI
-                    # workflow test; performance is measured separately.
-                    'scale': 1.0,
+                    # Keep a 1280x720 source for a meaningful crop while
+                    # processing the two faces at half resolution on slower
+                    # hosted runners. Performance is measured separately.
+                    'scale': 2.0,
                 },
             })
             created_inputs.append(adapter_name)
