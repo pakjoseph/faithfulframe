@@ -812,7 +812,7 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 3)
-            self.assertIn("No candidate was available", result.stderr)
+            self.assertIn("No detector-confirmed preview candidate was available", result.stderr)
             events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
             policy_events = [event for event in events if event["kind"] != "tracker_diagnostics"]
             self.assertEqual([event["kind"] for event in policy_events], ["tick"])
