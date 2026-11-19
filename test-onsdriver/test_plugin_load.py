@@ -86,10 +86,13 @@ def write_synthetic_person_y4m(output_path):
     # smaller canvas. The full-resolution face was too large for the framing
     # assertion, while the 2/3-size normalization was too small for reliable
     # HOG tracking on slower Windows OBS runners.
-    width = source_width * 4
+    # Keep the OBS source at the detector's working resolution. The previous
+    # 1280x720 fixture was immediately halved to 640x360 by the adapter, adding
+    # render load to this operator-workflow test without adding detector detail.
+    width = source_width * 2
     height = width * 9 // 16
-    person_width = max(1, (source_width * 4 + 2) // 5)
-    person_height = max(1, (source_height * 4 + 2) // 5)
+    person_width = max(1, (source_width * 2 + 2) // 5)
+    person_height = max(1, (source_height * 2 + 2) // 5)
     y_offset = (height - person_height) // 2
     x_offsets = (width // 4 - person_width // 2, 3 * width // 4 - person_width // 2)
     if y_offset < 0 or any(x_offset < 0 or x_offset + person_width > width for x_offset in x_offsets):
@@ -747,10 +750,10 @@ class PluginLoadTest(obstest.OBSTest):
                     'target_name': camera_name,
                     'target_uuid': camera_uuid,
                     'safe_tracking_enabled': True,
-                    # Keep a 1280x720 source for a meaningful crop while
-                    # processing the two faces at half resolution on slower
-                    # hosted runners. Performance is measured separately.
-                    'scale': 2.0,
+                    # The synthetic source is already 640x360; keep the same
+                    # detector working resolution without making OBS render a
+                    # larger image for this operator-workflow test.
+                    'scale': 1.0,
                 },
             })
             created_inputs.append(adapter_name)
