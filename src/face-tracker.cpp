@@ -89,7 +89,7 @@ struct faithfulframe_tracker_settings_queue
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
 static constexpr uint64_t safe_preview_max_snapshot_age_ms = 500;
-static constexpr uint64_t safe_candidate_max_age_ms = 500;
+static constexpr uint64_t safe_candidate_max_age_ms = faithfulframe_candidate_max_age_ms;
 // The manager schedules dlib detection every two seconds. Confirmation expires
 // one candidate-freshness window after that cadence, so a stalled detector
 // cannot leave correlation-tracker output authorized indefinitely.

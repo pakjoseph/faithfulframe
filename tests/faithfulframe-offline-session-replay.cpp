@@ -634,18 +634,27 @@ int main(int argc, char **argv)
 				break;
 			ff_rect rect{};
 			if (!valid_candidate_rect(tracker, source_width, source_height, rect) ||
-			    tracker.observed_at_ms > timestamp_ms || timestamp_ms - tracker.observed_at_ms > 500)
+			    tracker.observed_at_ms > timestamp_ms ||
+			    timestamp_ms - tracker.observed_at_ms > faithfulframe_candidate_max_age_ms)
 				continue;
 			if (candidates.empty() && !next_observation_version(observation_version)) {
 				error = "Candidate observation version exhausted";
 				return false;
 			}
-			const uint64_t expires_at = tracker.observed_at_ms > std::numeric_limits<uint64_t>::max() - 500
-							    ? std::numeric_limits<uint64_t>::max()
-							    : tracker.observed_at_ms + 500;
+			const uint64_t expires_at =
+				tracker.observed_at_ms > std::numeric_limits<uint64_t>::max() -
+								 faithfulframe_candidate_max_age_ms
+					? std::numeric_limits<uint64_t>::max()
+					: tracker.observed_at_ms + faithfulframe_candidate_max_age_ms;
+			const uint64_t detector_confirmed_at =
+				faithfulframe_detector_confirmation_is_fresh(
+					tracker.detector_confirmed_at_ms, timestamp_ms,
+					face_tracker_manager::detector_interval_ms + faithfulframe_candidate_max_age_ms)
+					? tracker.detector_confirmed_at_ms
+					: 0;
 			candidates.push_back(ff_candidate{tracker.candidate_handle, tracker.continuity_token, identity,
 							  observation_version, generations, tracker.observed_at_ms,
-							  expires_at, tracker.detector_confirmed_at_ms, rect});
+							  expires_at, detector_confirmed_at, rect});
 			tracker_scores.push_back(tracker.rect.score);
 		}
 		std::array<size_t, 6> tracker_state_counts{};
@@ -718,31 +727,35 @@ int main(int argc, char **argv)
 			write_snapshot_event(*trace, "candidates_cleared", frame_index, timestamp_ms, snapshot);
 		}
 
-		// A leftmost-selection scenario represents the operator choosing between
-		// multiple visible candidates. The detector and tracker workers may
-		// publish one face before the other, so keep the synthetic command queued
-		// until both choices are available instead of accidentally selecting the
-		// only early candidate.
-		const bool selection_choices_ready = !args.select_leftmost_candidate || candidates.size() >= 2;
+		// The operator preview exposes only detector-confirmed candidates. Keep a
+		// replayed selection pending until its requested preview row(s) are both
+		// visible and backed by current detector evidence.
+		std::vector<size_t> selectable_candidates;
+		for (size_t i = 0; i < candidates.size(); ++i) {
+			const ff_candidate &candidate = candidates[i];
+			if (candidate.detector_confirmed_at_ms &&
+			    candidate.detector_confirmed_at_ms <= candidate.observed_at_ms)
+				selectable_candidates.push_back(i);
+		}
+		const bool selection_choices_ready =
+			args.select_leftmost_candidate ? selectable_candidates.size() >= 2
+						       : selectable_candidates.size() > args.operator_candidate_index;
 		if (!selection_attempted && args.has_operator_selection_time &&
-		    timestamp_ms >= args.operator_selection_time_ms && !candidates.empty() && selection_choices_ready) {
+		    timestamp_ms >= args.operator_selection_time_ms && selection_choices_ready) {
 			selection_attempted = true;
 			++selection_attempts;
-			if (args.operator_candidate_index >= candidates.size()) {
-				error = "The requested operator candidate index is not present in this frame";
-				return false;
-			}
-			size_t selected_index = args.operator_candidate_index;
+			size_t selected_index = selectable_candidates[args.operator_candidate_index];
 			if (args.select_leftmost_candidate) {
-				for (size_t i = 1; i < candidates.size(); ++i) {
-					const ff_rect &candidate_rect = candidates[i].rect;
+				for (size_t i = 1; i < selectable_candidates.size(); ++i) {
+					const size_t candidate_index = selectable_candidates[i];
+					const ff_rect &candidate_rect = candidates[candidate_index].rect;
 					const ff_rect &selected_rect = candidates[selected_index].rect;
 					const float candidate_center = candidate_rect.x + candidate_rect.width * 0.5f;
 					const float selected_center = selected_rect.x + selected_rect.width * 0.5f;
 					if (candidate_center < selected_center ||
 					    (candidate_center == selected_center &&
-					     candidates[i].handle < candidates[selected_index].handle))
-						selected_index = i;
+					     candidates[candidate_index].handle < candidates[selected_index].handle))
+						selected_index = candidate_index;
 				}
 			}
 			const ff_candidate &candidate = candidates[selected_index];
@@ -820,7 +833,8 @@ int main(int argc, char **argv)
 	}
 	manager.reset(); // Stop and join detector/tracker workers before releasing session policy.
 	if (!selection_attempted && args.has_operator_selection_time) {
-		std::cerr << "No candidate was available when the requested operator selection became eligible\n";
+		std::cerr << "No detector-confirmed preview candidate was available when the requested operator "
+			     "selection became eligible\n";
 		return 3;
 	}
 	if (args.has_operator_selection_time && !selection_applied) {

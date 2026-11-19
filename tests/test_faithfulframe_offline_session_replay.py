@@ -339,9 +339,9 @@ class OfflineSessionReplayTests(unittest.TestCase):
 
             rows = ["monotonic_ms\tframe_path\n"]
             for frame_index in range(210):
-                if frame_index < 70 or frame_index >= 130:
+                if frame_index < 100 or frame_index >= 160:
                     frame = both
-                elif frame_index < 110:
+                elif frame_index < 140:
                     frame = low_light
                 else:
                     frame = right_only
@@ -368,7 +368,23 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
+            failure_context = result.stderr
+            if result.returncode != 0 and trace.is_file():
+                diagnostic_events = [
+                    json.loads(line)
+                    for line in trace.read_text(encoding="utf-8").splitlines()
+                    if '"kind":"tracker_diagnostics"' in line
+                ]
+                candidate_events = [
+                    json.loads(line)
+                    for line in trace.read_text(encoding="utf-8").splitlines()
+                    if '"kind":"candidate"' in line
+                ]
+                failure_context += (
+                    f"\nDetector/tracker diagnostics: {diagnostic_events}"
+                    f"\nCandidate evidence: {candidate_events[-12:]}"
+                )
+            self.assertEqual(result.returncode, 0, failure_context)
 
             trace_text = trace.read_text(encoding="utf-8")
             events = [json.loads(line) for line in trace_text.splitlines()]
@@ -405,13 +421,13 @@ class OfflineSessionReplayTests(unittest.TestCase):
             detector_misses = [
                 event
                 for event in selected_track
-                if 70 <= event["frame_index"] < 130
+                if 100 <= event["frame_index"] < 160
                 if event["candidate"]["detector_confirmed_at_ms"] == 0
             ]
             projected_face_candidates = [
                 event
                 for event in candidates
-                if 70 <= event["frame_index"] < 130
+                if 100 <= event["frame_index"] < 160
                 and event["candidate"]["detector_confirmed_at_ms"] != 0
                 and event["candidate"]["rect"][0] + event["candidate"]["rect"][2] / 2 > 0.6
             ]
@@ -433,7 +449,7 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 stale_holds = [
                     event
                     for event in events
-                    if 70 <= event.get("frame_index", -1) < 130
+                    if 100 <= event.get("frame_index", -1) < 160
                     and event.get("kind") in ("tick", "candidate")
                     and event["snapshot"]["state"] == "searching"
                     and event["snapshot"]["reason"] == "target_evidence_stale"
@@ -445,8 +461,8 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 )
                 first_hold = stale_holds[0]
 
-            self.assertGreaterEqual(first_hold["frame_index"], 70)
-            self.assertLess(first_hold["frame_index"], 130)
+            self.assertGreaterEqual(first_hold["frame_index"], 100)
+            self.assertLess(first_hold["frame_index"], 160)
             self.assertEqual(first_hold["snapshot"]["state"], "searching")
             self.assertEqual(first_hold["snapshot"]["crop_action"], "hold")
             handle_continuity = {
@@ -490,7 +506,7 @@ class OfflineSessionReplayTests(unittest.TestCase):
             reappeared_left = [
                 event
                 for event in candidates
-                if event["at_ms"] >= 5200
+                if event["at_ms"] >= 6400
                 and event["candidate"]["detector_confirmed_at_ms"] != 0
                 and event["candidate"]["rect"][0] + event["candidate"]["rect"][2] / 2 < 0.5
                 and event["candidate"]["continuity_token"] != selected_continuity

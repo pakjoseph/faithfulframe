@@ -5,6 +5,7 @@
 #include <limits>
 
 static constexpr std::size_t faithfulframe_max_candidates = 8;
+inline constexpr std::uint64_t faithfulframe_candidate_max_age_ms = 500;
 
 // Candidate handles travel through OBS's signed integer fields. Exhaust the
 // allocator rather than wrapping or reusing an identity that may still be
