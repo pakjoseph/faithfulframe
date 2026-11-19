@@ -8,7 +8,6 @@
 #include <dlib/image_processing/scan_fhog_pyramid.h>
 #include <dlib/image_processing/correlation_tracker.h>
 #include <dlib/image_processing.h>
-#include <chrono>
 #include <cstdlib>
 #include <utility>
 
@@ -25,10 +24,8 @@ struct face_tracker_dlib_private_s
 	dlib::shape_predictor sp;
 	dlib::full_object_detection shape;
 	float last_scale;
-	float score0;
-	float pslr_max, pslr_min;
+	double psr_max;
 	bool need_restart;
-	uint64_t last_ns;
 	float scale_orig;
 	int n_track;
 	rectf_s upsize;
@@ -123,8 +120,6 @@ void face_tracker_dlib::track_main()
 		return;
 	}
 
-	const auto now = std::chrono::steady_clock::now().time_since_epoch();
-	const uint64_t ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
 	bool observed = false;
 	if (p->need_restart) {
 		if (!p->tracker)
@@ -138,10 +133,8 @@ void face_tracker_dlib::track_main()
 		p->tracker->start_track(img, r);
 		p->tracker_nc = img.nc();
 		p->tracker_nr = img.nr();
-		p->score0 = p->rect.score;
 		p->need_restart = false;
-		p->pslr_max = 0.0f;
-		p->pslr_min = 1e9f;
+		p->psr_max = 0.0;
 		p->scale_orig = tex->scale;
 		p->shape = dlib::full_object_detection();
 		observed = true;
@@ -163,29 +156,23 @@ void face_tracker_dlib::track_main()
 		}
 
 		const double psr = p->tracker->update(img);
-		if (std::isfinite(psr) && psr > 0.0) {
-			if (psr > p->pslr_max)
-				p->pslr_max = static_cast<float>(psr);
-			if (psr < p->pslr_min)
-				p->pslr_min = static_cast<float>(psr);
-		}
+		if (std::isfinite(psr) && psr > p->psr_max)
+			p->psr_max = psr;
 		dlib::rectangle r = p->tracker->get_position();
 		p->rect.x0 = r.left() * tex->scale;
 		p->rect.y0 = r.top() * tex->scale;
 		p->rect.x1 = r.right() * tex->scale;
 		p->rect.y1 = r.bottom() * tex->scale;
-		const double elapsed_seconds = (ns - p->last_ns) * 1e-9;
 		const float previous_score = p->rect.score;
-		p->rect.score =
-			ff_tracker_confidence_after_psr(previous_score, psr, p->pslr_max, p->pslr_min, elapsed_seconds);
+		p->rect.score = ff_tracker_confidence_from_psr(psr, p->psr_max);
 		if (!p->diagnostic_unusable_logged && previous_score > 0.0f && p->rect.score == 0.0f &&
 		    std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS")) {
 			p->diagnostic_unusable_logged = true;
 			faithfulframe_worker_log(
 				LOG_INFO,
 				"[FaithfulFrame test] dlib tracker confidence lost psr=%.6f psr_max=%.6f "
-				"psr_min=%.6f elapsed=%.6f previous_score=%.6f",
-				psr, p->pslr_max, p->pslr_min, elapsed_seconds, previous_score);
+				"previous_score=%.6f",
+				psr, p->psr_max, previous_score);
 		}
 		p->n_track += 1;
 		observed = true;
@@ -215,7 +202,6 @@ void face_tracker_dlib::track_main()
 			p->last_scale = tex->scale;
 		}
 	}
-	p->last_ns = ns;
 	if (observed)
 		p->last_observation_ms = tex->captured_at_ms;
 }

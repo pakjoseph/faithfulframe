@@ -23,21 +23,29 @@ inline bool ff_tracker_score_is_usable(float score)
 /// invalid or non-positive response to preserve or restore tracker confidence.
 /// dlib documents larger PSR values as higher confidence; non-positive values
 /// provide no positive peak evidence, so this tracker must stay unusable.
-inline float ff_tracker_confidence_after_psr(float current_score, double psr, double psr_max, double psr_min,
-					     double elapsed_seconds)
+inline float ff_tracker_confidence_from_psr(double psr, double psr_max)
 {
-	if (!ff_tracker_score_is_usable(current_score) || !std::isfinite(psr) || psr <= 0.0 ||
-	    !std::isfinite(psr_max) || psr_max <= 0.0 || !std::isfinite(psr_min) || psr_min <= 0.0 ||
-	    !std::isfinite(elapsed_seconds) || elapsed_seconds < 0.0)
+	if (!std::isfinite(psr) || psr <= 0.0 || !std::isfinite(psr_max) || psr_max <= 0.0 || psr > psr_max)
 		return 0.0f;
 
-	const double ratio = psr_max / psr_min;
-	const double decay = ratio * elapsed_seconds;
-	const double next_score = static_cast<double>(current_score) / (1.0 + decay);
-	if (!std::isfinite(ratio) || ratio <= 0.0 || !std::isfinite(decay) || decay < 0.0 ||
-	    !std::isfinite(next_score) || next_score <= 0.0 || next_score > current_score)
+	const double normalized = psr / psr_max;
+	if (!std::isfinite(normalized) || normalized <= 0.0 || normalized > 1.0)
 		return 0.0f;
-	return static_cast<float>(next_score);
+	return static_cast<float>(normalized);
+}
+
+/// A detector match renews candidate attention. Without a match, attenuate it
+/// using the best observed overlap and the existing 10% overlap floor.
+inline float ff_tracker_attention_after_detection(float current_attention, float overlap_fraction, bool detector_match)
+{
+	if (!std::isfinite(current_attention) || current_attention < 0.0f || current_attention > 1.0f ||
+	    !std::isfinite(overlap_fraction))
+		return 0.0f;
+	if (detector_match)
+		return 1.0f;
+	const float overlap = std::clamp(overlap_fraction, 0.1f, 1.0f);
+	const float next_attention = current_attention * std::pow(overlap, 0.1f);
+	return std::isfinite(next_attention) ? std::clamp(next_attention, 0.0f, 1.0f) : 0.0f;
 }
 
 /// Conservative overlap check used to avoid creating a new dlib tracker for a

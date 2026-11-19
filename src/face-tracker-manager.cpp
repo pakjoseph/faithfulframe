@@ -156,7 +156,8 @@ inline void face_tracker_manager::attenuate_tracker()
 		}
 
 		const float previous_attention = t.att;
-		t.att *= powf(amax / a1, 0.1f); // if no faces, remove the tracker
+		const float overlap_fraction = a1 > 0 ? amax / static_cast<float>(a1) : 0.0f;
+		t.att = ff_tracker_attention_after_detection(t.att, overlap_fraction, detector_match);
 		if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
 			blog(LOG_INFO,
 			     "[FaithfulFrame test] association handle=%llu detections=%zu match=%d attention=%.3f->%.3f "
