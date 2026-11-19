@@ -14,26 +14,35 @@ if (-not (Test-Path -LiteralPath $sdkRoot -PathType Container)) {
 	throw "Windows SDK bin directory not found: $sdkRoot"
 }
 
-$tools = @(Get-ChildItem -LiteralPath $sdkRoot -Recurse -File -Filter 'signtool.exe' -ErrorAction Stop |
-    Where-Object { $_.FullName -match '[\\/](x64|arm64)[\\/]signtool\.exe$' })
 $preferredArchitecture = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -eq 'Arm64') {
     'arm64'
 } else {
     'x64'
 }
-$signTool = $tools |
-    Where-Object { $_.FullName -match "[\\/]$preferredArchitecture[\\/]signtool\.exe$" } |
-    Sort-Object -Property { [version]$_.Directory.Parent.Name } -Descending |
-    Select-Object -First 1 -ExpandProperty FullName
-if ([string]::IsNullOrWhiteSpace($signTool) -and $preferredArchitecture -eq 'arm64') {
-    $signTool = $tools |
-        Where-Object { $_.FullName -match '[\\/]x64[\\/]signtool\.exe$' } |
-        Sort-Object -Property { [version]$_.Directory.Parent.Name } -Descending |
-        Select-Object -First 1 -ExpandProperty FullName
+$architectures = @($preferredArchitecture)
+if ($preferredArchitecture -eq 'arm64') {
+    $architectures += 'x64'
+}
+$sdkVersions = @(Get-ChildItem -LiteralPath $sdkRoot -Directory -ErrorAction Stop |
+    Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
+    Sort-Object -Property { [version]$_.Name } -Descending)
+$signTool = $null
+foreach ($architecture in $architectures) {
+    foreach ($sdkVersion in $sdkVersions) {
+        $candidate = Join-Path $sdkVersion.FullName (Join-Path $architecture 'signtool.exe')
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $signTool = $candidate
+            break
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($signTool)) {
+        break
+    }
 }
 if ([string]::IsNullOrWhiteSpace($signTool)) {
     throw "No SignTool.exe for $preferredArchitecture was found under $sdkRoot"
 }
+Write-Host "Using Windows SDK SignTool at $signTool"
 
 if (-not $VerifyOnly) {
     if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE_PATH) -or
@@ -61,12 +70,14 @@ foreach ($file in $Files) {
         }
         $signArguments += $resolvedFile
 
+        Write-Host "Signing $resolvedFile"
         & $signTool @signArguments
         if ($LASTEXITCODE -ne 0) {
             throw "SignTool failed to sign $resolvedFile with exit code $LASTEXITCODE"
         }
     }
 
+    Write-Host "Verifying Authenticode signature for $resolvedFile"
     & $signTool verify /pa /v $resolvedFile
     if ($LASTEXITCODE -ne 0) {
         throw "Authenticode verification failed for $resolvedFile with exit code $LASTEXITCODE"

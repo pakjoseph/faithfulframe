@@ -634,6 +634,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "CMake install failed with exit code $LASTEXITCODE" }
 
       - name: Exercise Authenticode helper with a temporary test certificate
+        timeout-minutes: 5
         run: |
           $pfxPath = Join-Path $env:RUNNER_TEMP 'FaithfulFrameSigningSmoke.pfx'
           $smokeFile = Join-Path $env:RUNNER_TEMP 'FaithfulFrameSigningSmoke.dll'
@@ -643,6 +644,7 @@ jobs:
           $trustStore = $null
           $trustStoreOpened = $false
           try {
+            Write-Host 'Creating temporary code-signing certificate'
             $certificate = New-SelfSignedCertificate `
               -Type CodeSigningCert `
               -Subject 'CN=FaithfulFrame CI signing smoke test' `
@@ -655,14 +657,18 @@ jobs:
             )
             $trustStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
             $trustStoreOpened = $true
+            Write-Host 'Trusting temporary certificate for this smoke test'
             $trustStore.Add($certificate)
+            Write-Host 'Exporting temporary signing certificate'
             Export-PfxCertificate -Cert $certificate -FilePath $pfxPath -Password $securePassword | Out-Null
 
             $env:WINDOWS_SIGNING_CERTIFICATE_PATH = $pfxPath
             $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD = $password
             Copy-Item 'release/face-tracker/face-tracker.dll' $smokeFile
+            Write-Host 'Running signing and verification helper smoke test'
             & ./ci/windows/sign-authenticode.ps1 -Files @($smokeFile) -NoTimestamp
             if ($LASTEXITCODE -ne 0) { throw "Authenticode helper smoke test failed with exit code $LASTEXITCODE" }
+            Write-Host 'Temporary-certificate signing helper smoke test passed'
           } finally {
             if ($trustStoreOpened -and $certificate) { $trustStore.Remove($certificate) }
             if ($trustStore) { $trustStore.Close(); $trustStore.Dispose() }
