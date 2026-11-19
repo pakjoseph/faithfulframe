@@ -3,8 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string[]]$Files,
     [string]$TimestampUrl = 'http://timestamp.digicert.com',
-    [switch]$VerifyOnly,
-    [switch]$NoTimestamp
+    [switch]$VerifyOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,9 +64,7 @@ foreach ($file in $Files) {
             'sign', '/fd', 'SHA256', '/f', $env:WINDOWS_SIGNING_CERTIFICATE_PATH,
             '/p', $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD
         )
-        if (-not $NoTimestamp) {
-            $signArguments += @('/tr', $TimestampUrl, '/td', 'SHA256')
-        }
+        $signArguments += @('/tr', $TimestampUrl, '/td', 'SHA256')
         $signArguments += $resolvedFile
 
         Write-Host "Signing $resolvedFile"
