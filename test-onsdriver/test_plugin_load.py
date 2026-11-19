@@ -82,14 +82,14 @@ def write_synthetic_person_y4m(output_path):
     if len(rgb_pixels) != source_width * source_height * 3:
         raise ValueError('synthetic face fixture has an invalid pixel payload')
 
-    # Keep the face's normalized size consistent with the former 1920x1080
-    # fixture while reducing the CI canvas to 1280x720. Keeping the original
-    # 320x360 pixels on the smaller canvas made the detected target so large
-    # that the framing controller correctly refused to zoom in.
+    # Reduce the face to 80% of its original pixel size as well as using the
+    # smaller canvas. The full-resolution face was too large for the framing
+    # assertion, while the 2/3-size normalization was too small for reliable
+    # HOG tracking on slower Windows OBS runners.
     width = source_width * 4
     height = width * 9 // 16
-    person_width = max(1, (source_width * width + 960) // 1920)
-    person_height = max(1, (source_height * height + 540) // 1080)
+    person_width = max(1, (source_width * 4 + 2) // 5)
+    person_height = max(1, (source_height * 4 + 2) // 5)
     x_offset = (width - person_width) // 2
     y_offset = (height - person_height) // 2
     if x_offset < 0 or y_offset < 0:
