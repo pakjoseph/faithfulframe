@@ -57,6 +57,7 @@ struct arguments
 	std::filesystem::path trace;
 	bool ppm_stdin = false;
 	uint32_t fps = 30;
+	uint32_t detection_scale = 1;
 	uint32_t output_width = 1920;
 	uint32_t output_height = 1080;
 	bool has_operator_selection_time = false;
@@ -90,11 +91,12 @@ void usage(std::ostream &out)
 {
 	out << "Usage: faithfulframe-offline-session-replay --model <frontal_face_detector.dat> "
 	       "(--manifest <frames.tsv> | --ppm-stdin [--fps <1..120>]) [--trace <trace.jsonl>] "
-	       "[--output-width <pixels>] [--output-height <pixels>] "
+	       "[--detection-scale <1..16>] [--output-width <pixels>] [--output-height <pixels>] "
 	       "[--operator-select-first-candidate-at-ms <timestamp> | "
 	       "--operator-select-leftmost-candidate-at-ms <timestamp>]\n"
 	    << "Manifest format: monotonic_ms<TAB>relative-or-absolute-frame-path. Frames must be P6 PPM, max value 255.\n"
 	    << "The replay uses the production dlib HOG detector, face_tracker_manager, dlib correlation trackers, and Rust session policy.\n"
+	    << "Detection scaling uses the production RGB frame-stride path and preserves source-space candidate coordinates.\n"
 	    << "It records numeric candidate and crop traces only; it does not save video frames or face imagery. "
 	       "Speaker selection is never automatic. The optional operator-selection flag simulates one explicit command.\n";
 }
@@ -139,6 +141,13 @@ bool parse_arguments(int argc, char **argv, arguments &args)
 				return false;
 			}
 			args.fps = static_cast<uint32_t>(parsed);
+		} else if (option == "--detection-scale") {
+			uint64_t parsed = 0;
+			if (!parse_integer(value, parsed) || parsed < 1 || parsed > 16) {
+				std::cerr << "--detection-scale must be an integer from 1 through 16\n";
+				return false;
+			}
+			args.detection_scale = static_cast<uint32_t>(parsed);
 		} else if (option == "--output-width" || option == "--output-height") {
 			uint64_t parsed = 0;
 			if (!parse_integer(value, parsed) || parsed < 80 || parsed > 16384) {
@@ -198,9 +207,11 @@ bool validate_model(const std::filesystem::path &path)
 	return false;
 }
 
-std::shared_ptr<texture_object> make_texture(rgb_frame &image, uint64_t timestamp_ms, uint64_t epoch)
+std::shared_ptr<texture_object> make_texture(rgb_frame &image, uint64_t timestamp_ms, uint64_t epoch,
+					     uint32_t detection_scale)
 {
-	if (image.width > std::numeric_limits<uint32_t>::max() / 3)
+	if (image.width > std::numeric_limits<uint32_t>::max() / 3 || detection_scale < 1 ||
+	    detection_scale > static_cast<uint32_t>(std::numeric_limits<int>::max()))
 		return nullptr;
 	for (size_t i = 0; i < image.pixels.size(); i += 3)
 		std::swap(image.pixels[i], image.pixels[i + 2]);
@@ -212,10 +223,10 @@ std::shared_ptr<texture_object> make_texture(rgb_frame &image, uint64_t timestam
 	source_frame.height = image.height;
 	source_frame.format = VIDEO_FORMAT_BGR3;
 	auto texture = std::make_shared<texture_object>();
-	texture->scale = 1.0f;
+	texture->scale = static_cast<float>(detection_scale);
 	texture->captured_at_ms = timestamp_ms;
 	texture->detection_epoch = epoch;
-	texture->set_texture_obsframe(&source_frame, 1);
+	texture->set_texture_obsframe(&source_frame, static_cast<int>(detection_scale));
 	return texture;
 }
 
@@ -517,6 +528,10 @@ int main(int argc, char **argv)
 			error = "dlib HOG requires frames of at least 80x80 pixels";
 			return false;
 		}
+		if (image.width / args.detection_scale < 80 || image.height / args.detection_scale < 80) {
+			error = "detection scaling reduces the dlib HOG input below 80x80 pixels";
+			return false;
+		}
 		if (have_timestamp && timestamp_ms <= last_timestamp_ms) {
 			error = "frame timestamps must be strictly increasing";
 			return false;
@@ -558,7 +573,7 @@ int main(int argc, char **argv)
 			manager->upsize_t = 0.3f;
 			manager->upsize_b = 0.1f;
 			manager->tracking_threshold = 1.0e-4f;
-			manager->scale.store(1.0f, std::memory_order_relaxed);
+			manager->scale.store(static_cast<float>(args.detection_scale), std::memory_order_relaxed);
 			manager->detector_crop_l = 0;
 			manager->detector_crop_r = 0;
 			manager->detector_crop_t = 0;
@@ -587,8 +602,8 @@ int main(int argc, char **argv)
 			manager->reset_requested.store(true, std::memory_order_release);
 		}
 
-		auto frame =
-			make_texture(image, timestamp_ms, manager->detection_epoch.load(std::memory_order_acquire));
+		auto frame = make_texture(image, timestamp_ms, manager->detection_epoch.load(std::memory_order_acquire),
+					  args.detection_scale);
 		if (!frame) {
 			error = "Could not prepare the video frame for dlib tracking";
 			return false;
@@ -644,7 +659,11 @@ int main(int argc, char **argv)
 		manager->detect->get_faces(detections);
 		manager->detect->unlock();
 		*trace << "{\"kind\":\"tracker_diagnostics\",\"frame_index\":" << frame_index
-		       << ",\"at_ms\":" << timestamp_ms
+		       << ",\"at_ms\":" << timestamp_ms << ",\"source_width\":" << image.width
+		       << ",\"source_height\":" << image.height
+		       << ",\"detector_input_width\":" << image.width / args.detection_scale
+		       << ",\"detector_input_height\":" << image.height / args.detection_scale
+		       << ",\"detection_scale\":" << args.detection_scale << ",\"scaling_mode\":\"rgb_stride\""
 		       << ",\"detector_work_count\":" << manager->detect->completed_work_count()
 		       << ",\"detector_work_us\":" << manager->detect->last_work_duration_us()
 		       << ",\"detection_count\":" << detections.size()
@@ -812,7 +831,8 @@ int main(int argc, char **argv)
 		std::cerr << "Could not read the final Rust session snapshot\n";
 		return 3;
 	}
-	*trace << "{\"kind\":\"summary\",\"frames\":" << frame_index
+	*trace << "{\"kind\":\"summary\",\"frames\":" << frame_index << ",\"detection_scale\":" << args.detection_scale
+	       << ",\"scaling_mode\":\"rgb_stride\""
 	       << ",\"candidate_observations\":" << candidate_observations
 	       << ",\"operator_selection_attempts\":" << selection_attempts
 	       << ",\"operator_selection_applied\":" << (selection_applied ? "true" : "false") << ',';

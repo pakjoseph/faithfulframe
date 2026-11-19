@@ -73,6 +73,91 @@ def write_cartoon_stage_frame(path: Path, portrait_path: Path, x: int) -> None:
 
 
 class OfflineSessionReplayTests(unittest.TestCase):
+    def test_detection_scale_is_validated_and_recorded_in_source_geometry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            frame = temporary / "black-320x240.ppm"
+            manifest = temporary / "frames.tsv"
+            trace = temporary / "trace.jsonl"
+            write_black_ppm(frame, 320, 240)
+            manifest.write_text(
+                "monotonic_ms\tframe_path\n0\tblack-320x240.ppm\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    str(self.binary),
+                    "--model",
+                    str(self.model),
+                    "--manifest",
+                    str(manifest),
+                    "--trace",
+                    str(trace),
+                    "--detection-scale",
+                    "2",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+            diagnostics = next(event for event in events if event["kind"] == "tracker_diagnostics")
+            summary = next(event for event in events if event["kind"] == "summary")
+            self.assertEqual(
+                (diagnostics["source_width"], diagnostics["source_height"]), (320, 240)
+            )
+            self.assertEqual(
+                (diagnostics["detector_input_width"], diagnostics["detector_input_height"]),
+                (160, 120),
+            )
+            self.assertEqual(diagnostics["detection_scale"], 2)
+            self.assertEqual(diagnostics["scaling_mode"], "rgb_stride")
+            self.assertEqual(summary["detection_scale"], 2)
+            self.assertEqual(summary["scaling_mode"], "rgb_stride")
+
+            invalid_scale = subprocess.run(
+                [
+                    str(self.binary),
+                    "--model",
+                    str(self.model),
+                    "--manifest",
+                    str(manifest),
+                    "--detection-scale",
+                    "0",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(invalid_scale.returncode, 2)
+            self.assertIn("integer from 1 through 16", invalid_scale.stderr)
+
+            too_small_frame = temporary / "too-small-after-scale.ppm"
+            too_small_manifest = temporary / "too-small-frames.tsv"
+            write_black_ppm(too_small_frame, 160, 80)
+            too_small_manifest.write_text(
+                "monotonic_ms\tframe_path\n0\ttoo-small-after-scale.ppm\n",
+                encoding="utf-8",
+            )
+            too_small = subprocess.run(
+                [
+                    str(self.binary),
+                    "--model",
+                    str(self.model),
+                    "--manifest",
+                    str(too_small_manifest),
+                    "--detection-scale",
+                    "2",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(too_small.returncode, 3)
+            self.assertIn("below 80x80 pixels", too_small.stderr)
+
     def test_synthetic_face_flows_through_detection_tracking_and_explicit_selection(self):
         # This checked-in cartoon is procedurally drawn and contains no real
         # person, recording, or biometric template.
@@ -110,6 +195,8 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     "1920",
                     "--output-height",
                     "1080",
+                    "--detection-scale",
+                    "2",
                     "--operator-select-first-candidate-at-ms",
                     "2200",
                 ],
@@ -136,6 +223,19 @@ class OfflineSessionReplayTests(unittest.TestCase):
 
             self.assertGreater(max(event["detector_work_count"] for event in diagnostics), 0)
             self.assertGreater(max(event["detection_count"] for event in diagnostics), 0)
+            self.assertTrue(
+                all(
+                    (
+                        event["source_width"],
+                        event["source_height"],
+                        event["detector_input_width"],
+                        event["detector_input_height"],
+                        event["detection_scale"],
+                    )
+                    == (320, 360, 160, 180, 2)
+                    for event in diagnostics
+                )
+            )
             self.assertGreater(len(candidates), 0)
             self.assertEqual(len(commands), 1)
             self.assertEqual(commands[0]["origin"], "explicit_operator_flag")
@@ -378,6 +478,8 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     "1920",
                     "--output-height",
                     "1080",
+                    "--detection-scale",
+                    "2",
                     "--operator-select-first-candidate-at-ms",
                     "2200",
                 ],
@@ -424,6 +526,8 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 self.assertLessEqual(x + width, 1.00001)
                 self.assertLessEqual(y + height, 1.00001)
                 center_x.append(x + width / 2)
+            self.assertLess(min(center_x), 0.4)
+            self.assertGreater(max(center_x), 0.6)
             self.assertGreater(
                 max(center_x) - min(center_x),
                 0.25,
