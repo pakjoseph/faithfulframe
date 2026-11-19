@@ -9,6 +9,7 @@
 #include <dlib/image_processing/correlation_tracker.h>
 #include <dlib/image_processing.h>
 #include <chrono>
+#include <cstdlib>
 #include <utility>
 
 #ifdef FAITHFULFRAME_TEST_TRACKER_TEARDOWN_HOOK
@@ -34,6 +35,7 @@ struct face_tracker_dlib_private_s
 	char *landmark_detection_data;
 	bool landmark_detection_data_updated;
 	bool sp_available = false;
+	bool diagnostic_unusable_logged = false;
 	uint64_t last_observation_ms = 0;
 
 	face_tracker_dlib_private_s()
@@ -84,6 +86,7 @@ void face_tracker_dlib::set_position(const rect_s &rect)
 	p->rect.score = 1.0f;
 	p->need_restart = true;
 	p->n_track = 0;
+	p->diagnostic_unusable_logged = false;
 }
 
 void face_tracker_dlib::set_upsize_info(const rectf_s &upsize)
@@ -172,8 +175,18 @@ void face_tracker_dlib::track_main()
 		p->rect.x1 = r.right() * tex->scale;
 		p->rect.y1 = r.bottom() * tex->scale;
 		const double elapsed_seconds = (ns - p->last_ns) * 1e-9;
+		const float previous_score = p->rect.score;
 		p->rect.score =
-			ff_tracker_confidence_after_psr(p->rect.score, psr, p->pslr_max, p->pslr_min, elapsed_seconds);
+			ff_tracker_confidence_after_psr(previous_score, psr, p->pslr_max, p->pslr_min, elapsed_seconds);
+		if (!p->diagnostic_unusable_logged && previous_score > 0.0f && p->rect.score == 0.0f &&
+		    std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS")) {
+			p->diagnostic_unusable_logged = true;
+			faithfulframe_worker_log(
+				LOG_INFO,
+				"[FaithfulFrame test] dlib tracker confidence lost psr=%.6f psr_max=%.6f "
+				"psr_min=%.6f elapsed=%.6f previous_score=%.6f",
+				psr, p->pslr_max, p->pslr_min, elapsed_seconds, previous_score);
+		}
 		p->n_track += 1;
 		observed = true;
 
