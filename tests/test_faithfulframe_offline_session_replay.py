@@ -749,6 +749,124 @@ class OfflineSessionReplayTests(unittest.TestCase):
             self.assertNotIn("pixels", trace_text)
             self.assertNotIn("frame_path", trace_text)
 
+    def test_crossing_faces_invalidate_ambiguous_selected_tracker(self):
+        portrait = (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "offline-synthetic-person-320x360.ppm"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            manifest = temporary / "frames.tsv"
+            trace = temporary / "trace.jsonl"
+            stationary_member_x = 840
+            frame_for_moving_x = {}
+            manifest_rows = ["monotonic_ms\tframe_path\n"]
+            for frame_index in range(210):
+                if frame_index < 70:
+                    moving_speaker_x = 320
+                else:
+                    moving_speaker_x = min(
+                        1200, 320 + ((frame_index - 70) // 3 + 1) * 40
+                    )
+
+                frame = frame_for_moving_x.get(moving_speaker_x)
+                if frame is None:
+                    frame = temporary / f"crossing-x-{moving_speaker_x}.ppm"
+                    write_cartoon_faces_scene(
+                        frame,
+                        portrait,
+                        (moving_speaker_x, stationary_member_x),
+                    )
+                    frame_for_moving_x[moving_speaker_x] = frame
+                manifest_rows.append(f"{frame_index * 40}\t{frame}\n")
+            manifest.write_text("".join(manifest_rows), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    str(self.binary),
+                    "--model",
+                    str(self.model),
+                    "--manifest",
+                    str(manifest),
+                    "--trace",
+                    str(trace),
+                    "--output-width",
+                    "1920",
+                    "--output-height",
+                    "1080",
+                    "--detection-scale",
+                    "2",
+                    "--operator-select-leftmost-candidate-at-ms",
+                    "2200",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            trace_text = trace.read_text(encoding="utf-8")
+            events = [json.loads(line) for line in trace_text.splitlines()]
+            candidates = [event for event in events if event["kind"] == "candidate"]
+            commands = [event for event in events if event["kind"] == "command"]
+            summary = next(event for event in events if event["kind"] == "summary")
+            self.assertEqual(len(commands), 1)
+            selected_handle = commands[0]["candidate_handle"]
+            selected_candidate = next(
+                event["candidate"]
+                for event in candidates
+                if event["candidate"]["handle"] == selected_handle
+            )
+            selected_continuity = selected_candidate["continuity_token"]
+            self.assertLess(
+                selected_candidate["rect"][0] + selected_candidate["rect"][2] / 2,
+                0.5,
+                "the volunteer should initially select the moving left speaker",
+            )
+
+            handle_continuity = {
+                event["candidate"]["handle"]: event["candidate"]["continuity_token"]
+                for event in candidates
+            }
+            for event in events:
+                if "snapshot" not in event:
+                    continue
+                selected_after_event = event["snapshot"]["selected_handle"]
+                if selected_after_event is not None:
+                    self.assertEqual(
+                        handle_continuity[selected_after_event],
+                        selected_continuity,
+                        "the session must never switch continuity to the stationary stage member",
+                    )
+
+            # Both cartoon faces are deliberately identical. Once they overlap,
+            # image evidence cannot prove which physical person owns a tracker.
+            # The safe result is to hold framing and wait for a fresh volunteer
+            # selection, even if this misses continued following of the speaker.
+            self.assertIn(
+                summary["snapshot"]["state"],
+                ("searching", "lost"),
+                "ambiguous overlapping faces must invalidate the selected lock",
+            )
+            self.assertEqual(summary["snapshot"]["crop_action"], "hold", summary)
+            safety_entry = next(
+                (index, event)
+                for index, event in enumerate(events)
+                if event.get("frame_index", -1) >= 100
+                and event.get("snapshot", {}).get("state") in ("searching", "lost")
+            )
+            held_crop = safety_entry[1]["snapshot"]["source_crop"]
+            for event in events[safety_entry[0] :]:
+                if "snapshot" in event:
+                    self.assertEqual(
+                        event["snapshot"]["source_crop"],
+                        held_crop,
+                        "framing must remain held after ambiguous tracker retirement",
+                    )
+            self.assertNotIn("pixels", trace_text)
+            self.assertNotIn("frame_path", trace_text)
+
     def test_resolution_change_invalidates_geometry_and_stays_safe_wide(self):
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)

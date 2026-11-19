@@ -106,28 +106,43 @@ inline bool face_tracker_manager::is_low_confident(const tracker_inst_s &t, floa
 	return false;
 }
 
-void face_tracker_manager::remove_duplicated_tracker()
+void face_tracker_manager::retire_ambiguous_trackers()
 {
-	for (size_t i = 0; i < trackers.size(); i++) {
-		if (trackers[i].state != tracker_inst_s::tracker_state_available)
+	for (size_t i = 0; i < trackers.size();) {
+		if (trackers[i].state != tracker_inst_s::tracker_state_available) {
+			i++;
 			continue;
-
-		rect_s r = trackers[i].rect;
-		int a0 = (r.x1 - r.x0) * (r.y1 - r.y0);
-		int a_overlap_sum = 0;
-		for (size_t j = i + 1; j < trackers.size(); j++) {
-			if (trackers[j].state != tracker_inst_s::tracker_state_available)
-				continue;
-			int a = common_area(r, trackers[j].rect);
-			a_overlap_sum += a;
-			if (a * 10 > a0 && a_overlap_sum * 2 > a0) {
-				// Preserve the older tracker handle when two trackers overlap.
-				// That keeps the candidate's continuity token stable across a
-				// detector refresh and conservatively favors the established lock.
-				retire_tracker(j);
-				j--;
-			}
 		}
+
+		bool retired_ambiguous_pair = false;
+		for (size_t j = i + 1; j < trackers.size(); j++) {
+			if (trackers[j].state != tracker_inst_s::tracker_state_available ||
+			    !ff_tracker_boxes_match(ff_tracker_box_i{trackers[i].rect.x0, trackers[i].rect.y0,
+								     trackers[i].rect.x1, trackers[i].rect.y1},
+						    ff_tracker_box_i{trackers[j].rect.x0, trackers[j].rect.y0,
+								     trackers[j].rect.x1, trackers[j].rect.y1}))
+				continue;
+
+			// Overlapping active identities are ambiguous. Keeping the older
+			// tracker can silently make its continuity token follow the other
+			// person after an occlusion, so retire both and require fresh
+			// observations to receive new continuity tokens.
+			if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
+				blog(LOG_INFO,
+				     "[FaithfulFrame test] retire ambiguous trackers handles=%llu,%llu continuity=%llu,%llu",
+				     (unsigned long long)trackers[i].candidate_handle,
+				     (unsigned long long)trackers[j].candidate_handle,
+				     (unsigned long long)trackers[i].continuity_token,
+				     (unsigned long long)trackers[j].continuity_token);
+			retire_tracker(static_cast<int>(j));
+			retire_tracker(static_cast<int>(i));
+			retired_ambiguous_pair = true;
+			break;
+		}
+		if (retired_ambiguous_pair)
+			i = 0;
+		else
+			i++;
 	}
 }
 
@@ -426,7 +441,6 @@ inline int face_tracker_manager::stage_surface_to_tracker(struct tracker_inst_s 
 
 inline void face_tracker_manager::stage_to_trackers(std::shared_ptr<texture_object> &frame, bool &capture_attempted)
 {
-	bool have_new_tracker = false;
 	for (size_t i = 0; i < trackers.size();) {
 		struct tracker_inst_s &t = trackers[i];
 		if (t.tracker->has_failed()) {
@@ -459,7 +473,6 @@ inline void face_tracker_manager::stage_to_trackers(std::shared_ptr<texture_obje
 				t.tracker->unlock();
 				if (ret) {
 					t.state = tracker_inst_s::tracker_state_available;
-					have_new_tracker = true;
 				}
 			}
 		} else if (t.state == tracker_inst_s::tracker_state_available) {
@@ -479,8 +492,10 @@ inline void face_tracker_manager::stage_to_trackers(std::shared_ptr<texture_obje
 		++i;
 	}
 
-	if (have_new_tracker)
-		remove_duplicated_tracker();
+	// Check every tracker update. A collision can occur after the candidates
+	// were initialized, and waiting for the next detector-created tracker
+	// leaves a window where the selected identity may drift onto another face.
+	retire_ambiguous_trackers();
 }
 
 static inline void make_tracker_rects(std::vector<face_tracker_manager::tracker_rect_s> &tracker_rects,
