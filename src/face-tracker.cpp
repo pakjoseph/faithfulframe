@@ -1443,6 +1443,18 @@ static bool enqueue_source_lifecycle_locked(faithfulframe_source_binding *bindin
 		defer_session_join(executor);
 		return false;
 	}
+	if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS")) {
+		blog(LOG_INFO,
+		     "[FaithfulFrame test] lifecycle kind=%u source=%llu session=%llu generations="
+		     "(%llu,%llu,%llu,%llu,%llu)->(%llu,%llu,%llu,%llu,%llu) geometry=%ux%u",
+		     kind, (unsigned long long)binding->identity.source, (unsigned long long)binding->identity.session,
+		     (unsigned long long)binding->generations.source, (unsigned long long)binding->generations.session,
+		     (unsigned long long)binding->generations.stream, (unsigned long long)binding->generations.geometry,
+		     (unsigned long long)binding->generations.tracker, (unsigned long long)event.generations.source,
+		     (unsigned long long)event.generations.session, (unsigned long long)event.generations.stream,
+		     (unsigned long long)event.generations.geometry, (unsigned long long)event.generations.tracker,
+		     width, height);
+	}
 	binding->transition_pending.store(true, std::memory_order_release);
 	if (!executor->enqueue_lifecycle(at, event)) {
 		executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
