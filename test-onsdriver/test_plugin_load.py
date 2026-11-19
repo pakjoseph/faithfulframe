@@ -82,25 +82,28 @@ def write_synthetic_person_y4m(output_path):
     if len(rgb_pixels) != source_width * source_height * 3:
         raise ValueError('synthetic face fixture has an invalid pixel payload')
 
-    # Preserve the fixture pixels while adding camera-space margin on every
-    # side. A 1280x720 canvas leaves enough room for an aspect-correct crop to
-    # zoom while reducing software-renderer and HOG work in CI.
+    # Keep the face's normalized size consistent with the former 1920x1080
+    # fixture while reducing the CI canvas to 1280x720. Keeping the original
+    # 320x360 pixels on the smaller canvas made the detected target so large
+    # that the framing controller correctly refused to zoom in.
     width = source_width * 4
     height = width * 9 // 16
-    x_offset = (width - source_width) // 2
-    y_offset = (height - source_height) // 2
+    person_width = max(1, (source_width * width + 960) // 1920)
+    person_height = max(1, (source_height * height + 540) // 1080)
+    x_offset = (width - person_width) // 2
+    y_offset = (height - person_height) // 2
     if x_offset < 0 or y_offset < 0:
         raise ValueError('synthetic face fixture must fit inside the 16:9 canvas')
     padded_pixels = bytearray(width * height * 3)
-    for y in range(height):
-        if y < y_offset or y >= y_offset + source_height:
-            continue
-        source_start = (y - y_offset) * source_width * 3
-        destination_start = (y * width + x_offset) * 3
-        row_bytes = source_width * 3
-        padded_pixels[destination_start : destination_start + row_bytes] = rgb_pixels[
-            source_start : source_start + row_bytes
-        ]
+    for y in range(person_height):
+        source_y = min(source_height - 1, ((2 * y + 1) * source_height) // (2 * person_height))
+        for x in range(person_width):
+            source_x = min(source_width - 1, ((2 * x + 1) * source_width) // (2 * person_width))
+            source_offset = (source_y * source_width + source_x) * 3
+            destination_offset = ((y + y_offset) * width + x + x_offset) * 3
+            padded_pixels[destination_offset : destination_offset + 3] = rgb_pixels[
+                source_offset : source_offset + 3
+            ]
     rgb_pixels = padded_pixels
 
     luma = bytearray(width * height)
