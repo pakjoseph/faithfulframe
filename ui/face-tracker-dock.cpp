@@ -106,6 +106,7 @@ struct faithfulframe_safe_preview
 {
 	bool enabled = false;
 	bool available = false;
+	bool operator_actions_available = false;
 	bool session_closed = false;
 	bool target_active = false;
 	bool signal_connected = false;
@@ -351,6 +352,7 @@ static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &
 	}
 	calldata_get_bool(&cd, "safe_enabled", &preview.enabled);
 	calldata_get_bool(&cd, "available", &preview.available);
+	calldata_get_bool(&cd, "operator_actions_available", &preview.operator_actions_available);
 	calldata_get_bool(&cd, "session_closed", &preview.session_closed);
 	calldata_get_bool(&cd, "target_active", &preview.target_active);
 	calldata_get_bool(&cd, "signal_connected", &preview.signal_connected);
@@ -538,6 +540,18 @@ static bool enqueue_safe_command(obs_source_t *source, const faithfulframe_safe_
 		*failure = "Command was unavailable; wait for status to refresh and try again";
 	if (!source || !preview.enabled || !preview.available)
 		return false;
+	if (!preview.operator_actions_available) {
+		if (failure) {
+			if (!preview.signal_connected)
+				*failure = "Camera disconnected; restore the camera before using tracking controls";
+			else if (!preview.target_active)
+				*failure = "Camera inactive; activate its scene before using tracking controls";
+			else
+				*failure =
+					"Tracking controls are not ready; follow the status message before trying again";
+		}
+		return false;
+	}
 	if (candidate) {
 		// Selection commands carry the exact identity and versions of the preview
 		// snapshot used to resolve or hit-test this opaque candidate handle.
@@ -661,6 +675,8 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 		return "Camera disconnected; restore the camera, then select the speaker again";
 	if (!preview.target_active)
 		return "Camera inactive; activate its scene, then select the speaker again";
+	if (!preview.operator_actions_available)
+		return "Camera or tracking settings are changing; wait for controls to become available";
 	if (preview.reason == FF_REASON_FRAMING_FAILURE)
 		return "Framing failed; wide view is active. Check camera/output geometry, then select the speaker again";
 	if (preview.reason == FF_REASON_LIFECYCLE_INVALIDATED)
@@ -704,7 +720,7 @@ static QStyle::StandardPixmap safe_state_icon(const faithfulframe_safe_preview &
 {
 	if (preview.configuration_issue != faithfulframe::safe_adapter_availability_issue::none ||
 	    preview.session_closed || !preview.available || !preview.signal_connected || !preview.target_active ||
-	    preview.reason == FF_REASON_FRAMING_FAILURE)
+	    !preview.operator_actions_available || preview.reason == FF_REASON_FRAMING_FAILURE)
 		return QStyle::SP_MessageBoxWarning;
 
 	switch (preview.state) {
@@ -727,7 +743,7 @@ static QString safe_state_icon_accessible_name(const faithfulframe_safe_preview 
 {
 	if (preview.configuration_issue != faithfulframe::safe_adapter_availability_issue::none ||
 	    preview.session_closed || !preview.available || !preview.signal_connected || !preview.target_active ||
-	    preview.reason == FF_REASON_FRAMING_FAILURE)
+	    !preview.operator_actions_available || preview.reason == FF_REASON_FRAMING_FAILURE)
 		return "Tracking status: attention required";
 
 	switch (preview.state) {
@@ -1659,13 +1675,15 @@ void FTDock::updateState()
 			performanceLabel->setText(diagnostics_text);
 		}
 		set_pause_button(pauseButton, safe_preview.state == FF_STATE_FROZEN);
-		pauseButton->setEnabled(safe_preview.available);
+		pauseButton->setEnabled(safe_preview.available && safe_preview.operator_actions_available);
 		resetButton->setText("Reset to Wide");
 		resetButton->setAccessibleName("Reset framing to the full camera view");
-		resetButton->setEnabled(safe_preview.available);
-		autoFollowButton->setEnabled(safe_preview.available && (safe_preview.state == FF_STATE_MANUAL ||
-									safe_preview.state == FF_STATE_LOST));
-		manualOverrideButton->setEnabled(safe_preview.available && safe_preview.state != FF_STATE_FROZEN &&
+		resetButton->setEnabled(safe_preview.available && safe_preview.operator_actions_available);
+		autoFollowButton->setEnabled(
+			safe_preview.available && safe_preview.operator_actions_available &&
+			(safe_preview.state == FF_STATE_MANUAL || safe_preview.state == FF_STATE_LOST));
+		manualOverrideButton->setEnabled(safe_preview.available && safe_preview.operator_actions_available &&
+						 safe_preview.state != FF_STATE_FROZEN &&
 						 safe_preview.state != FF_STATE_MANUAL);
 		const QVariantMap previous_candidate = candidateSelector->currentData().toMap();
 		const qulonglong previous_handle = previous_candidate.value("handle").toULongLong();
@@ -1725,10 +1743,10 @@ void FTDock::updateState()
 			candidate_selection_is_current(candidateSelector->currentData().toMap(), safe_preview);
 		selectCandidateButton->setText("Select Speaker");
 		selectCandidateButton->setAccessibleName("Select the highlighted face as the speaker");
-		selectCandidateButton->setEnabled(safe_preview.available && has_explicit_candidate &&
-						  (safe_preview.state == FF_STATE_MANUAL ||
-						   safe_preview.state == FF_STATE_SEARCHING ||
-						   safe_preview.state == FF_STATE_LOST));
+		selectCandidateButton->setEnabled(
+			safe_preview.available && safe_preview.operator_actions_available && has_explicit_candidate &&
+			(safe_preview.state == FF_STATE_MANUAL || safe_preview.state == FF_STATE_SEARCHING ||
+			 safe_preview.state == FF_STATE_LOST));
 	}
 #else
 	UNUSED_PARAMETER(safe_mode);

@@ -3223,6 +3223,22 @@ static void set_generation_fields(calldata_t *cd, const ff_generations &generati
 	calldata_set_int(cd, (key_prefix + "tracker_generation").c_str(), ffi_integer(generations.tracker));
 }
 
+static bool faithfulframe_operator_commands_available(const face_tracker_filter *source,
+						      const faithfulframe_source_binding *binding,
+						      const std::shared_ptr<faithfulframe_session_executor> &executor)
+{
+	if (!source || !source->safe_runtime || !binding || !executor)
+		return false;
+	const auto *runtime = source->safe_runtime;
+	return runtime->enabled.load(std::memory_order_acquire) &&
+	       !runtime->reconfiguration_pending.load(std::memory_order_acquire) &&
+	       !has_conflicting_legacy_filter(binding) && !binding->closed.load(std::memory_order_acquire) &&
+	       !binding->transition_pending.load(std::memory_order_acquire) &&
+	       !binding->source_settings_updated.load(std::memory_order_acquire) &&
+	       binding->effective_active.load(std::memory_order_acquire) &&
+	       binding->signal_connected.load(std::memory_order_acquire) && executor->worker_available();
+}
+
 static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 {
 	auto *s = static_cast<face_tracker_filter *>(data);
@@ -3233,6 +3249,7 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 				: static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::none);
 	calldata_set_int(cd, "configuration_issue", configuration_issue);
 	calldata_set_bool(cd, "available", false);
+	calldata_set_bool(cd, "operator_actions_available", false);
 	calldata_set_int(cd, "candidate_count", 0);
 	calldata_set_int(cd, "status_snapshot_age_ms", -1);
 	if (s->ftm) {
@@ -3298,6 +3315,8 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 		return;
 
 	calldata_set_bool(cd, "available", true);
+	calldata_set_bool(cd, "operator_actions_available",
+			  faithfulframe_operator_commands_available(s, binding, executor));
 	calldata_set_int(cd, "source_id", ffi_integer(snapshot.identity.source));
 	calldata_set_int(cd, "session_id", ffi_integer(snapshot.identity.session));
 	calldata_set_int(cd, "status_version", ffi_integer(snapshot.status_version));
@@ -3386,19 +3405,13 @@ static bool get_unsigned_field(calldata_t *cd, const char *name, uint64_t &value
 
 static bool enqueue_safe_operator_command(face_tracker_filter *s, uint32_t kind)
 {
-	if (!s || !s->safe_runtime || !s->safe_runtime->enabled.load(std::memory_order_acquire) ||
-	    s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire) || kind > FF_COMMAND_RESET_TO_WIDE)
+	if (!s || !s->safe_runtime || kind > FF_COMMAND_RESET_TO_WIDE)
 		return false;
 	auto binding_lease = s->safe_runtime->active.read();
 	auto *binding = binding_lease.get();
 	auto executor = binding ? std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)
 				: std::shared_ptr<faithfulframe_session_executor>{};
-	if (!binding || !executor || has_conflicting_legacy_filter(binding) ||
-	    binding->closed.load(std::memory_order_acquire) ||
-	    binding->transition_pending.load(std::memory_order_acquire) ||
-	    binding->source_settings_updated.load(std::memory_order_acquire) ||
-	    !binding->effective_active.load(std::memory_order_acquire) ||
-	    !binding->signal_connected.load(std::memory_order_acquire))
+	if (!faithfulframe_operator_commands_available(s, binding, executor))
 		return false;
 	ff_snapshot snapshot{};
 	if (!executor->try_snapshot(snapshot) || snapshot.closed ||
@@ -3426,12 +3439,7 @@ static void cb_faithfulframe_command(void *data, calldata_t *cd)
 	auto *binding = binding_lease.get();
 	auto executor = binding ? std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)
 				: std::shared_ptr<faithfulframe_session_executor>{};
-	if (!binding || !executor || has_conflicting_legacy_filter(binding) ||
-	    binding->closed.load(std::memory_order_acquire) ||
-	    binding->transition_pending.load(std::memory_order_acquire) ||
-	    binding->source_settings_updated.load(std::memory_order_acquire) ||
-	    !binding->effective_active.load(std::memory_order_acquire) ||
-	    !binding->signal_connected.load(std::memory_order_acquire))
+	if (!faithfulframe_operator_commands_available(s, binding, executor))
 		return;
 
 	uint64_t kind = 0, source_id = 0, session_id = 0, status_version = 0;

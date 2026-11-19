@@ -939,6 +939,7 @@ class PluginLoadTest(obstest.OBSTest):
     def test_safe_adapter_scene_switch_holds_source_isolation(self):
         'Switch away from and back to a bound camera without changing either source'
         client = self.obs.get_obsws()
+        ui = obsui.OBSUI(client)
         suffix = uuid.uuid4().hex
         tracked_scene = f'FaithfulFrame scene switch {suffix}'
         fallback_scene = f'FaithfulFrame fallback {suffix}'
@@ -948,6 +949,7 @@ class PluginLoadTest(obstest.OBSTest):
         original_scene = None
         created_scenes = []
         created_inputs = []
+        dock_created = False
 
         try:
             scene_response = client.send('GetCurrentProgramScene', {})
@@ -997,6 +999,24 @@ class PluginLoadTest(obstest.OBSTest):
             )
             self.assertEqual(tracked_image, camera_image)
 
+            menu_tree = ui.menu_list().get('menu', [])
+            dock_menu_path = self._find_menu_path(menu_tree, 'New FaithfulFrame Dock')
+            self.assertIsNotNone(dock_menu_path, 'FaithfulFrame dock action must be available in OBS Tools')
+            ui.request('menu-trigger', {'path': dock_menu_path})
+            dock_created = True
+            self._wait_for_ui_widget(
+                ui, 'Camera source with FaithfulFrame tracking filter'
+            )
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Camera source with FaithfulFrame tracking filter',
+                'setCurrentIndex',
+                arg1=1,
+            )
+            self._wait_for_ui_status(ui, f'Tracking source: {camera_name}')
+            self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
+
             client.send('CreateScene', {'sceneName': fallback_scene})
             created_scenes.append(fallback_scene)
             client.send('CreateInput', {
@@ -1018,6 +1038,8 @@ class PluginLoadTest(obstest.OBSTest):
                     camera_image,
                     'An inactive scene must not keep rendering the bound camera through its adapter',
                 )
+                self._wait_for_ui_status(ui, 'Camera inactive; activate its scene')
+                self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=False)
                 self.assertEqual(
                     self._screenshot(client, fallback_name),
                     fallback_image,
@@ -1039,6 +1061,12 @@ class PluginLoadTest(obstest.OBSTest):
 
             self.assertEqual(self._screenshot(client, fallback_name), fallback_image)
         finally:
+            if dock_created:
+                try:
+                    self._invoke_ui_widget(ui, 'objectName', 'FTDock_ft_dock', 'removeDock')
+                except Exception:
+                    pass
+
             try:
                 if original_scene:
                     client.send('SetCurrentProgramScene', {'sceneName': original_scene})
