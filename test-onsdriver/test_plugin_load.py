@@ -756,11 +756,37 @@ class PluginLoadTest(obstest.OBSTest):
 
             select_control = 'Select the highlighted face as the speaker'
             try:
-                self._wait_for_ui_item_count(ui, 'Detected face candidates', 2, timeout=30.0)
-                self._invoke_ui_widget(
-                    ui, 'accessibleName', 'Detected face candidates', 'setCurrentIndex', arg1=1
-                )
-                self._wait_for_ui_widget(ui, select_control, enabled=True, timeout=5.0)
+                # The synthetic detector fixture intentionally produces short
+                # candidate windows: dlib periodically reseeds its tracker,
+                # and the UI rejects handles after their 500 ms freshness
+                # window. Retry the volunteer's keyboard selection while a
+                # current candidate is available instead of turning one stale
+                # poll into a flaky failure (or weakening production expiry).
+                selection_deadline = time.monotonic() + 30.0
+                selection_ready = False
+                last_selection_error = None
+                while time.monotonic() < selection_deadline:
+                    widgets = ui.request('widget-list', {}).get('children', [])
+                    candidates_widget = self._find_ui_widget(widgets, 'Detected face candidates')
+                    if candidates_widget and candidates_widget.get('count', 0) >= 2:
+                        self._invoke_ui_widget(
+                            ui,
+                            'accessibleName',
+                            'Detected face candidates',
+                            'setCurrentIndex',
+                            arg1=1,
+                        )
+                        try:
+                            self._wait_for_ui_widget(ui, select_control, enabled=True, timeout=0.25)
+                            selection_ready = True
+                            break
+                        except AssertionError as error:
+                            last_selection_error = error
+                    time.sleep(0.1)
+                if not selection_ready:
+                    raise AssertionError(
+                        f'No fresh candidate remained selectable: {last_selection_error!s}'
+                    )
             except AssertionError as selection_error:
                 widgets = ui.request('widget-list', {}).get('children', [])
                 status_widget = self._find_ui_widget(widgets, 'FaithfulFrame tracking status')
