@@ -640,6 +640,35 @@ bool snapshot_publication_is_consistent(const ff_session_config &config, const f
 	return passed;
 }
 
+bool session_worker_survives_idle_wait_timeout(const ff_session_config &config, const ff_generations &generations)
+{
+	faithfulframe_session_executor executor(config, ff_identity{157, 257}, generations);
+	ff_snapshot snapshot{};
+	if (!await_snapshot(executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, snapshot))
+		return false;
+
+	// The worker uses timed condition-variable rechecks to make lock-free
+	// shutdown requests durable. An idle timeout is not a shutdown request.
+	std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	if (!executor.worker_available()) {
+		executor.shutdown();
+		return false;
+	}
+	const ff_command freeze{FF_COMMAND_FREEZE, snapshot.identity, snapshot.status_version, generations, 0, 0};
+	if (!executor.enqueue_command(1, freeze) || !await_snapshot(
+							    executor,
+							    [](const ff_snapshot &value) {
+								    return value.state == FF_STATE_FROZEN &&
+									   value.command_result == FF_COMMAND_APPLIED;
+							    },
+							    snapshot)) {
+		executor.shutdown();
+		return false;
+	}
+	executor.shutdown();
+	return true;
+}
+
 bool retirement_handoffs_are_concurrent(const ff_session_config &config, const ff_generations &generations)
 {
 	auto paused_executor =
@@ -1456,6 +1485,9 @@ int run_smoke()
 	trace_session_smoke_checkpoint("configuration and snapshot races");
 	if (!configuration_revision_guard_is_race_safe())
 		return 23;
+	trace_session_smoke_checkpoint("session worker remains available after idle polling");
+	if (!session_worker_survives_idle_wait_timeout(config, ff_generations{1, 1, 1, 1, 1}))
+		return 128;
 	if (!snapshot_publication_is_consistent(config, ff_generations{1, 1, 1, 1, 1}))
 		return 93;
 	if (!retirement_queue_handles_concurrent_handoffs(config, ff_generations{1, 1, 1, 1, 1}))

@@ -1131,8 +1131,11 @@ void faithfulframe_session_executor::run()
 						update_oldest_queue_timestamp_locked();
 					}
 				}
-				if (!queue_size)
-					break;
+				if (!queue_size) {
+					if (closing)
+						break;
+					continue;
+				}
 				item = queue[queue_head];
 				queue_head = (queue_head + 1) % queue.size();
 				--queue_size;
