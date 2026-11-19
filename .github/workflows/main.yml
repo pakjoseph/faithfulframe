@@ -602,8 +602,12 @@ jobs:
 
       - name: Configure ThreadSanitizer build
         run: |
-          sudo apt-get install -y libopenblas-dev libopenblas0
-          export OPENBLAS_HOME=/lib/x86_64-linux-gnu/
+          if sudo apt-get -o Acquire::Retries=5 install -y libopenblas-dev libopenblas0; then
+            export OPENBLAS_HOME=/lib/x86_64-linux-gnu/
+          else
+            echo "::warning::OpenBLAS unavailable; continuing sanitizer checks without it"
+            unset OPENBLAS_HOME
+          fi
           cmake -S . -B build-tsan \
             -D CMAKE_BUILD_TYPE=Debug \
             -D ENABLE_RUST_CORE_BRIDGE=ON \
@@ -655,8 +659,12 @@ jobs:
 
       - name: Configure AddressSanitizer and UBSan build
         run: |
-          sudo apt-get install -y libopenblas-dev libopenblas0
-          export OPENBLAS_HOME=/lib/x86_64-linux-gnu/
+          if sudo apt-get -o Acquire::Retries=5 install -y libopenblas-dev libopenblas0; then
+            export OPENBLAS_HOME=/lib/x86_64-linux-gnu/
+          else
+            echo "::warning::OpenBLAS unavailable; continuing sanitizer checks without it"
+            unset OPENBLAS_HOME
+          fi
           cmake -S . -B build-asan \
             -D CMAKE_BUILD_TYPE=Debug \
             -D ENABLE_RUST_CORE_BRIDGE=ON \
