@@ -699,8 +699,14 @@ int main(int argc, char **argv)
 			write_snapshot_event(*trace, "candidates_cleared", frame_index, timestamp_ms, snapshot);
 		}
 
+		// A leftmost-selection scenario represents the operator choosing between
+		// multiple visible candidates. The detector and tracker workers may
+		// publish one face before the other, so keep the synthetic command queued
+		// until both choices are available instead of accidentally selecting the
+		// only early candidate.
+		const bool selection_choices_ready = !args.select_leftmost_candidate || candidates.size() >= 2;
 		if (!selection_attempted && args.has_operator_selection_time &&
-		    timestamp_ms >= args.operator_selection_time_ms && !candidates.empty()) {
+		    timestamp_ms >= args.operator_selection_time_ms && !candidates.empty() && selection_choices_ready) {
 			selection_attempted = true;
 			++selection_attempts;
 			if (args.operator_candidate_index >= candidates.size()) {
