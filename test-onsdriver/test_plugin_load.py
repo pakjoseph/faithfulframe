@@ -797,8 +797,14 @@ class PluginLoadTest(obstest.OBSTest):
             self._wait_for_ui_status(ui, 'Following the selected speaker', timeout=10.0)
             self._wait_for_ui_widget(ui, 'Tracking state: Locked')
             self._wait_for_ui_zoom_above(ui, 1.0, timeout=10.0)
+            self._wait_for_media_input_state(
+                client, camera_name, 'OBS_MEDIA_STATE_PLAYING', timeout=5.0
+            )
+            camera_after = self._wait_for_screenshot(
+                client, camera_name, lambda image: image == camera_before, timeout=5.0
+            )
             self.assertEqual(
-                self._wait_for_screenshot(client, camera_name, bool),
+                camera_after,
                 camera_before,
                 'Tracking must leave the original camera image unchanged',
             )
