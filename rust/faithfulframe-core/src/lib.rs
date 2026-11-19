@@ -307,7 +307,6 @@ impl Default for Config {
 struct SelectedTarget {
     handle: CandidateHandle,
     continuity: ContinuityToken,
-    observation_version: u64,
     last_seen: Millis,
     rect: Rect,
 }
@@ -566,7 +565,6 @@ impl TrackingSession {
                         self.selected = Some(SelectedTarget {
                             handle,
                             continuity: candidate.continuity,
-                            observation_version: candidate.observation_version,
                             last_seen: candidate.observed_at,
                             rect: candidate.rect,
                         });
@@ -664,7 +662,6 @@ impl TrackingSession {
             {
                 self.selected = Some(SelectedTarget {
                     handle: candidate.handle,
-                    observation_version: candidate.observation_version,
                     last_seen: candidate.observed_at,
                     rect: candidate.rect,
                     ..selected
@@ -683,7 +680,6 @@ impl TrackingSession {
             {
                 self.selected = Some(SelectedTarget {
                     handle: candidate.handle,
-                    observation_version: candidate.observation_version,
                     last_seen: candidate.observed_at,
                     rect: candidate.rect,
                     ..selected
@@ -969,7 +965,6 @@ impl TrackingEngine {
             Event::Candidate { candidate, .. } => selected_before.is_some_and(|selected| {
                 selected.continuity == candidate.continuity
                     && candidate.detector_confirmed_at != 0
-                    && candidate.observation_version > selected.observation_version
                     && candidate.observed_at.saturating_sub(selected.last_seen)
                         > self.session.config.max_evidence_age_ms
             }),
@@ -1018,7 +1013,6 @@ impl TrackingEngine {
             Event::Candidate { candidate, .. } => selected_before.is_some_and(|selected| {
                 selected.continuity == candidate.continuity
                     && candidate.detector_confirmed_at != 0
-                    && candidate.observation_version > selected.observation_version
                     && candidate.observed_at > selected.last_seen
             }),
             _ => false,
@@ -1389,7 +1383,7 @@ mod tests {
         generations: Generations,
         state: State,
         reason: Reason,
-        selected: Option<(CandidateHandle, ContinuityToken, u64, Millis, Rect)>,
+        selected: Option<(CandidateHandle, ContinuityToken, Millis, Rect)>,
         latest: BTreeMap<CandidateHandle, Candidate>,
         highest_candidate_handle: CandidateHandle,
         candidate_observation_open: bool,
@@ -1419,7 +1413,6 @@ mod tests {
                 (
                     target.handle,
                     target.continuity,
-                    target.observation_version,
                     target.last_seen,
                     target.rect,
                 )
@@ -2994,6 +2987,58 @@ mod tests {
     }
 
     #[test]
+    fn fresh_same_version_selected_evidence_moves_crop_without_changing_policy_version() {
+        let mut engine = TrackingEngine::new(
+            Config::default(),
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        let observed = engine.apply(Event::Candidate {
+            at: 2,
+            candidate: candidate(10, 100, 1, 2),
+        });
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: observed.identity,
+                status_version: observed.status_version,
+                generations: observed.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: observed.observation_version,
+                },
+            },
+        });
+        assert_eq!(locked.state, State::Locked);
+
+        let mut moved = candidate(10, 100, observed.observation_version, 4);
+        moved.rect = Rect::normalized(0.75, 0.2, 0.1, 0.2).unwrap();
+        let updated = engine.apply(Event::Candidate {
+            at: 4,
+            candidate: moved,
+        });
+
+        assert_eq!(updated.observation_version, locked.observation_version);
+        assert_eq!(updated.status_version, locked.status_version);
+        assert_eq!(updated.state, State::Locked);
+        assert_eq!(updated.selected, locked.selected);
+        assert_eq!(updated.selected_rect, Some(moved.rect));
+        assert_ne!(updated.crop, locked.crop);
+    }
+
+    #[test]
     fn detector_miss_holds_the_crop_and_only_same_continuity_can_recover() {
         let mut engine = TrackingEngine::new(
             Config {
@@ -3124,16 +3169,17 @@ mod tests {
                 },
             },
         });
-        engine.apply(Event::Candidate {
+        let refreshed = engine.apply(Event::Candidate {
             at: 4,
-            candidate: candidate(10, 100, 2, 4),
+            candidate: candidate(10, 100, 1, 4),
         });
+        assert_eq!(refreshed.observation_version, locked.observation_version);
         let before_recovery = engine.snapshot();
         assert!(!engine.framing.motion_is_idle());
         let crop_center_x = |snapshot: Snapshot| snapshot.crop.x + snapshot.crop.width * 0.5;
         assert!(crop_center_x(before_recovery) < crop_center_x(locked));
 
-        let mut returning_speaker = candidate(10, 100, 3, 20);
+        let mut returning_speaker = candidate(10, 100, 1, 20);
         returning_speaker.rect = Rect::normalized(0.9, 0.3, 0.08, 0.2).unwrap();
         let recovered = engine.apply(Event::Candidate {
             at: 20,
@@ -3155,7 +3201,7 @@ mod tests {
             recovered.crop
         );
 
-        let mut continued_speaker = candidate(10, 100, 4, 29);
+        let mut continued_speaker = candidate(10, 100, 1, 29);
         continued_speaker.rect = returning_speaker.rect;
         let continued = engine.apply(Event::Candidate {
             at: 29,
@@ -3168,7 +3214,7 @@ mod tests {
             "framing did not preserve the new recovery motion ramp"
         );
 
-        let mut returning_left = candidate(10, 100, 5, 51);
+        let mut returning_left = candidate(10, 100, 1, 51);
         returning_left.rect = Rect::normalized(0.05, 0.3, 0.08, 0.2).unwrap();
         let recovered_again = engine.apply(Event::Candidate {
             at: 51,
