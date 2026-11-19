@@ -83,6 +83,12 @@ def main() -> int:
             if summary.get("detector_work_samples_count", 0) <= 0:
                 print("benchmark scale has no detector latency samples", file=sys.stderr)
                 return 1
+            if summary.get("max_face_detections", 0) <= 0:
+                print("benchmark scale did not detect the synthetic person fixture", file=sys.stderr)
+                return 1
+            if summary.get("max_tracking_candidates", 0) <= 0:
+                print("benchmark scale produced no tracking candidate for the fixture", file=sys.stderr)
+                return 1
         if str(fixture) in report_path.read_text(encoding="utf-8"):
             print("benchmark report unexpectedly contains the fixture path", file=sys.stderr)
             return 1
