@@ -83,9 +83,10 @@ def write_synthetic_person_y4m(output_path):
         raise ValueError('synthetic face fixture has an invalid pixel payload')
 
     # Preserve the fixture pixels while adding camera-space margin on every
-    # side. Keep a 16:9 source canvas so the selected face leaves enough room
-    # for a visible, safe zoom in the OBS integration test.
-    width = source_width * 3
+    # side. A 1280x720 canvas keeps the detector's vertically expanded face
+    # box below the crop controller's coverage limit, leaving room for a
+    # visible, safe zoom in the OBS integration test.
+    width = source_width * 4
     height = width * 9 // 16
     x_offset = (width - source_width) // 2
     y_offset = (height - source_height) // 2
@@ -732,8 +733,8 @@ class PluginLoadTest(obstest.OBSTest):
                     'target_name': camera_name,
                     'target_uuid': camera_uuid,
                     'safe_tracking_enabled': True,
-                    # Use the generated 960x540 canvas so the detected face
-                    # leaves enough image margin for a safe crop demonstration.
+                    # The generated 1280x720 canvas leaves enough image margin
+                    # for the detected face to demonstrate a safe digital crop.
                     'scale': 1.0,
                 },
             })
