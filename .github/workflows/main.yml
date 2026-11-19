@@ -55,7 +55,12 @@ jobs:
 
       - name: Setup ccache
         run: |
-          sudo apt install ccache
+          if ! command -v ccache >/dev/null 2>&1; then
+            sudo apt-get -o Acquire::Retries=5 install -y ccache || {
+              echo "::warning::ccache could not be installed; continuing without compiler caching"
+              exit 0
+            }
+          fi
           ccache --set-config=cache_dir="${{ github.workspace }}/.ccache"
           ccache --set-config=compression=true
 
