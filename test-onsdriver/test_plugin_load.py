@@ -1056,7 +1056,7 @@ class PluginLoadTest(obstest.OBSTest):
                     'Returning to the bound scene must restore only its original camera view',
                 )
                 self._wait_for_ui_status(
-                    ui, 'Camera or tracking settings changed; select a speaker again before following'
+                    ui, 'Camera or tracking settings changed; select the speaker again before following'
                 )
                 self._wait_for_ui_widget(ui, 'Tracking state: Manual')
                 self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
