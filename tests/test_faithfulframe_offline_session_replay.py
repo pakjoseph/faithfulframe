@@ -380,9 +380,15 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     for line in trace.read_text(encoding="utf-8").splitlines()
                     if '"kind":"candidate"' in line
                 ]
+                command_events = [
+                    json.loads(line)
+                    for line in trace.read_text(encoding="utf-8").splitlines()
+                    if '"kind":"command"' in line
+                ]
                 failure_context += (
                     f"\nDetector/tracker diagnostics: {diagnostic_events}"
                     f"\nCandidate evidence: {candidate_events[-12:]}"
+                    f"\nOperator command trace: {command_events}"
                 )
             self.assertEqual(result.returncode, 0, failure_context)
 
