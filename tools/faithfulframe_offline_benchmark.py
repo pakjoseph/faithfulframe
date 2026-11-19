@@ -2,9 +2,9 @@
 """Run comparable detector-scale sweeps with the production offline replay.
 
 The report is a development measurement, not a production acceptance record.
-It measures dlib HOG work and total replay wall time. It does not measure live
-OBS capture, rendering, encoding, process CPU/RSS, or face-tracking quality on
-real camera footage.
+It measures dlib HOG work, replay wall time, and process CPU/RSS for the offline
+replay process. It does not measure live OBS capture, rendering, encoding, or
+face-tracking quality on real camera footage.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import time
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_DETECTION_SCALE = 16
 
 
@@ -73,6 +73,68 @@ def _nonnegative_integer(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise BenchmarkError(f"trace has invalid {field}")
     return value
+
+
+def _boolean(value: Any, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise BenchmarkError(f"trace has invalid {field}")
+    return value
+
+
+def _process_metrics(summary: dict[str, Any]) -> dict[str, Any]:
+    wall_us = _nonnegative_integer(summary.get("process_wall_us"), "summary.process_wall_us")
+    if wall_us == 0:
+        raise BenchmarkError("trace has zero process wall duration")
+
+    cpu_valid = _boolean(summary.get("process_cpu_valid"), "summary.process_cpu_valid")
+    cpu_us = summary.get("process_cpu_us")
+    cpu_percent = summary.get("process_cpu_percent")
+    percent_valid = _boolean(
+        summary.get("process_cpu_percent_valid"), "summary.process_cpu_percent_valid"
+    )
+    if cpu_valid:
+        cpu_us = _nonnegative_integer(cpu_us, "summary.process_cpu_us")
+        if not isinstance(cpu_percent, (int, float)) or isinstance(cpu_percent, bool):
+            raise BenchmarkError("trace has invalid summary.process_cpu_percent")
+        cpu_percent = float(cpu_percent)
+        if not math.isfinite(cpu_percent) or cpu_percent < 0.0:
+            raise BenchmarkError("trace has invalid summary.process_cpu_percent")
+        expected_percent = 100.0 * cpu_us / wall_us
+        if not percent_valid or not math.isclose(cpu_percent, expected_percent, rel_tol=0.01, abs_tol=0.02):
+            raise BenchmarkError("trace process CPU metrics are internally inconsistent")
+    elif cpu_us is not None or cpu_percent is not None or percent_valid:
+        raise BenchmarkError("trace has process CPU values marked invalid")
+
+    memory_valid = _boolean(summary.get("memory_valid"), "summary.memory_valid")
+    resident_start = summary.get("resident_start_bytes")
+    resident = summary.get("resident_bytes")
+    peak_resident = summary.get("peak_resident_bytes")
+    growth_valid = _boolean(summary.get("resident_growth_valid"), "summary.resident_growth_valid")
+    growth = summary.get("resident_growth_bytes")
+    if memory_valid:
+        resident_start = _nonnegative_integer(resident_start, "summary.resident_start_bytes")
+        resident = _nonnegative_integer(resident, "summary.resident_bytes")
+        peak_resident = _nonnegative_integer(peak_resident, "summary.peak_resident_bytes")
+        if peak_resident < max(resident_start, resident):
+            raise BenchmarkError("trace peak resident memory is below a sampled resident value")
+        if not growth_valid or isinstance(growth, bool) or not isinstance(growth, int):
+            raise BenchmarkError("trace has invalid summary.resident_growth_bytes")
+        if growth != resident - resident_start:
+            raise BenchmarkError("trace resident growth does not match start and end samples")
+    elif any(value is not None for value in (resident_start, resident, peak_resident, growth)) or growth_valid:
+        raise BenchmarkError("trace has memory values marked invalid")
+
+    return {
+        "process_wall_time_ms": wall_us / 1000.0,
+        "process_cpu_time_ms": cpu_us / 1000.0 if cpu_valid else None,
+        "process_cpu_percent": cpu_percent if cpu_valid else None,
+        "process_cpu_valid": cpu_valid,
+        "resident_start_bytes": resident_start,
+        "resident_bytes": resident,
+        "peak_resident_bytes": peak_resident,
+        "resident_growth_bytes": growth,
+        "memory_valid": memory_valid,
+    }
 
 
 def summarize_trace(trace_path: Path, detection_scale: int) -> dict[str, Any]:
@@ -165,6 +227,7 @@ def summarize_trace(trace_path: Path, detection_scale: int) -> dict[str, Any]:
         raise BenchmarkError("summary detection scale does not match the requested scale")
     if final_summary.get("scaling_mode") != "rgb_stride":
         raise BenchmarkError("summary does not identify the RGB stride scaling mode")
+    process_metrics = _process_metrics(final_summary)
     if not detector_work_us:
         raise BenchmarkError("replay produced no detector work sample; use a longer frame manifest")
 
@@ -188,6 +251,7 @@ def summarize_trace(trace_path: Path, detection_scale: int) -> dict[str, Any]:
         "max_face_detections": max_detection_count,
         "max_tracking_candidates": max_candidate_count,
         "candidate_observation_events": candidate_observations,
+        "process_metrics": process_metrics,
     }
 
 
@@ -326,6 +390,9 @@ def _aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         for field in ("source_resolution", "detector_input_resolution", "frame_count", "simulated_duration_ms"):
             if run[field] != first[field]:
                 raise BenchmarkError(f"replay workload changed between repeats ({field})")
+    process_runs = [run["process_metrics"] for run in runs]
+    cpu_runs = [run for run in process_runs if run["process_cpu_valid"]]
+    memory_runs = [run for run in process_runs if run["memory_valid"]]
     return {
         "repeats": len(runs),
         "source_resolution": first["source_resolution"],
@@ -339,6 +406,25 @@ def _aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "detector_work_max_us": max(latency_samples),
         "replay_wall_time_median_ms": statistics.median(wall_samples),
         "replay_wall_time_max_ms": max(wall_samples),
+        "process_wall_time_median_ms": statistics.median(run["process_wall_time_ms"] for run in process_runs),
+        "process_cpu_valid_runs": len(cpu_runs),
+        "process_cpu_time_median_ms": (
+            statistics.median(run["process_cpu_time_ms"] for run in cpu_runs) if cpu_runs else None
+        ),
+        "process_cpu_percent_median": (
+            statistics.median(run["process_cpu_percent"] for run in cpu_runs) if cpu_runs else None
+        ),
+        "memory_valid_runs": len(memory_runs),
+        "resident_start_bytes_median": (
+            statistics.median(run["resident_start_bytes"] for run in memory_runs) if memory_runs else None
+        ),
+        "resident_bytes_median": (
+            statistics.median(run["resident_bytes"] for run in memory_runs) if memory_runs else None
+        ),
+        "peak_resident_bytes_max": max((run["peak_resident_bytes"] for run in memory_runs), default=None),
+        "resident_growth_bytes_median": (
+            statistics.median(run["resident_growth_bytes"] for run in memory_runs) if memory_runs else None
+        ),
         "max_face_detections": max(run["max_face_detections"] for run in runs),
         "max_tracking_candidates": max(run["max_tracking_candidates"] for run in runs),
         "candidate_observation_events_total": sum(run["candidate_observation_events"] for run in runs),
@@ -481,11 +567,12 @@ def main(argv: list[str] | None = None) -> int:
             "measured": [
                 "dlib HOG detector execution latency from the numeric replay trace",
                 "offline replay wall time",
+                "offline replay process CPU time and CPU percentage",
+                "offline replay process resident memory, peak resident memory, and start-to-end growth",
                 "maximum face detections and tracking candidates per frame",
             ],
             "not_measured": [
                 "OBS live capture, rendering, or encoding",
-                "process CPU or memory use",
                 "real-camera tracking quality",
                 "production Windows hardware behavior",
             ],

@@ -286,6 +286,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		faithfulframe-offline-frame-sequence faithfulframe-rust-ffi dlib Threads::Threads OBS::libobs)
 	if (OS_WINDOWS)
 		target_link_libraries(faithfulframe-offline-session-replay PRIVATE OBS::w32-pthreads)
+		target_link_libraries(faithfulframe-offline-session-replay PRIVATE Psapi)
 		add_custom_command(TARGET faithfulframe-offline-session-replay POST_BUILD
 			COMMAND ${CMAKE_COMMAND} -E copy_if_different
 				"$<TARGET_FILE:OBS::w32-pthreads>"

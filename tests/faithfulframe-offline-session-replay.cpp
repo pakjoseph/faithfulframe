@@ -4,6 +4,7 @@
 #endif
 
 #include "faithfulframe-offline-frame-sequence.hpp"
+#include "faithfulframe-offline-process-metrics.hpp"
 #include "face-tracker-association.hpp"
 #include "face-detector-dlib-hog.h"
 #include "face-tracker-manager.hpp"
@@ -47,7 +48,11 @@ extern "C" const char *obs_module_text(const char *lookup_string)
 namespace {
 
 using faithfulframe::offline::frame_spec;
+using faithfulframe::offline::process_sample;
 using faithfulframe::offline::rgb_frame;
+using faithfulframe::offline::sample_process;
+using faithfulframe::offline::elapsed_cpu_microseconds;
+using faithfulframe::offline::signed_difference;
 using steady_clock = std::chrono::steady_clock;
 
 struct arguments
@@ -78,13 +83,16 @@ class session_owner {
 	ff_session *value = nullptr;
 
 public:
-	~session_owner()
-	{
-		if (value)
-			ff_session_destroy(value);
-	}
+	~session_owner() { reset(); }
 	ff_session **out() { return &value; }
 	ff_session *get() const { return value; }
+	void reset()
+	{
+		if (value) {
+			ff_session_destroy(value);
+			value = nullptr;
+		}
+	}
 };
 
 void usage(std::ostream &out)
@@ -460,6 +468,8 @@ int main(int argc, char **argv)
 	}
 	if (!validate_model(args.model))
 		return 2;
+	const process_sample process_started = sample_process();
+	const auto process_wall_started_at = steady_clock::now();
 
 	std::vector<frame_spec> frames;
 	std::string error;
@@ -846,11 +856,61 @@ int main(int argc, char **argv)
 		std::cerr << "Could not read the final Rust session snapshot\n";
 		return 3;
 	}
+	session.reset();
+	const process_sample process_finished = sample_process();
+	uint64_t process_cpu_us = 0;
+	const bool process_cpu_valid =
+		elapsed_cpu_microseconds(process_started.cpu_time, process_finished.cpu_time, process_cpu_us);
+	const uint64_t process_wall_us = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::microseconds>(steady_clock::now() - process_wall_started_at)
+			.count());
+	const bool process_cpu_percent_valid = process_cpu_valid && process_wall_us > 0;
+	const double process_cpu_percent =
+		process_cpu_percent_valid ? 100.0 * static_cast<double>(process_cpu_us) / process_wall_us : 0.0;
+	int64_t resident_growth_bytes = 0;
+	const bool resident_growth_valid = process_started.memory_valid && process_finished.memory_valid &&
+					   signed_difference(process_finished.resident_bytes,
+							     process_started.resident_bytes, resident_growth_bytes);
 	*trace << "{\"kind\":\"summary\",\"frames\":" << frame_index << ",\"detection_scale\":" << args.detection_scale
 	       << ",\"scaling_mode\":\"rgb_stride\""
 	       << ",\"candidate_observations\":" << candidate_observations
 	       << ",\"operator_selection_attempts\":" << selection_attempts
-	       << ",\"operator_selection_applied\":" << (selection_applied ? "true" : "false") << ',';
+	       << ",\"operator_selection_applied\":" << (selection_applied ? "true" : "false")
+	       << ",\"process_wall_us\":" << process_wall_us
+	       << ",\"process_cpu_valid\":" << (process_cpu_valid ? "true" : "false") << ",\"process_cpu_us\":";
+	if (process_cpu_valid)
+		*trace << process_cpu_us;
+	else
+		*trace << "null";
+	*trace << ",\"process_cpu_percent_valid\":" << (process_cpu_percent_valid ? "true" : "false")
+	       << ",\"process_cpu_percent\":";
+	if (process_cpu_percent_valid)
+		*trace << process_cpu_percent;
+	else
+		*trace << "null";
+	*trace << ",\"memory_valid\":" << (process_finished.memory_valid ? "true" : "false")
+	       << ",\"resident_start_bytes\":";
+	if (process_started.memory_valid)
+		*trace << process_started.resident_bytes;
+	else
+		*trace << "null";
+	*trace << ",\"resident_bytes\":";
+	if (process_finished.memory_valid)
+		*trace << process_finished.resident_bytes;
+	else
+		*trace << "null";
+	*trace << ",\"peak_resident_bytes\":";
+	if (process_finished.memory_valid)
+		*trace << process_finished.peak_resident_bytes;
+	else
+		*trace << "null";
+	*trace << ",\"resident_growth_valid\":" << (resident_growth_valid ? "true" : "false")
+	       << ",\"resident_growth_bytes\":";
+	if (resident_growth_valid)
+		*trace << resident_growth_bytes;
+	else
+		*trace << "null";
+	*trace << ',';
 	write_snapshot(*trace, snapshot);
 	*trace << "}\n";
 	trace->flush();

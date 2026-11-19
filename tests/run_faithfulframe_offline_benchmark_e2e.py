@@ -71,6 +71,13 @@ def main() -> int:
         if report.get("production_acceptance_eligible") is not False or report.get("obs_runtime_version") is not None:
             print("offline benchmark was incorrectly marked as production acceptance evidence", file=sys.stderr)
             return 1
+        measured = report.get("metrics_scope", {}).get("measured", [])
+        if not any("process CPU" in metric for metric in measured) or not any("resident memory" in metric for metric in measured):
+            print("offline benchmark did not identify its process CPU and memory measurements", file=sys.stderr)
+            return 1
+        if any("process CPU" in metric or "process" in metric and "memory" in metric for metric in report.get("metrics_scope", {}).get("not_measured", [])):
+            print("offline benchmark still marks measured process metrics as unavailable", file=sys.stderr)
+            return 1
         if report.get("workload", {}).get("source_resolution") != [320, 360]:
             print("benchmark did not preserve the fixture source geometry", file=sys.stderr)
             return 1
@@ -88,6 +95,12 @@ def main() -> int:
                 return 1
             if summary.get("max_tracking_candidates", 0) <= 0:
                 print("benchmark scale produced no tracking candidate for the fixture", file=sys.stderr)
+                return 1
+            if summary.get("process_wall_time_median_ms", 0) <= 0:
+                print("benchmark scale has no process wall-time measurement", file=sys.stderr)
+                return 1
+            if summary.get("process_cpu_valid_runs", 0) < 0 or summary.get("memory_valid_runs", 0) < 0:
+                print("benchmark scale has invalid process metric availability counts", file=sys.stderr)
                 return 1
         if str(fixture) in report_path.read_text(encoding="utf-8"):
             print("benchmark report unexpectedly contains the fixture path", file=sys.stderr)
