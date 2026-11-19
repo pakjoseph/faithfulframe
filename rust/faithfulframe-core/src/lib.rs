@@ -407,6 +407,33 @@ impl TrackingSession {
         }
     }
 
+    /// The operator authorization revision changes only when policy-visible
+    /// control state changes. Per-frame candidate geometry is versioned by
+    /// `observation_version` and must not invalidate queued safety actions.
+    fn control_signature(
+        &self,
+    ) -> (
+        State,
+        Reason,
+        Identity,
+        Generations,
+        Option<CandidateHandle>,
+        CropAction,
+        Option<Millis>,
+        bool,
+    ) {
+        (
+            self.state,
+            self.reason,
+            self.identity,
+            self.generations,
+            self.selected.map(|target| target.handle),
+            self.crop_action,
+            self.loss_deadline,
+            self.closed,
+        )
+    }
+
     pub fn apply(&mut self, event: Event) -> Snapshot {
         let at = event_time(event);
         if self.closed {
@@ -420,8 +447,10 @@ impl TrackingSession {
         // the executor receives a candidate, command, or lifecycle event
         // before the next periodic Tick. This prevents queued detector results
         // from reviving a session after its grace period.
-        let timer_advanced = self.advance_due_timers(at);
-        let tick_event = matches!(&event, Event::Tick { .. });
+        self.advance_due_timers(at);
+        let control_after_timers = self.control_signature();
+        let is_lifecycle = matches!(&event, Event::Lifecycle { .. });
+        let is_command = matches!(&event, Event::Command { .. });
 
         let result = match event {
             Event::Command { envelope, .. } => {
@@ -457,7 +486,10 @@ impl TrackingSession {
         };
         if !matches!(result, CommandResult::Rejected(_)) {
             self.last_at = at;
-            if !timer_advanced || !tick_event {
+            if is_lifecycle
+                || (is_command && result == CommandResult::Applied)
+                || self.control_signature() != control_after_timers
+            {
                 self.status_version = self.status_version.saturating_add(1);
             }
         }
@@ -628,7 +660,6 @@ impl TrackingSession {
             } else if selected.continuity == candidate.continuity
                 && self.state == State::Locked
                 && candidate.detector_confirmed_at != 0
-                && candidate.observation_version > selected.observation_version
                 && candidate.observed_at > selected.last_seen
             {
                 self.selected = Some(SelectedTarget {
@@ -642,7 +673,7 @@ impl TrackingSession {
             } else if selected.continuity == candidate.continuity
                 && self.state == State::Searching
                 && candidate.detector_confirmed_at != 0
-                && candidate.observation_version > selected.observation_version
+                && candidate.observed_at > selected.last_seen
                 && self
                     .loss_started_at
                     .is_some_and(|started_at| candidate.observed_at >= started_at)
@@ -1477,9 +1508,10 @@ mod tests {
         let manual = send(&mut session, 4, Command::ManualOverride);
         let replacement = candidate(11, 200, 2, 5);
         let observed = observe(&mut session, replacement, 5);
+        let searching = send(&mut session, 6, Command::EnableAutoFollow);
 
         let stale = session.apply(Event::Command {
-            at: 6,
+            at: 7,
             envelope: CommandEnvelope {
                 identity: observed.identity,
                 status_version: manual.status_version,
@@ -1495,7 +1527,7 @@ mod tests {
             stale.command_result,
             CommandResult::Rejected(Reason::StaleCommand)
         );
-        assert_policy_no_op(stale, observed);
+        assert_policy_no_op(stale, searching);
     }
 
     #[test]
@@ -1696,13 +1728,16 @@ mod tests {
     }
 
     #[test]
-    fn stale_preview_status_cannot_authorize_a_candidate_selection() {
+    fn selection_survives_same_candidate_refresh_and_idle_ticks() {
         let mut session = session();
         send(&mut session, 1, Command::EnableAutoFollow);
         observe(&mut session, candidate(10, 100, 1, 2), 2);
         let preview = session.snapshot();
-        session.apply(Event::Tick { at: 3 });
-        let before = session.snapshot();
+        let refreshed = observe(&mut session, candidate(10, 100, 1, 3), 3);
+        assert_eq!(refreshed.observation_version, preview.observation_version);
+        assert_eq!(refreshed.status_version, preview.status_version);
+        let ticked = session.apply(Event::Tick { at: 3 });
+        assert_eq!(ticked.status_version, preview.status_version);
 
         let after = session.apply(Event::Command {
             at: 4,
@@ -1717,11 +1752,10 @@ mod tests {
             },
         });
 
-        assert_eq!(
-            after.command_result,
-            CommandResult::Rejected(Reason::StaleCommand)
-        );
-        assert_policy_no_op(after, before);
+        assert_eq!(after.command_result, CommandResult::Applied);
+        assert_eq!(after.state, State::Locked);
+        assert_eq!(after.selected, Some(10));
+        assert!(after.status_version > preview.status_version);
     }
 
     #[test]
@@ -1771,7 +1805,7 @@ mod tests {
         assert_eq!(cleared.crop, locked.crop);
         assert_eq!(cleared.loss_deadline, locked.loss_deadline);
         assert_eq!(cleared.observation_version, locked.observation_version + 1);
-        assert_eq!(cleared.status_version, locked.status_version + 1);
+        assert_eq!(cleared.status_version, locked.status_version);
 
         let rejected = session.apply(Event::Command {
             at: 5,
@@ -2027,7 +2061,7 @@ mod tests {
         assert_eq!(recovered.reason, Reason::ContinuityRecovered);
         assert_eq!(recovered.selected, Some(11));
         assert_eq!(recovered.crop_action, CropAction::Track);
-        assert_eq!(recovered.status_version, 5);
+        assert_eq!(recovered.status_version, 4);
     }
 
     #[test]

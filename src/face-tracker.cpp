@@ -105,6 +105,13 @@ static void fail_source_binding_closed(faithfulframe_source_binding *binding);
 
 struct faithfulframe_source_binding
 {
+	struct candidate_signature_entry
+	{
+		uint64_t handle = 0;
+		uint64_t continuity_token = 0;
+		bool detector_confirmed = false;
+	};
+
 	struct preview_payload
 	{
 		ff_identity identity{};
@@ -139,6 +146,9 @@ struct faithfulframe_source_binding
 	// Protected by lifecycle_mutex; mirrors the session's observation version.
 	uint64_t observation_version = 0;
 	bool candidate_observation_active = false;
+	std::array<candidate_signature_entry, faithfulframe_session_executor::max_candidates> candidate_signature{};
+	size_t candidate_signature_count = 0;
+	std::atomic<bool> candidate_observation_pending{false};
 	std::atomic<uint32_t> source_width{0};
 	std::atomic<uint32_t> source_height{0};
 	std::atomic<bool> source_settings_updated{false};
@@ -1466,6 +1476,8 @@ static bool enqueue_source_lifecycle_locked(faithfulframe_source_binding *bindin
 	if (binding->observation_version != std::numeric_limits<uint64_t>::max())
 		++binding->observation_version;
 	binding->candidate_observation_active = false;
+	binding->candidate_signature_count = 0;
+	binding->candidate_observation_pending.store(false, std::memory_order_release);
 	if (kind == FF_LIFECYCLE_SOURCE_DESTROYED || kind == FF_LIFECYCLE_SOURCE_REBOUND ||
 	    kind == FF_LIFECYCLE_ADAPTER_DESTROYED || kind == FF_LIFECYCLE_OBS_SHUTDOWN) {
 		binding->closed.store(true, std::memory_order_release);
@@ -1916,10 +1928,8 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 	    !binding->signal_connected.load(std::memory_order_acquire) ||
 	    !binding->effective_active.load(std::memory_order_acquire))
 		return;
-	if (binding->observation_version >= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-		return;
 	generations = binding->generations;
-	const uint64_t version = binding->observation_version + 1;
+	const uint64_t current_version = binding->observation_version;
 
 	std::array<ff_candidate, faithfulframe_session_executor::max_candidates> candidates{};
 	std::array<ff_candidate, faithfulframe_session_executor::max_candidates> preview_candidates{};
@@ -1940,7 +1950,7 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		candidate.handle = tracker.candidate_handle;
 		candidate.continuity_token = tracker.continuity_token;
 		candidate.identity = binding->identity;
-		candidate.observation_version = version;
+		candidate.observation_version = current_version;
 		candidate.generations = generations;
 		candidate.observed_at_ms = tracker.observed_at_ms;
 		candidate.detector_confirmed_at_ms =
@@ -1956,6 +1966,33 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		if (candidate.detector_confirmed_at_ms && preview_count < preview_candidates.size())
 			preview_candidates[preview_count++] = candidate;
 	}
+	std::array<faithfulframe_source_binding::candidate_signature_entry,
+		   faithfulframe_session_executor::max_candidates>
+		current_signature{};
+	for (size_t i = 0; i < count; ++i) {
+		current_signature[i] = faithfulframe_source_binding::candidate_signature_entry{
+			candidates[i].handle, candidates[i].continuity_token,
+			candidates[i].detector_confirmed_at_ms != 0};
+	}
+	std::sort(current_signature.begin(), current_signature.begin() + count,
+		  [](const auto &left, const auto &right) { return left.handle < right.handle; });
+	bool same_candidate_set = count == binding->candidate_signature_count;
+	for (size_t i = 0; same_candidate_set && i < count; ++i) {
+		const auto &left = current_signature[i];
+		const auto &right = binding->candidate_signature[i];
+		same_candidate_set = left.handle == right.handle && left.continuity_token == right.continuity_token &&
+				     left.detector_confirmed == right.detector_confirmed;
+	}
+	const bool candidate_set_changed = !same_candidate_set;
+	if (candidate_set_changed && current_version >= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+		return;
+	const uint64_t version = current_version + (candidate_set_changed ? 1 : 0);
+	for (size_t i = 0; i < count; ++i)
+		candidates[i].observation_version = version;
+	for (size_t i = 0; i < preview_count; ++i)
+		preview_candidates[i].observation_version = version;
+	if (candidate_set_changed)
+		binding->candidate_observation_pending.store(true, std::memory_order_release);
 	if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS")) {
 		const uint64_t counts = (static_cast<uint64_t>(count) << 32) | static_cast<uint64_t>(preview_count);
 		static std::atomic<uint64_t> last_logged_counts{std::numeric_limits<uint64_t>::max()};
@@ -1970,10 +2007,14 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 			     first.rect.width, first.rect.height);
 		}
 	}
+	bool observation_enqueued = false;
 	if (count) {
 		if (executor->enqueue_candidates(now, candidates.data(), count)) {
+			observation_enqueued = true;
 			binding->observation_version = version;
 			binding->candidate_observation_active = true;
+			binding->candidate_signature = current_signature;
+			binding->candidate_signature_count = count;
 			std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
 			if (lock.owns_lock()) {
 				binding->preview.identity = binding->identity;
@@ -1983,13 +2024,17 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 				binding->preview.candidate_count = preview_count;
 				std::copy_n(preview_candidates.begin(), preview_count,
 					    binding->preview.candidates.begin());
+				binding->candidate_observation_pending.store(false, std::memory_order_release);
 			}
 		}
 	} else {
 		if (binding->candidate_observation_active) {
 			if (executor->enqueue_candidate_clear(now, binding->identity, generations, version)) {
+				observation_enqueued = true;
 				binding->observation_version = version;
 				binding->candidate_observation_active = false;
+				binding->candidate_signature = {};
+				binding->candidate_signature_count = 0;
 				std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
 				if (lock.owns_lock()) {
 					binding->preview.identity = binding->identity;
@@ -1997,6 +2042,7 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 					binding->preview.observation_version = version;
 					binding->preview.published_at_ms = now;
 					binding->preview.candidate_count = 0;
+					binding->candidate_observation_pending.store(false, std::memory_order_release);
 				}
 			}
 		} else {
@@ -2007,10 +2053,15 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 				binding->preview.observation_version = binding->observation_version;
 				binding->preview.published_at_ms = now;
 				binding->preview.candidate_count = 0;
+				binding->candidate_observation_pending.store(false, std::memory_order_release);
 			}
 		}
 	}
-	executor->enqueue_tick(now);
+	// Candidate events already advance policy deadlines. Avoid alternating a
+	// candidate batch and a tick on every video frame; adjacent work can then
+	// coalesce and queued operator selections do not sit behind stale snapshots.
+	if (!observation_enqueued)
+		executor->enqueue_tick(now);
 }
 
 static void settle_source_transition(faithfulframe_source_binding *binding)
@@ -3257,6 +3308,10 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	calldata_set_string(cd, "target_name", binding->target_name.c_str());
 	calldata_set_bool(cd, "target_active", binding->effective_active.load(std::memory_order_acquire));
 	calldata_set_bool(cd, "signal_connected", binding->signal_connected.load(std::memory_order_acquire));
+	// While a changed candidate set is queued or its immutable preview payload
+	// has not been published, do not offer the previous set for selection.
+	if (binding->candidate_observation_pending.load(std::memory_order_acquire))
+		return;
 
 	faithfulframe_source_binding::preview_payload preview;
 	{
@@ -3373,6 +3428,9 @@ static void cb_faithfulframe_command(void *data, calldata_t *cd)
 	    !get_unsigned_field(cd, "candidate_handle", candidate_handle) ||
 	    !get_unsigned_field(cd, "observation_version", observation_version) || kind > FF_COMMAND_RESET_TO_WIDE ||
 	    !source_id || !session_id)
+		return;
+	if (kind == FF_COMMAND_SELECT_CANDIDATE &&
+	    binding->candidate_observation_pending.load(std::memory_order_acquire))
 		return;
 
 	ff_command command{};
