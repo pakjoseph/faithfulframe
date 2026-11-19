@@ -327,25 +327,27 @@ class PluginLoadTest(obstest.OBSTest):
                 return child_path
         return None
 
-    @staticmethod
-    def _invoke_ui_widget(ui, property_name, property_value, method, **arguments):
-        def find_path(widgets, parents=()):
-            for widget in widgets:
-                locator = {'className': widget.get('className', '')}
-                for key in ('objectName', 'accessibleName', 'text'):
-                    value = widget.get(key)
-                    if value:
-                        locator[key] = value
-                path = parents + (locator,)
-                if widget.get(property_name) == property_value:
-                    return list(path)
-                child_path = find_path(widget.get('children', []), path)
-                if child_path:
-                    return child_path
-            return None
+    @classmethod
+    def _ui_widget_path(cls, widgets, property_name, property_value, parents=()):
+        for widget in widgets:
+            locator = {'className': widget.get('className', '')}
+            for key in ('objectName', 'accessibleName', 'text'):
+                value = widget.get(key)
+                if value:
+                    locator[key] = value
+            path = parents + (locator,)
+            if widget.get(property_name) == property_value:
+                return list(path)
+            child_path = cls._ui_widget_path(
+                widget.get('children', []), property_name, property_value, path
+            )
+            if child_path:
+                return child_path
+        return None
 
-        widget_tree = ui.request('widget-list', {})
-        path = find_path(widget_tree.get('children', []))
+    @classmethod
+    def _invoke_ui_widget_from_tree(cls, ui, widget_tree, property_name, property_value, method, **arguments):
+        path = cls._ui_widget_path(widget_tree.get('children', []), property_name, property_value)
         if path is None:
             raise AssertionError(f'UI widget {property_name}={property_value!r} was not found')
         return ui.request(
@@ -355,6 +357,13 @@ class PluginLoadTest(obstest.OBSTest):
                 'method': method,
                 **arguments,
             },
+        )
+
+    @classmethod
+    def _invoke_ui_widget(cls, ui, property_name, property_value, method, **arguments):
+        widget_tree = ui.request('widget-list', {})
+        return cls._invoke_ui_widget_from_tree(
+            ui, widget_tree, property_name, property_value, method, **arguments
         )
 
     def _wait_for_ui_widget(self, ui, accessible_name, *, enabled=None, timeout=10.0):
@@ -768,9 +777,13 @@ class PluginLoadTest(obstest.OBSTest):
                 # poll into a flaky failure (or weakening production expiry).
                 selection_deadline = time.monotonic() + 30.0
                 selection_applied = False
+                candidate_visible_polls = 0
+                selection_attempts = 0
                 last_selection_error = None
+                last_candidates_widget = None
                 while time.monotonic() < selection_deadline:
-                    widgets = ui.request('widget-list', {}).get('children', [])
+                    widget_tree = ui.request('widget-list', {})
+                    widgets = widget_tree.get('children', [])
                     status_widget = self._find_ui_widget(widgets, 'FaithfulFrame tracking status')
                     status_text = status_widget.get('text', '') if status_widget else ''
                     if 'Following the selected speaker' in status_text or self._find_ui_widget(
@@ -780,17 +793,27 @@ class PluginLoadTest(obstest.OBSTest):
                         break
 
                     candidates_widget = self._find_ui_widget(widgets, 'Detected face candidates')
+                    last_candidates_widget = candidates_widget
                     if candidates_widget and candidates_widget.get('count', 0) >= 2:
-                        self._invoke_ui_widget(
+                        candidate_visible_polls += 1
+                        # Candidate observations expire quickly. Reuse this
+                        # widget tree for both actions instead of making more
+                        # remote inspection calls between seeing the handle
+                        # and selecting it. The dock and session still validate
+                        # its identity, generations, and expiry at application.
+                        self._invoke_ui_widget_from_tree(
                             ui,
+                            widget_tree,
                             'accessibleName',
                             'Detected face candidates',
                             'setCurrentIndex',
                             arg1=1,
                         )
                         try:
-                            self._wait_for_ui_widget(ui, select_control, enabled=True, timeout=0.25)
-                            self._invoke_ui_widget(ui, 'accessibleName', select_control, 'click')
+                            selection_attempts += 1
+                            self._invoke_ui_widget_from_tree(
+                                ui, widget_tree, 'accessibleName', select_control, 'click'
+                            )
                         except AssertionError as error:
                             last_selection_error = error
                             time.sleep(0.05)
@@ -822,7 +845,10 @@ class PluginLoadTest(obstest.OBSTest):
                     time.sleep(0.05)
                 if not selection_applied:
                     raise AssertionError(
-                        f'No fresh candidate selection was accepted: {last_selection_error!s}'
+                        f'No fresh candidate selection was accepted after {selection_attempts} attempts '
+                        f'and {candidate_visible_polls} candidate-visible polls; '
+                        f'last candidate widget: {last_candidates_widget!r}; '
+                        f'last result: {last_selection_error!s}'
                     )
             except AssertionError as selection_error:
                 widgets = ui.request('widget-list', {}).get('children', [])
