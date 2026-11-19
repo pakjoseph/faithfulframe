@@ -412,6 +412,13 @@ if (ENABLE_RUST_CORE_BRIDGE)
 					--model "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}")
 			set_tests_properties(faithfulframe-offline-session-replay-geometry-integration
 				PROPERTIES TIMEOUT 30)
+			add_test(NAME faithfulframe-offline-benchmark-e2e
+				COMMAND ${Python3_EXECUTABLE}
+					${CMAKE_CURRENT_SOURCE_DIR}/tests/run_faithfulframe_offline_benchmark_e2e.py
+					--benchmark ${CMAKE_CURRENT_SOURCE_DIR}/tools/faithfulframe_offline_benchmark.py
+					--binary $<TARGET_FILE:faithfulframe-offline-session-replay>
+					--model "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}")
+			set_tests_properties(faithfulframe-offline-benchmark-e2e PROPERTIES TIMEOUT 360)
 		endif()
 		set_tests_properties(faithfulframe-offline-replay-detector-smoke PROPERTIES
 			TIMEOUT 30
@@ -426,7 +433,8 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		list(APPEND FAITHFULFRAME_SESSION_REPLAY_TESTS faithfulframe-offline-session-replay-policy-smoke)
 		if (Python3_Interpreter_FOUND)
 			list(APPEND FAITHFULFRAME_SESSION_REPLAY_TESTS
-				faithfulframe-offline-session-replay-geometry-integration)
+				faithfulframe-offline-session-replay-geometry-integration
+				faithfulframe-offline-benchmark-e2e)
 		endif()
 	endif()
 	if (APPLE AND FAITHFULFRAME_SESSION_REPLAY_TEST_ENV)
