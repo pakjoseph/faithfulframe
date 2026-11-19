@@ -82,11 +82,10 @@ def write_synthetic_person_y4m(output_path):
     if len(rgb_pixels) != source_width * source_height * 3:
         raise ValueError('synthetic face fixture has an invalid pixel payload')
 
-    # Reduce the face to 80% of its original pixel size as well as using the
-    # smaller canvas. The full-resolution face was too large for the framing
-    # assertion, while the 2/3-size normalization was too small for reliable
-    # HOG tracking on slower Windows OBS runners.
-    width = source_width * 4
+    # Keep the face at 80% of the fixture's pixel size, but use a 640x360
+    # canvas to avoid making slower virtual OBS runners process a large area of
+    # empty background. The same face pixels remain visible to HOG tracking.
+    width = source_width * 2
     height = width * 9 // 16
     person_width = max(1, (source_width * 4 + 2) // 5)
     person_height = max(1, (source_height * 4 + 2) // 5)
@@ -737,7 +736,7 @@ class PluginLoadTest(obstest.OBSTest):
                     'target_name': camera_name,
                     'target_uuid': camera_uuid,
                     'safe_tracking_enabled': True,
-                    # The generated 1280x720 canvas leaves enough image margin
+                    # The generated 640x360 canvas leaves enough image margin
                     # for the detected face to demonstrate a safe digital crop.
                     'scale': 1.0,
                 },
