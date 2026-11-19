@@ -1020,6 +1020,7 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 		"Use Tab or click to focus this list, then use the arrow keys to highlight a detected face. "
 		"Scrolling over the list does not change the selection.");
 	mainLayout->addWidget(candidateSelector);
+	connect(candidateSelector, &QComboBox::currentTextChanged, this, [this](const QString &) { updateState(); });
 	selectCandidateButton = new QPushButton("Select Speaker", this);
 	selectCandidateButton->setAccessibleName("Select the highlighted face as the speaker");
 	selectCandidateButton->setAccessibleDescription(
