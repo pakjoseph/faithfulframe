@@ -55,6 +55,52 @@ def write_cartoon_faces_scene(
     path.write_bytes(f"P6\n{width} {height}\n255\n".encode("ascii") + pixels)
 
 
+def write_stage_projection_scene(
+    path: Path,
+    portrait_path: Path,
+    include_stage_speaker: bool,
+    speaker_brightness: float = 1.0,
+) -> None:
+    portrait_width, portrait_height, portrait = read_synthetic_portrait(portrait_path)
+    width, height = 1920, 1080
+    pixels = bytearray([32, 38, 42]) * (width * height)
+
+    # The projection screen is deliberately a bright, high-contrast region
+    # containing the same synthetic face as the stage. The policy receives
+    # ordinary face candidates and must rely on the volunteer's selected
+    # continuity, never infer that a screen face is the speaker.
+    screen = (1080, 280, 720, 520)
+    screen_x, screen_y, screen_width, screen_height = screen
+    screen_color = bytes([132, 138, 142]) * screen_width
+    border_color = bytes([12, 14, 16]) * screen_width
+    for row in range(screen_height):
+        row_start = ((screen_y + row) * width + screen_x) * 3
+        pixels[row_start : row_start + screen_width * 3] = (
+            border_color if row < 8 or row >= screen_height - 8 else screen_color
+        )
+    for row in range(screen_height):
+        for x in range(8):
+            offset = ((screen_y + row) * width + screen_x + x) * 3
+            pixels[offset : offset + 3] = bytes([12, 14, 16])
+            offset = ((screen_y + row) * width + screen_x + screen_width - 1 - x) * 3
+            pixels[offset : offset + 3] = bytes([12, 14, 16])
+
+    def paste_portrait(x: int, brightness: float = 1.0) -> None:
+        y = (height - portrait_height) // 2
+        for row in range(portrait_height):
+            source_start = row * portrait_width * 3
+            target_start = ((y + row) * width + x) * 3
+            row_pixels = portrait[source_start : source_start + portrait_width * 3]
+            if brightness != 1.0:
+                row_pixels = bytes(round(value * brightness) for value in row_pixels)
+            pixels[target_start : target_start + portrait_width * 3] = row_pixels
+
+    if include_stage_speaker:
+        paste_portrait(320, speaker_brightness)
+    paste_portrait(1280)
+    path.write_bytes(f"P6\n{width} {height}\n255\n".encode("ascii") + pixels)
+
+
 def write_cartoon_stage_frame(path: Path, portrait_path: Path, x: int) -> None:
     portrait_width, portrait_height, portrait = read_synthetic_portrait(portrait_path)
     width, height = 1280, 720
@@ -272,7 +318,7 @@ class OfflineSessionReplayTests(unittest.TestCase):
             self.assertNotIn("pixels", trace_text)
             self.assertNotIn("frame_path", trace_text)
 
-    def test_detector_miss_holds_selected_crop_without_switching_to_other_face(self):
+    def test_low_light_speaker_and_projection_face_do_not_cause_target_switch(self):
         portrait = (
             Path(__file__).resolve().parent
             / "fixtures"
@@ -281,16 +327,22 @@ class OfflineSessionReplayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
             both = temporary / "both-cartoon-faces.ppm"
+            low_light = temporary / "low-light-speaker-and-projection.ppm"
             right_only = temporary / "right-cartoon-face.ppm"
             manifest = temporary / "frames.tsv"
             trace = temporary / "trace.jsonl"
-            write_cartoon_faces_scene(both, portrait, (320, 1280))
-            write_cartoon_faces_scene(right_only, portrait, (1280,))
+            write_stage_projection_scene(both, portrait, include_stage_speaker=True)
+            write_stage_projection_scene(
+                low_light, portrait, include_stage_speaker=True, speaker_brightness=0.08
+            )
+            write_stage_projection_scene(right_only, portrait, include_stage_speaker=False)
 
             rows = ["monotonic_ms\tframe_path\n"]
             for frame_index in range(210):
                 if frame_index < 70 or frame_index >= 130:
                     frame = both
+                elif frame_index < 110:
+                    frame = low_light
                 else:
                     frame = right_only
                 rows.append(f"{frame_index * 40}\t{frame}\n")
@@ -356,6 +408,17 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 if 70 <= event["frame_index"] < 130
                 if event["candidate"]["detector_confirmed_at_ms"] == 0
             ]
+            projected_face_candidates = [
+                event
+                for event in candidates
+                if 70 <= event["frame_index"] < 130
+                and event["candidate"]["detector_confirmed_at_ms"] != 0
+                and event["candidate"]["rect"][0] + event["candidate"]["rect"][2] / 2 > 0.6
+            ]
+            self.assertTrue(
+                projected_face_candidates,
+                "the face remaining on the projection screen should be visible as an unselected decoy",
+            )
             if detector_misses:
                 first_hold = detector_misses[0]
                 self.assertEqual(first_hold["snapshot"]["reason"], "target_detector_unconfirmed")
