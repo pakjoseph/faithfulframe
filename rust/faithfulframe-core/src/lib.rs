@@ -321,7 +321,11 @@ pub struct TrackingSession {
     reason: Reason,
     selected: Option<SelectedTarget>,
     latest: BTreeMap<CandidateHandle, Candidate>,
-    highest_candidate_handle: CandidateHandle,
+    /// Candidate handles stay reserved for the full session lifetime. Dlib
+    /// trackers can become publishable out of allocation order, so a numeric
+    /// high-water mark would incorrectly reject a valid lower handle that is
+    /// first observed after a higher one.
+    seen_candidate_handles: BTreeMap<CandidateHandle, ContinuityToken>,
     /// True only after a candidate opens this version's batch; a clear or
     /// lifecycle fence closes it so same-version late results stay stale.
     candidate_observation_open: bool,
@@ -374,7 +378,7 @@ impl TrackingSession {
             reason: Reason::Startup,
             selected: None,
             latest: BTreeMap::new(),
-            highest_candidate_handle: 0,
+            seen_candidate_handles: BTreeMap::new(),
             candidate_observation_open: false,
             held_crop: safe_wide,
             crop_action: CropAction::None,
@@ -617,13 +621,9 @@ impl TrackingSession {
         {
             return self.reject_command(Reason::InvalidCandidate);
         }
-        if let Some(previous) = self.latest.get(&candidate.handle) {
-            if previous.continuity != candidate.continuity {
-                return self.reject_command(Reason::InvalidCandidate);
-            }
-        } else if candidate.handle <= self.highest_candidate_handle {
-            // A bounded high-water mark rejects recycled/late handles without
-            // retaining every candidate ever seen during a long session.
+        if let Some(previous_continuity) = self.seen_candidate_handles.get(&candidate.handle)
+            && *previous_continuity != candidate.continuity
+        {
             return self.reject_command(Reason::InvalidCandidate);
         }
         if self
@@ -633,7 +633,9 @@ impl TrackingSession {
         {
             return self.reject_command(Reason::InvalidCandidate);
         }
-        self.highest_candidate_handle = self.highest_candidate_handle.max(candidate.handle);
+        self.seen_candidate_handles
+            .entry(candidate.handle)
+            .or_insert(candidate.continuity);
         self.latest.insert(candidate.handle, candidate);
         while self.latest.len() > self.config.max_candidates {
             if let Some(oldest) = self.latest.keys().next().copied() {
@@ -1385,7 +1387,7 @@ mod tests {
         reason: Reason,
         selected: Option<(CandidateHandle, ContinuityToken, Millis, Rect)>,
         latest: BTreeMap<CandidateHandle, Candidate>,
-        highest_candidate_handle: CandidateHandle,
+        seen_candidate_handles: BTreeMap<CandidateHandle, ContinuityToken>,
         candidate_observation_open: bool,
         held_crop: Rect,
         crop_action: CropAction,
@@ -1418,7 +1420,7 @@ mod tests {
                 )
             }),
             latest: session.latest.clone(),
-            highest_candidate_handle: session.highest_candidate_handle,
+            seen_candidate_handles: session.seen_candidate_handles.clone(),
             candidate_observation_open: session.candidate_observation_open,
             held_crop: session.held_crop,
             crop_action: session.crop_action,
@@ -2175,7 +2177,7 @@ mod tests {
             CommandResult::Rejected(Reason::InvalidCandidate)
         );
         assert_policy_no_op(after, before);
-        assert_eq!(session.highest_candidate_handle, 11);
+        assert_eq!(session.seen_candidate_handles.get(&10), Some(&100));
     }
 
     #[test]
@@ -2208,7 +2210,7 @@ mod tests {
             CommandResult::Rejected(Reason::InvalidCandidate)
         );
         assert_policy_no_op(after, changed);
-        assert_eq!(session.highest_candidate_handle, 10);
+        assert_eq!(session.seen_candidate_handles.get(&10), Some(&100));
     }
 
     #[test]
@@ -2222,7 +2224,20 @@ mod tests {
         assert_eq!(refreshed.command_result, CommandResult::NotACommand);
         assert_eq!(refreshed.observation_version, 3);
         assert_eq!(session.latest.get(&10).unwrap().observed_at, 4);
-        assert_eq!(session.highest_candidate_handle, 11);
+        assert_eq!(session.seen_candidate_handles.len(), 2);
+    }
+
+    #[test]
+    fn previously_unseen_lower_handle_is_accepted_after_higher_handle() {
+        let mut session = session();
+        observe(&mut session, candidate(20, 200, 1, 2), 2);
+
+        let lower = observe(&mut session, candidate(10, 100, 2, 3), 3);
+
+        assert_eq!(lower.command_result, CommandResult::NotACommand);
+        assert_eq!(lower.observation_version, 2);
+        assert_eq!(session.latest.get(&10).unwrap().continuity, 100);
+        assert_eq!(session.seen_candidate_handles.len(), 2);
     }
 
     #[test]
@@ -2750,7 +2765,7 @@ mod tests {
 
             assert_eq!(result.command_result, CommandResult::NotACommand);
             assert!(session.latest.len() <= MAX_SESSION_CANDIDATES);
-            assert_eq!(session.highest_candidate_handle, version);
+            assert_eq!(session.seen_candidate_handles.len(), version as usize);
         }
 
         let before_stale_selection = session.snapshot();
