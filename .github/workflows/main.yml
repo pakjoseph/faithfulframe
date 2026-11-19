@@ -275,6 +275,10 @@ jobs:
           grep -q '^CMAKE_OSX_DEPLOYMENT_TARGET:STRING=13.0$' build/CMakeCache.txt
           cmake --build build --config RelWithDebInfo
           ctest --test-dir build --output-on-failure
+          if [[ "${{ matrix.obs }}" == '33' && "${{ matrix.arch }}" == 'x86_64' ]]; then
+            ctest --test-dir build --repeat until-fail:5 --output-on-failure \
+              -R '^faithfulframe-offline-session-replay-geometry-integration$'
+          fi
           python3 -m unittest tests/test_verify_macos_deployment_target.py
 
       - name: Prepare package
