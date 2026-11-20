@@ -3259,8 +3259,9 @@ static uint32_t ftf_height(void *data)
 static void cb_render_frame(void *data, calldata_t *cd)
 {
 	auto *s = (struct face_tracker_filter *)data;
-	faithfulframe_preview_render_stamp render_stamp{};
 	calldata_set_bool(cd, "render_stamp_valid", false);
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	faithfulframe_preview_render_stamp render_stamp{};
 	calldata_set_int(cd, "render_stamp_source_id", 0);
 	calldata_set_int(cd, "render_stamp_session_id", 0);
 	calldata_set_int(cd, "render_stamp_status_version", 0);
@@ -3271,6 +3272,7 @@ static void cb_render_frame(void *data, calldata_t *cd)
 	calldata_set_int(cd, "render_stamp_geometry_generation", 0);
 	calldata_set_int(cd, "render_stamp_tracker_generation", 0);
 	calldata_set_int(cd, "render_stamp_candidate_preview_revision", 0);
+#endif
 
 	bool debug_notrack = false;
 	calldata_get_bool(cd, "notrack", &debug_notrack);
