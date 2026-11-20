@@ -752,7 +752,7 @@ class PluginLoadTest(obstest.OBSTest):
                     'is_local_file': True,
                     'looping': True,
                     'restart_on_activate': True,
-                    'clear_on_media_end': False,
+                    'clear_on_media_end': True,
                 },
             })
             created_inputs.append(camera_name)
@@ -934,11 +934,77 @@ class PluginLoadTest(obstest.OBSTest):
                 camera_before,
                 'Tracking must leave the original camera image unchanged',
             )
-            self._wait_for_screenshot(
+            adapter_after = self._wait_for_screenshot(
                 client,
                 adapter_name,
                 lambda image: bool(image) and image != adapter_before,
                 timeout=10.0,
+            )
+
+            # Start from a genuinely locked, detector-confirmed target, then
+            # clear the synthetic media input. This exercises camera-loss
+            # invalidation through OBS callbacks, the serialized Rust session,
+            # the dock, and the protected adapter output.
+            client.send('SetInputSettings', {
+                'inputName': camera_name,
+                'inputSettings': {'local_file': ''},
+                'overlay': True,
+            })
+            disconnected_settings = client.send('GetInputSettings', {'inputName': camera_name})
+            self.assertEqual(disconnected_settings.input_settings.get('local_file'), '')
+            self._wait_for_ui_status(
+                ui, 'Camera disconnected; restore the camera, then select the speaker again'
+            )
+            self._wait_for_ui_widget(ui, 'Tracking status: attention required')
+            self._wait_for_ui_widget(
+                ui, 'Enable automatic speaker following', enabled=False
+            )
+            disconnected_output = self._wait_for_screenshot(
+                client,
+                adapter_name,
+                lambda image: bool(image) and image not in (camera_before, adapter_after),
+                timeout=10.0,
+            )
+            self.assertNotEqual(disconnected_output, camera_before)
+
+            client.send('SetInputSettings', {
+                'inputName': camera_name,
+                'inputSettings': {'local_file': video_path},
+                'overlay': True,
+            })
+            restored_settings = client.send('GetInputSettings', {'inputName': camera_name})
+            self.assertEqual(restored_settings.input_settings.get('local_file'), video_path)
+            client.send('TriggerMediaInputAction', {
+                'inputName': camera_name,
+                'mediaAction': 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART',
+            })
+            self._wait_for_media_input_state(client, camera_name, 'OBS_MEDIA_STATE_PLAYING')
+            self._wait_for_ui_status(
+                ui, 'Camera or tracking settings changed; select the speaker again before following'
+            )
+            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+            self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
+            camera_restored = self._wait_for_screenshot(
+                client, camera_name, lambda image: image == camera_before
+            )
+            self.assertEqual(camera_restored, camera_before)
+            self.assertEqual(
+                self._wait_for_screenshot(
+                    client, adapter_name, lambda image: image == camera_restored
+                ),
+                camera_restored,
+                'A restored camera must use wide framing until the operator selects again',
+            )
+
+            self._invoke_ui_widget(
+                ui, 'accessibleName', 'Enable automatic speaker following', 'click'
+            )
+            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
+            time.sleep(0.5)
+            self._wait_for_ui_widget(
+                ui,
+                'Tracking state: Searching',
             )
 
             # A live framing-config change must invalidate the selected target
