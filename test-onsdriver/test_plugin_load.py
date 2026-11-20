@@ -998,8 +998,8 @@ class PluginLoadTest(obstest.OBSTest):
             )
 
             # A scene deactivation must invalidate a previously locked target.
-            # Returning to the same source must restore safe-wide framing and
-            # require a new operator selection before following can resume.
+            # Returning to the same source must hold its last valid framing
+            # and require a new operator selection before following resumes.
             color_kinds = [
                 kind
                 for kind in kinds_response.input_kinds
@@ -1041,18 +1041,18 @@ class PluginLoadTest(obstest.OBSTest):
             )
             self._wait_for_ui_widget(ui, 'Tracking state: Manual')
             self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
-            wide_after_scene_return = self._wait_for_screenshot(
+            held_after_scene_return = self._wait_for_screenshot(
                 client,
                 adapter_name,
                 lambda image: screenshots_match_with_render_tolerance(
-                    camera_after_scene_return, image
+                    adapter_after, image
                 ),
             )
             self.assertTrue(
                 screenshots_match_with_render_tolerance(
-                    camera_after_scene_return, wide_after_scene_return
+                    adapter_after, held_after_scene_return
                 ),
-                'Scene reactivation must restore wide framing until a fresh target selection',
+                'Scene reactivation must hold the last valid framing until a fresh target selection',
             )
             self.assertEqual(self._screenshot(client, fallback_name), fallback_image)
 
