@@ -46,9 +46,19 @@ class GitHubActionsSecurityTests(unittest.TestCase):
 
         for path in files:
             with self.subTest(workflow=path.name):
+                text = path.read_text(encoding="utf-8")
+                permission_declarations = [
+                    line for line in text.splitlines()
+                    if re.fullmatch(r"\s*permissions:\s*", line)
+                ]
+                self.assertEqual(
+                    ["permissions:"],
+                    permission_declarations,
+                    "permission scope must be declared once at workflow level",
+                )
                 self.assertEqual(
                     {"contents": "read"},
-                    top_level_permissions(path.read_text(encoding="utf-8")),
+                    top_level_permissions(text),
                     "workflows must explicitly grant only read access to repository contents",
                 )
 
