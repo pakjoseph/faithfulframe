@@ -1348,6 +1348,167 @@ class PluginLoadTest(obstest.OBSTest):
             if scene_created:
                 client.send('RemoveScene', {'sceneName': scene_name})
 
+    def test_safe_adapter_resolution_change_requires_new_target_selection(self):
+        'Invalidate camera geometry and return the safe adapter to wide framing'
+        client = self.obs.get_obsws()
+        ui = obsui.OBSUI(client)
+        suffix = uuid.uuid4().hex
+        scene_name = f'FaithfulFrame resolution change {suffix}'
+        camera_name = f'FaithfulFrame resolution camera {suffix}'
+        adapter_name = f'FaithfulFrame resolution adapter {suffix}'
+        original_scene = None
+        scene_created = False
+        created_inputs = []
+        dock_created = False
+
+        try:
+            scene_response = client.send('GetCurrentProgramScene', {})
+            original_scene = getattr(scene_response, 'scene_name', None) or getattr(
+                scene_response, 'current_program_scene_name', None
+            )
+            self.assertTrue(original_scene, 'OBS must have an active program scene')
+
+            kinds_response = client.send('GetInputKindList', {'unversioned': False})
+            color_kinds = [
+                kind
+                for kind in kinds_response.input_kinds
+                if kind == 'color_source' or kind.startswith('color_source_v')
+            ]
+            self.assertTrue(color_kinds, 'OBS color source is required for hardware-free geometry testing')
+            color_kind = max(
+                color_kinds,
+                key=lambda kind: int(kind.rsplit('_v', 1)[1]) if '_v' in kind else 0,
+            )
+
+            client.send('CreateScene', {'sceneName': scene_name})
+            scene_created = True
+            client.send('SetCurrentProgramScene', {'sceneName': scene_name})
+            client.send('CreateInput', {
+                'sceneName': scene_name,
+                'inputName': camera_name,
+                'inputKind': color_kind,
+                'inputSettings': {'color': 0xFF4A76C4, 'width': 320, 'height': 180},
+            })
+            created_inputs.append(camera_name)
+            camera_uuid = self._input_uuid(client, camera_name)
+            client.send('CreateInput', {
+                'sceneName': scene_name,
+                'inputName': adapter_name,
+                'inputKind': 'face_tracker_source',
+                'inputSettings': {
+                    'target_name': camera_name,
+                    'target_uuid': camera_uuid,
+                    'safe_tracking_enabled': True,
+                },
+            })
+            created_inputs.append(adapter_name)
+
+            camera_before = self._wait_for_screenshot(client, camera_name, bool)
+            self.assertEqual(
+                self._wait_for_screenshot(
+                    client, adapter_name, lambda image: image == camera_before
+                ),
+                camera_before,
+                'A newly bound safe adapter must start with the complete camera view',
+            )
+
+            menu_tree = ui.menu_list().get('menu', [])
+            dock_menu_path = self._find_menu_path(menu_tree, 'New FaithfulFrame Dock')
+            self.assertIsNotNone(dock_menu_path, 'FaithfulFrame dock action must be available in OBS Tools')
+            ui.request('menu-trigger', {'path': dock_menu_path})
+            dock_created = True
+            source_selector_name = 'Camera source with FaithfulFrame tracking filter'
+            self._wait_for_ui_widget(ui, source_selector_name)
+            self._invoke_ui_widget(
+                ui, 'accessibleName', source_selector_name, 'setCurrentIndex', arg1=1
+            )
+            self._wait_for_ui_status(ui, f'Tracking source: {camera_name}')
+            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+
+            # Clear the initial binding notice so the next message identifies
+            # the camera geometry lifecycle event.
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Reset framing to the full camera view',
+                'click',
+            )
+            self._wait_for_ui_status(ui, 'Wide framing; select a face to follow again')
+
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Enable automatic speaker following',
+                'click',
+            )
+            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
+
+            client.send('SetInputSettings', {
+                'inputName': camera_name,
+                'inputSettings': {'width': 640, 'height': 480},
+                'overlay': True,
+            })
+            updated_settings = client.send('GetInputSettings', {'inputName': camera_name})
+            self.assertEqual(updated_settings.input_settings.get('width'), 640)
+            self.assertEqual(updated_settings.input_settings.get('height'), 480)
+
+            self._wait_for_ui_status(
+                ui,
+                'Camera or tracking settings changed; select the speaker again before following',
+            )
+            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+            self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
+            camera_after = self._wait_for_screenshot(client, camera_name, bool)
+            adapter_after = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image == camera_after
+            )
+            self.assertEqual(
+                camera_after,
+                camera_before,
+                'Changing source geometry must not modify the original camera feed',
+            )
+            self.assertEqual(
+                adapter_after,
+                camera_after,
+                'A geometry change must return only the protected adapter to full-source framing',
+            )
+
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Enable automatic speaker following',
+                'click',
+            )
+            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
+        finally:
+            if dock_created:
+                try:
+                    self._invoke_ui_widget(ui, 'objectName', 'FTDock_ft_dock', 'removeDock')
+                except Exception:
+                    pass
+
+            try:
+                if original_scene:
+                    client.send('SetCurrentProgramScene', {'sceneName': original_scene})
+            except Exception:
+                pass
+
+            try:
+                names = self._input_names(client)
+                for input_name in reversed(created_inputs):
+                    if input_name in names:
+                        client.send('RemoveInput', {'inputName': input_name})
+            except Exception:
+                pass
+
+            if scene_created:
+                try:
+                    client.send('RemoveScene', {'sceneName': scene_name})
+                except Exception:
+                    pass
+
     def test_safe_adapter_stops_when_legacy_tracker_filter_is_added(self):
         'Fail closed if a legacy crop filter is added to the bound camera'
         client = self.obs.get_obsws()
