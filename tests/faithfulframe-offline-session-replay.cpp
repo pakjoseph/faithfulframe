@@ -466,10 +466,10 @@ int main(int argc, char **argv)
 		std::cerr << "Model file does not exist: " << args.model << '\n';
 		return 2;
 	}
-	if (!validate_model(args.model))
-		return 2;
 	const process_sample process_started = sample_process();
 	const auto process_wall_started_at = steady_clock::now();
+	if (!validate_model(args.model))
+		return 2;
 
 	std::vector<frame_spec> frames;
 	std::string error;

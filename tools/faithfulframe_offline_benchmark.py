@@ -567,8 +567,14 @@ def main(argv: list[str] | None = None) -> int:
             "measured": [
                 "dlib HOG detector execution latency from the numeric replay trace",
                 "offline replay wall time",
-                "offline replay process CPU time and CPU percentage",
-                "offline replay process resident memory, peak resident memory, and start-to-end growth",
+                (
+                    "offline replay process CPU time and CPU percentage from before HOG model validation "
+                    "through detector/tracker and Rust session teardown"
+                ),
+                (
+                    "offline replay process resident memory and start-to-end growth over that interval; "
+                    "peak resident memory is the operating-system process-lifetime high-water mark"
+                ),
                 "maximum face detections and tracking candidates per frame",
             ],
             "not_measured": [

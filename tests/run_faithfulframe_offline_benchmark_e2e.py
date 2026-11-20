@@ -75,6 +75,11 @@ def main() -> int:
         if not any("process CPU" in metric for metric in measured) or not any("resident memory" in metric for metric in measured):
             print("offline benchmark did not identify its process CPU and memory measurements", file=sys.stderr)
             return 1
+        if not any("before HOG model validation" in metric for metric in measured) or not any(
+            "process-lifetime high-water mark" in metric for metric in measured
+        ):
+            print("offline benchmark did not document its process metric boundaries", file=sys.stderr)
+            return 1
         if any("process CPU" in metric or "process" in metric and "memory" in metric for metric in report.get("metrics_scope", {}).get("not_measured", [])):
             print("offline benchmark still marks measured process metrics as unavailable", file=sys.stderr)
             return 1
