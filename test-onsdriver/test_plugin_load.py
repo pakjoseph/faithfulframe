@@ -1070,7 +1070,9 @@ class PluginLoadTest(obstest.OBSTest):
                     reselection_applied = True
                     break
                 candidates_widget = self._find_ui_widget(widgets, 'Detected face candidates')
-                if candidates_widget and candidates_widget.get('count', 0) >= 3:
+                # Only candidates visible in the current held crop are shown;
+                # one visible speaker plus the placeholder is enough here.
+                if candidates_widget and candidates_widget.get('count', 0) >= 2:
                     try:
                         self._invoke_ui_widget_from_tree(
                             ui,
