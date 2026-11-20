@@ -85,9 +85,6 @@ private:
 	OBSSource get_source();
 	obs_weak_source_t *selected_source_ref = NULL;
 	obs_weak_source_t *selected_filter_ref = NULL;
-	signal_handler_t *source_sh = NULL;
-
-	static void onStateChanged(void *data, calldata_t *cd);
 
 signals:
 	void scenesMayChanged();

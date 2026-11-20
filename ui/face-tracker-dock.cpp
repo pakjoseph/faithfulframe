@@ -1118,6 +1118,9 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 	updateState();
 
 	connect(this, &FTDock::dataChanged, this, &FTDock::updateWidget);
+	// Keep state reads and widget updates on the Qt UI thread. The 250 ms poll
+	// avoids retaining a raw dock pointer in an OBS state_changed callback that
+	// may race dock destruction.
 	statusTimer = new QTimer(this);
 	statusTimer->setInterval(250);
 	connect(statusTimer, &QTimer::timeout, this, &FTDock::updateState);
@@ -1161,10 +1164,6 @@ FTDock::~FTDock()
 	if (sourceSelectorTimer)
 		sourceSelectorTimer->stop();
 	stopPerformanceMetrics();
-	if (source_sh) {
-		signal_handler_disconnect(source_sh, "state_changed", onStateChanged, this);
-		source_sh = NULL;
-	}
 	obs_weak_source_release(selected_filter_ref);
 	selected_filter_ref = nullptr;
 	obs_weak_source_release(selected_source_ref);
@@ -1353,12 +1352,6 @@ static void set_pause_button(QPushButton *pauseButton, bool is_paused)
 	}
 }
 
-void FTDock::onStateChanged(void *data, calldata_t *)
-{
-	FTDock *dock = (FTDock *)data;
-	QMetaObject::invokeMethod(dock, "updateState", Qt::QueuedConnection);
-}
-
 void FTDock::updateState()
 {
 	OBSSource target = get_source();
@@ -1406,10 +1399,6 @@ void FTDock::updateState()
 		if (performanceSampleCount != 0) {
 			performanceRecordButton->setText("Export CSV");
 			performanceRecordButton->setAccessibleName("Export the saved aggregate performance data");
-		}
-		if (source_sh) {
-			signal_handler_disconnect(source_sh, "state_changed", onStateChanged, this);
-			source_sh = NULL;
 		}
 		return;
 	}
@@ -1790,14 +1779,6 @@ void FTDock::updateState()
 	}
 
 	set_enable_button(enableButton, !safe_mode && is_filter(targetSelector), obs_source_enabled(target));
-
-	signal_handler_t *sh = obs_source_get_signal_handler(target);
-	if (sh && sh != source_sh) {
-		if (source_sh)
-			signal_handler_disconnect(source_sh, "state_changed", onStateChanged, this);
-		source_sh = sh;
-		signal_handler_connect_ref(source_sh, "state_changed", onStateChanged, this);
-	}
 
 	in_updateState = false;
 }
