@@ -22,6 +22,7 @@ static void draw(void *param, uint32_t cx, uint32_t cy)
 
 	gs_blend_state_push();
 	gs_reset_blend_state();
+	data->preview_render_stamp = {};
 
 	if (data->src_monitor) {
 		int w_src = obs_source_get_width(data->src_monitor);
@@ -43,7 +44,12 @@ static void draw(void *param, uint32_t cx, uint32_t cy)
 		gs_set_viewport((cx - w) * 0.5, (cy - h) * 0.5, w, h);
 		gs_ortho(0.0f, w_src, -1.0f, h_src, -100.0f, 100.0f);
 
+		faithfulframe_monitor_begin_render(data->src_monitor);
 		obs_source_video_render(data->src_monitor);
+		if (faithfulframe_monitor_get_render_stamp(data->src_monitor, data->preview_render_stamp)) {
+			data->preview_render_stamp.display_width = cx;
+			data->preview_render_stamp.display_height = cy;
+		}
 
 		gs_viewport_pop();
 		gs_projection_pop();
@@ -126,10 +132,15 @@ void FTWidget::paintEvent(QPaintEvent *)
 void FTWidget::mousePressEvent(QMouseEvent *event)
 {
 	if (event->button() == Qt::LeftButton) {
+		faithfulframe_preview_render_stamp render_stamp{};
+		if (data && pthread_mutex_trylock(&data->mutex) == 0) {
+			render_stamp = data->preview_render_stamp;
+			pthread_mutex_unlock(&data->mutex);
+		}
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-		emit previewClicked(event->position());
+		emit previewClicked(event->position(), render_stamp);
 #else
-		emit previewClicked(event->localPos());
+		emit previewClicked(event->localPos(), render_stamp);
 #endif
 		event->accept();
 		return;

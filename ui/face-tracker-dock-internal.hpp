@@ -2,6 +2,7 @@
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include "util/threading.h"
+#include "faithfulframe-preview-render-stamp.hpp"
 
 struct face_tracker_dock_s
 {
@@ -10,6 +11,7 @@ struct face_tracker_dock_s
 	volatile long ref;
 
 	obs_source_t *src_monitor;
+	faithfulframe_preview_render_stamp preview_render_stamp{};
 };
 
 static inline void face_tracker_dock_addref(struct face_tracker_dock_s *data)

@@ -1,4 +1,5 @@
 #include "faithfulframe-preview-geometry.hpp"
+#include "faithfulframe-preview-render-stamp.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -21,6 +22,49 @@ static bool near(double actual, double expected)
 
 int main()
 {
+	const faithfulframe_preview_render_stamp rendered_stamp{true, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1920, 1080, false};
+	faithfulframe_preview_render_stamp current_stamp = rendered_stamp;
+	check(faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp.valid = false;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.observation_version++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.status_version++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.source_generation++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.session_generation++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.stream_generation++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.geometry_generation++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.tracker_generation++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.source_id++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.session_id++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.display_width++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.display_height++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.full_source = true;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	check(!faithfulframe_preview_render_stamp_matches(faithfulframe_preview_render_stamp{}, rendered_stamp));
+
 	check(ff_preview_observation_is_fresh(1000, 1500, 500));
 	check(!ff_preview_observation_is_fresh(1000, 1501, 500));
 	check(!ff_preview_observation_is_fresh(1501, 1500, 500));

@@ -5,6 +5,7 @@
 #include <QWidget>
 #include <QPointF>
 #include <memory>
+#include "faithfulframe-preview-render-stamp.hpp"
 
 #define SCOPE_WIDGET_N_SRC 4
 
@@ -22,7 +23,7 @@ class FTWidget : public QWidget {
 
 signals:
 	void removeDock();
-	void previewClicked(const QPointF &position);
+	void previewClicked(const QPointF &position, const faithfulframe_preview_render_stamp &renderStamp);
 
 public:
 	FTWidget(struct face_tracker_dock_s *data, QWidget *parent);

@@ -24,6 +24,7 @@
 #include "face-tracker-preset.h"
 #include "face-tracker-manager.hpp"
 #include "source_list.h"
+#include "faithfulframe-preview-render-stamp.hpp"
 #ifdef ENABLE_RUST_CORE_BRIDGE
 #include "faithfulframe-core-bridge.hpp"
 #include "faithfulframe-active-slot.hpp"
@@ -792,6 +793,9 @@ static void fts_update(void *data, obs_data_t *settings)
 
 static void cb_render_frame(void *data, calldata_t *cd);
 static void cb_render_info(void *data, calldata_t *cd);
+#ifdef ENABLE_RUST_CORE_BRIDGE
+static long long ffi_integer(uint64_t value);
+#endif
 static void cb_get_target_size(void *data, calldata_t *cd);
 static void cb_get_state(void *data, calldata_t *cd);
 static void cb_set_state(void *data, calldata_t *cd);
@@ -863,7 +867,13 @@ static void *ftf_create_internal(obs_data_t *settings, obs_source_t *context, bo
 	obs_source_update(context, settings);
 
 	proc_handler_t *ph = obs_source_get_proc_handler(context);
-	proc_handler_add(ph, "void render_frame(bool notrack)", cb_render_frame, s);
+	proc_handler_add(ph,
+			 "void render_frame(bool notrack, out bool render_stamp_valid, out int render_stamp_source_id, "
+			 "out int render_stamp_session_id, out int render_stamp_status_version, "
+			 "out int render_stamp_observation_version, out int render_stamp_source_generation, "
+			 "out int render_stamp_session_generation, out int render_stamp_stream_generation, "
+			 "out int render_stamp_geometry_generation, out int render_stamp_tracker_generation)",
+			 cb_render_frame, s);
 	proc_handler_add(ph, "void render_info(bool notrack)", cb_render_info, s);
 	proc_handler_add(ph, "void get_target_size(out int width, out int height)", cb_get_target_size, s);
 	proc_handler_add(ph, "void get_state()", cb_get_state, s);
@@ -2725,8 +2735,11 @@ static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, co
 
 static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_binding *binding,
 				   faithfulframe_source_runtime *runtime = nullptr, bool force_black = false,
-				   bool force_wide = false, bool draw_candidates = false)
+				   bool force_wide = false, bool draw_candidates = false,
+				   faithfulframe_preview_render_stamp *render_stamp = nullptr)
 {
+	if (render_stamp)
+		*render_stamp = {};
 	const uint32_t source_width = force_black ? 0
 				      : binding   ? binding->source_width.load(std::memory_order_acquire)
 						  : s->known_width;
@@ -2835,6 +2848,18 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 	if (draw_candidates && source_available && texture && has_displayed_snapshot)
 		draw_safe_candidate_bounds(binding, displayed_snapshot, displayed_snapshot_at, crop, viewport,
 					   output_width, output_height);
+	if (render_stamp && source_available && texture && has_displayed_snapshot) {
+		*render_stamp = faithfulframe_preview_render_stamp{true,
+								   displayed_snapshot.identity.source,
+								   displayed_snapshot.identity.session,
+								   displayed_snapshot.status_version,
+								   displayed_snapshot.observation_version,
+								   displayed_snapshot.generations.source,
+								   displayed_snapshot.generations.session,
+								   displayed_snapshot.generations.stream,
+								   displayed_snapshot.generations.geometry,
+								   displayed_snapshot.generations.tracker};
+	}
 	if (bound_source)
 		obs_source_release(bound_source);
 }
@@ -3176,6 +3201,17 @@ static uint32_t ftf_height(void *data)
 static void cb_render_frame(void *data, calldata_t *cd)
 {
 	auto *s = (struct face_tracker_filter *)data;
+	faithfulframe_preview_render_stamp render_stamp{};
+	calldata_set_bool(cd, "render_stamp_valid", false);
+	calldata_set_int(cd, "render_stamp_source_id", 0);
+	calldata_set_int(cd, "render_stamp_session_id", 0);
+	calldata_set_int(cd, "render_stamp_status_version", 0);
+	calldata_set_int(cd, "render_stamp_observation_version", 0);
+	calldata_set_int(cd, "render_stamp_source_generation", 0);
+	calldata_set_int(cd, "render_stamp_session_generation", 0);
+	calldata_set_int(cd, "render_stamp_stream_generation", 0);
+	calldata_set_int(cd, "render_stamp_geometry_generation", 0);
+	calldata_set_int(cd, "render_stamp_tracker_generation", 0);
 
 	bool debug_notrack = false;
 	calldata_get_bool(cd, "notrack", &debug_notrack);
@@ -3185,7 +3221,18 @@ static void cb_render_frame(void *data, calldata_t *cd)
 		auto binding_lease = s->safe_runtime->active.read();
 		const bool reconfiguring = s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire);
 		auto *binding = reconfiguring ? nullptr : binding_lease.get();
-		draw_safe_source_frame(s, binding, s->safe_runtime, reconfiguring || !binding, debug_notrack, true);
+		draw_safe_source_frame(s, binding, s->safe_runtime, reconfiguring || !binding, debug_notrack, true,
+				       &render_stamp);
+		calldata_set_bool(cd, "render_stamp_valid", render_stamp.valid);
+		calldata_set_int(cd, "render_stamp_source_id", ffi_integer(render_stamp.source_id));
+		calldata_set_int(cd, "render_stamp_session_id", ffi_integer(render_stamp.session_id));
+		calldata_set_int(cd, "render_stamp_status_version", ffi_integer(render_stamp.status_version));
+		calldata_set_int(cd, "render_stamp_observation_version", ffi_integer(render_stamp.observation_version));
+		calldata_set_int(cd, "render_stamp_source_generation", ffi_integer(render_stamp.source_generation));
+		calldata_set_int(cd, "render_stamp_session_generation", ffi_integer(render_stamp.session_generation));
+		calldata_set_int(cd, "render_stamp_stream_generation", ffi_integer(render_stamp.stream_generation));
+		calldata_set_int(cd, "render_stamp_geometry_generation", ffi_integer(render_stamp.geometry_generation));
+		calldata_set_int(cd, "render_stamp_tracker_generation", ffi_integer(render_stamp.tracker_generation));
 		return;
 	}
 #endif

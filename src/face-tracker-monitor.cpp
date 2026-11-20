@@ -8,6 +8,7 @@
 #include "plugin-macros.generated.h"
 #include "faithfulframe-source-ids.h"
 #include "helper.hpp"
+#include "faithfulframe-preview-render-stamp.hpp"
 #include "faithfulframe-source-identity.hpp"
 
 #define MAX_ERROR 2
@@ -29,12 +30,39 @@ struct face_tracker_monitor_binding
 
 struct face_tracker_monitor
 {
+	obs_source_t *owner = nullptr;
 	std::shared_ptr<const face_tracker_monitor_binding> binding;
 	std::atomic<bool> notrack{false};
 	std::atomic<bool> nosource{false};
 	std::atomic<bool> landmark_only{false};
 	std::atomic<int> n_error{0};
 };
+
+static thread_local obs_source_t *ftmon_requested_stamp_owner = nullptr;
+static thread_local faithfulframe_preview_render_stamp ftmon_current_render_stamp{};
+
+static void ftmon_publish_render_stamp(face_tracker_monitor *s, const faithfulframe_preview_render_stamp &stamp)
+{
+	if (s && s->owner == ftmon_requested_stamp_owner)
+		ftmon_current_render_stamp = stamp;
+}
+
+void faithfulframe_monitor_begin_render(obs_source_t *monitor)
+{
+	ftmon_requested_stamp_owner = monitor;
+	ftmon_current_render_stamp = {};
+}
+
+bool faithfulframe_monitor_get_render_stamp(obs_source_t *monitor, faithfulframe_preview_render_stamp &stamp)
+{
+	stamp = {};
+	if (!monitor || ftmon_requested_stamp_owner != monitor)
+		return false;
+	stamp = ftmon_current_render_stamp;
+	ftmon_requested_stamp_owner = nullptr;
+	ftmon_current_render_stamp = {};
+	return stamp.valid;
+}
 
 struct filter_uuid_search
 {
@@ -188,6 +216,7 @@ static void *ftmon_create(obs_data_t *settings, obs_source_t *context)
 	auto *s = new (std::nothrow) face_tracker_monitor();
 	if (!s)
 		return nullptr;
+	s->owner = context;
 	obs_source_update(context, settings);
 	return s;
 }
@@ -375,22 +404,39 @@ static uint32_t ftmon_get_height(void *data)
 static void ftmon_video_render(void *data, gs_effect_t *)
 {
 	auto *s = (struct face_tracker_monitor *)data;
+	faithfulframe_preview_render_stamp render_stamp{};
 	const auto binding = load_binding(s);
-	if (!binding)
+	if (!binding) {
+		ftmon_publish_render_stamp(s, render_stamp);
 		return;
+	}
 
 	obs_source_t *target = get_target(*binding);
-	if (!target)
+	if (!target) {
+		ftmon_publish_render_stamp(s, render_stamp);
 		return;
+	}
 
 	proc_handler_t *ph = obs_source_get_proc_handler(target);
 	if (!ph) {
 		obs_source_release(target);
+		ftmon_publish_render_stamp(s, render_stamp);
 		return;
 	}
 
-	CALLDATA_FIXED_DECL(cd, 128);
-	calldata_set_bool(&cd, "notrack", s->notrack.load(std::memory_order_acquire));
+	CALLDATA_FIXED_DECL(cd, 1024);
+	const bool full_source = s->notrack.load(std::memory_order_acquire);
+	calldata_set_bool(&cd, "notrack", full_source);
+	calldata_set_bool(&cd, "render_stamp_valid", false);
+	calldata_set_int(&cd, "render_stamp_source_id", 0);
+	calldata_set_int(&cd, "render_stamp_session_id", 0);
+	calldata_set_int(&cd, "render_stamp_status_version", 0);
+	calldata_set_int(&cd, "render_stamp_observation_version", 0);
+	calldata_set_int(&cd, "render_stamp_source_generation", 0);
+	calldata_set_int(&cd, "render_stamp_session_generation", 0);
+	calldata_set_int(&cd, "render_stamp_stream_generation", 0);
+	calldata_set_int(&cd, "render_stamp_geometry_generation", 0);
+	calldata_set_int(&cd, "render_stamp_tracker_generation", 0);
 
 	if (!s->nosource.load(std::memory_order_acquire)) {
 		if (!proc_handler_call(ph, "render_frame", &cd)) {
@@ -399,8 +445,39 @@ static void ftmon_video_render(void *data, gs_effect_t *)
 				obs_source_video_render(source);
 				obs_source_release(source);
 			}
+		} else {
+			calldata_get_bool(&cd, "render_stamp_valid", &render_stamp.valid);
+			long long value = 0;
+			if (render_stamp.valid &&
+			    (!calldata_get_int(&cd, "render_stamp_source_id", &value) || value <= 0))
+				render_stamp.valid = false;
+			else
+				render_stamp.source_id = static_cast<uint64_t>(value);
+			if (render_stamp.valid &&
+			    (!calldata_get_int(&cd, "render_stamp_session_id", &value) || value <= 0))
+				render_stamp.valid = false;
+			else
+				render_stamp.session_id = static_cast<uint64_t>(value);
+			auto read_version = [&](const char *name, uint64_t &destination) {
+				long long raw = 0;
+				if (!calldata_get_int(&cd, name, &raw) || raw < 0)
+					return false;
+				destination = static_cast<uint64_t>(raw);
+				return true;
+			};
+			if (render_stamp.valid &&
+			    (!read_version("render_stamp_status_version", render_stamp.status_version) ||
+			     !read_version("render_stamp_observation_version", render_stamp.observation_version) ||
+			     !read_version("render_stamp_source_generation", render_stamp.source_generation) ||
+			     !read_version("render_stamp_session_generation", render_stamp.session_generation) ||
+			     !read_version("render_stamp_stream_generation", render_stamp.stream_generation) ||
+			     !read_version("render_stamp_geometry_generation", render_stamp.geometry_generation) ||
+			     !read_version("render_stamp_tracker_generation", render_stamp.tracker_generation)))
+				render_stamp.valid = false;
 		}
 	}
+	render_stamp.full_source = full_source;
+	ftmon_publish_render_stamp(s, render_stamp);
 
 	if (s->landmark_only.load(std::memory_order_acquire))
 		calldata_set_bool(&cd, "landmark_only", true);

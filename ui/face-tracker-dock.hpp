@@ -11,6 +11,7 @@
 #include <obs.hpp>
 #include <obs-frontend-api.h>
 #include <util/platform.h>
+#include "faithfulframe-preview-render-stamp.hpp"
 
 namespace faithfulframe::performance {
 class csv_spool;
@@ -112,7 +113,7 @@ private slots:
 	void autoFollowButtonClicked();
 	void manualOverrideButtonClicked();
 	void selectCandidateButtonClicked();
-	void handlePreviewClick(const QPointF &position);
+	void handlePreviewClick(const QPointF &position, const faithfulframe_preview_render_stamp &renderStamp);
 	void performanceRecordButtonClicked();
 };
 

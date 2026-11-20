@@ -2073,7 +2073,7 @@ void FTDock::selectCandidateButtonClicked()
 #endif
 }
 
-void FTDock::handlePreviewClick(const QPointF &position)
+void FTDock::handlePreviewClick(const QPointF &position, const faithfulframe_preview_render_stamp &renderStamp)
 {
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	OBSSource target = get_source();
@@ -2091,6 +2091,25 @@ void FTDock::handlePreviewClick(const QPointF &position)
 	}
 	if (preview.state != FF_STATE_MANUAL && preview.state != FF_STATE_SEARCHING && preview.state != FF_STATE_LOST)
 		return;
+	const QSize display_size = ftWidget->size() * ftWidget->devicePixelRatioF();
+	const faithfulframe_preview_render_stamp current_stamp{
+		preview.available,
+		preview.source_id,
+		preview.session_id,
+		preview.status_version,
+		preview.observation_version,
+		preview.source_generation,
+		preview.session_generation,
+		preview.stream_generation,
+		preview.geometry_generation,
+		preview.tracker_generation,
+		static_cast<uint32_t>(std::max(0, display_size.width())),
+		static_cast<uint32_t>(std::max(0, display_size.height())),
+		notrackButton->isChecked()};
+	if (!faithfulframe_preview_render_stamp_matches(renderStamp, current_stamp)) {
+		showOperatorNotice("The preview changed. Wait for it to refresh, then click the face again.");
+		return;
+	}
 	if (notrackButton->isChecked())
 		use_full_source_preview_transform(preview);
 
