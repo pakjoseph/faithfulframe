@@ -67,8 +67,8 @@ def clear_inherited_setup_shutdown_sentinels(config_path, logsdir):
     )
 
 
-def write_synthetic_person_y4m(output_path):
-    """Create a short looping two-person OBS video from the cartoon fixture."""
+def write_synthetic_person_png(output_path):
+    """Create a two-person static OBS image from the cartoon fixture."""
     fixture_path = os.path.join(
         os.path.dirname(__file__),
         os.pardir,
@@ -110,44 +110,22 @@ def write_synthetic_person_y4m(output_path):
                 padded_pixels[destination_offset : destination_offset + 3] = rgb_pixels[
                     source_offset : source_offset + 3
                 ]
-    rgb_pixels = padded_pixels
+    image_data = b''.join(
+        b'\x00' + padded_pixels[y * width * 3 : (y + 1) * width * 3]
+        for y in range(height)
+    )
 
-    luma = bytearray(width * height)
-    chroma_width = width // 2
-    chroma_height = height // 2
-    chroma_u = bytearray(chroma_width * chroma_height)
-    chroma_v = bytearray(chroma_width * chroma_height)
+    def chunk(kind, data):
+        body = kind + data
+        checksum = zlib.crc32(body) & 0xFFFFFFFF
+        return struct.pack('>I', len(data)) + body + struct.pack('>I', checksum)
 
-    def rgb_to_yuv(red, green, blue):
-        return (
-            max(16, min(235, int(16 + 0.257 * red + 0.504 * green + 0.098 * blue + 0.5))),
-            max(16, min(240, int(128 - 0.148 * red - 0.291 * green + 0.439 * blue + 0.5))),
-            max(16, min(240, int(128 + 0.439 * red - 0.368 * green - 0.071 * blue + 0.5))),
-        )
-
-    for y in range(height):
-        for x in range(width):
-            offset = (y * width + x) * 3
-            luma[y * width + x] = rgb_to_yuv(*rgb_pixels[offset : offset + 3])[0]
-
-    for y in range(0, height, 2):
-        for x in range(0, width, 2):
-            samples = []
-            for dy in range(2):
-                for dx in range(2):
-                    offset = ((y + dy) * width + x + dx) * 3
-                    samples.append(rgb_to_yuv(*rgb_pixels[offset : offset + 3]))
-            chroma_index = (y // 2) * chroma_width + x // 2
-            chroma_u[chroma_index] = sum(sample[1] for sample in samples) // 4
-            chroma_v[chroma_index] = sum(sample[2] for sample in samples) // 4
-
+    png = b'\x89PNG\r\n\x1a\n'
+    png += chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
+    png += chunk(b'IDAT', zlib.compress(image_data))
+    png += chunk(b'IEND', b'')
     with open(output_path, 'wb') as output_file:
-        output_file.write(f'YUV4MPEG2 W{width} H{height} F30:1 Ip A1:1 C420jpeg\n'.encode('ascii'))
-        for _ in range(30):
-            output_file.write(b'FRAME\n')
-            output_file.write(luma)
-            output_file.write(chroma_u)
-            output_file.write(chroma_v)
+        output_file.write(png)
 
 
 def write_synthetic_signal_png(output_path, width=320, height=180):
@@ -719,9 +697,8 @@ class PluginLoadTest(obstest.OBSTest):
         created_inputs = []
         dock_created = False
         temporary = tempfile.TemporaryDirectory(prefix='faithfulframe-synthetic-face-')
-        # OBS may keep an asynchronous media decoder's file open until process
-        # shutdown, particularly on Windows. unittest cleanups run after
-        # tearDown, which stops OBS, so defer deleting this directory until then.
+        # Keep the source image alive until OBS exits on platforms that retain
+        # the decoded image for the lifetime of the OBS source.
         self.addCleanup(temporary.cleanup)
 
         try:
@@ -733,12 +710,12 @@ class PluginLoadTest(obstest.OBSTest):
 
             kinds_response = client.send('GetInputKindList', {'unversioned': False})
             self.assertIn(
-                'ffmpeg_source',
+                'image_source',
                 kinds_response.input_kinds,
-                'OBS Media Source is required for hardware-free face-selection testing',
+                'OBS Image Source is required for hardware-free face-selection testing',
             )
-            video_path = os.path.join(temporary.name, 'synthetic-person.y4m')
-            write_synthetic_person_y4m(video_path)
+            image_path = os.path.join(temporary.name, 'synthetic-person.png')
+            write_synthetic_person_png(image_path)
 
             client.send('CreateScene', {'sceneName': tracked_scene})
             scene_created = True
@@ -746,21 +723,13 @@ class PluginLoadTest(obstest.OBSTest):
             client.send('CreateInput', {
                 'sceneName': tracked_scene,
                 'inputName': camera_name,
-                'inputKind': 'ffmpeg_source',
+                'inputKind': 'image_source',
                 'inputSettings': {
-                    'local_file': video_path,
-                    'is_local_file': True,
-                    'looping': True,
-                    'restart_on_activate': True,
-                    'clear_on_media_end': True,
+                    'file': image_path,
+                    'unload': False,
                 },
             })
             created_inputs.append(camera_name)
-            client.send('TriggerMediaInputAction', {
-                'inputName': camera_name,
-                'mediaAction': 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART',
-            })
-            self._wait_for_media_input_state(client, camera_name, 'OBS_MEDIA_STATE_PLAYING')
             camera_uuid = self._input_uuid(client, camera_name)
             client.send('CreateInput', {
                 'sceneName': tracked_scene,
@@ -892,10 +861,6 @@ class PluginLoadTest(obstest.OBSTest):
                 widgets = ui.request('widget-list', {}).get('children', [])
                 status_widget = self._find_ui_widget(widgets, 'FaithfulFrame tracking status')
                 candidates_widget = self._find_ui_widget(widgets, 'Detected face candidates')
-                media_status = client.send('GetMediaInputStatus', {'inputName': camera_name})
-                media_state = getattr(media_status, 'media_state', None)
-                if media_state is None and isinstance(media_status, dict):
-                    media_state = media_status.get('mediaState') or media_status.get('media_state')
                 screenshot_path = None
                 try:
                     screenshot = client.send('GetSourceScreenshot', {
@@ -915,17 +880,13 @@ class PluginLoadTest(obstest.OBSTest):
                     screenshot_path = f'unavailable: {screenshot_error}'
                 self.fail(
                     f'{selection_error}\n'
-                    f'Synthetic media state: {media_state!r}\n'
                     f'Tracking status widget: {status_widget!r}\n'
                     f'Candidate list widget: {candidates_widget!r}\n'
-                    f'Synthetic media screenshot: {screenshot_path!r}'
+                    f'Synthetic source screenshot: {screenshot_path!r}'
                 )
             self._wait_for_ui_status(ui, 'Following the selected speaker', timeout=10.0)
             self._wait_for_ui_widget(ui, 'Tracking state: Locked')
             self._wait_for_ui_zoom_above(ui, 1.0, timeout=10.0)
-            self._wait_for_media_input_state(
-                client, camera_name, 'OBS_MEDIA_STATE_PLAYING', timeout=5.0
-            )
             camera_after = self._wait_for_screenshot(
                 client, camera_name, lambda image: image == camera_before, timeout=5.0
             )
@@ -942,16 +903,16 @@ class PluginLoadTest(obstest.OBSTest):
             )
 
             # Start from a genuinely locked, detector-confirmed target, then
-            # clear the synthetic media input. This exercises camera-loss
+            # clear the synthetic image input. This exercises camera-loss
             # invalidation through OBS callbacks, the serialized Rust session,
             # the dock, and the protected adapter output.
             client.send('SetInputSettings', {
                 'inputName': camera_name,
-                'inputSettings': {'local_file': ''},
+                'inputSettings': {'file': ''},
                 'overlay': True,
             })
             disconnected_settings = client.send('GetInputSettings', {'inputName': camera_name})
-            self.assertEqual(disconnected_settings.input_settings.get('local_file'), '')
+            self.assertEqual(disconnected_settings.input_settings.get('file'), '')
             self._wait_for_ui_status(
                 ui, 'Camera disconnected; restore the camera, then select the speaker again'
             )
@@ -969,16 +930,11 @@ class PluginLoadTest(obstest.OBSTest):
 
             client.send('SetInputSettings', {
                 'inputName': camera_name,
-                'inputSettings': {'local_file': video_path},
+                'inputSettings': {'file': image_path},
                 'overlay': True,
             })
             restored_settings = client.send('GetInputSettings', {'inputName': camera_name})
-            self.assertEqual(restored_settings.input_settings.get('local_file'), video_path)
-            client.send('TriggerMediaInputAction', {
-                'inputName': camera_name,
-                'mediaAction': 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART',
-            })
-            self._wait_for_media_input_state(client, camera_name, 'OBS_MEDIA_STATE_PLAYING')
+            self.assertEqual(restored_settings.input_settings.get('file'), image_path)
             self._wait_for_ui_status(
                 ui, 'Camera or tracking settings changed; select the speaker again before following'
             )
