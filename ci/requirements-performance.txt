@@ -1,2 +1,2 @@
 # Optional dependency for the read-only OBS WebSocket baseline collector.
-websocket-client==1.8.0
+websocket-client==1.9.2
