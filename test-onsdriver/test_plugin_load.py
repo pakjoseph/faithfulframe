@@ -944,12 +944,32 @@ class PluginLoadTest(obstest.OBSTest):
                 client, camera_name, lambda image: image == camera_before
             )
             self.assertEqual(camera_restored, camera_before)
+            adapter_restored = None
+            restored_output_error = None
+            try:
+                adapter_restored = self._wait_for_screenshot(
+                    client, adapter_name, lambda image: image == camera_restored, timeout=10.0
+                )
+            except AssertionError as error:
+                restored_output_error = error
+                adapter_restored = self._screenshot(client, adapter_name)
+                logsdir = os.environ.get('ONSDRIVER_LOGS', 'logs')
+                os.makedirs(logsdir, exist_ok=True)
+                for label, screenshot_data in (
+                    ('camera-restored', camera_restored),
+                    ('adapter-after-reconnect', adapter_restored),
+                    ('adapter-before-disconnect', adapter_after),
+                    ('adapter-during-disconnect', disconnected_output),
+                ):
+                    encoded = screenshot_data.partition(',')[2] or screenshot_data
+                    screenshot_path = os.path.join(logsdir, f'{label}-{suffix}.png')
+                    with open(screenshot_path, 'wb') as screenshot_file:
+                        screenshot_file.write(base64.b64decode(encoded))
             self.assertEqual(
-                self._wait_for_screenshot(
-                    client, adapter_name, lambda image: image == camera_restored
-                ),
+                adapter_restored,
                 camera_restored,
-                'A restored camera must use wide framing until the operator selects again',
+                'A restored camera must use wide framing until the operator selects again; '
+                f'previous screenshot wait: {restored_output_error!s}',
             )
 
             self._invoke_ui_widget(
