@@ -42,16 +42,18 @@ jobs:
         shell: bash
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
 
       - name: Install Rust 1.98.0
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6 # 1.98.0
+        with:
+          toolchain: 1.98.0
 
       - name: Restore ccache
         id: ccache-cache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ github.workspace }}/.ccache
           key: linux-obs${{ matrix.obs }}-${{ matrix.ubuntu }}-ccache
@@ -69,7 +71,7 @@ jobs:
 
       - name: Download obs-studio development environment
         id: obsdeps
-        uses: norihiro/obs-studio-devel-action@v3
+        uses: norihiro/obs-studio-devel-action@02a425c434e39ae068e0bb830bc21bf68273fda3 # v3
         with:
           obs: ${{ matrix.obs }}
           verbose: true
@@ -108,14 +110,14 @@ jobs:
           echo "FILE_NAME=$(find $PWD -name '*.deb' | head -n 1)" >> $GITHUB_ENV
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.artifactName }}-linux-obs${{ matrix.obs }}-${{ matrix.ubuntu }}
           path: '${{ env.FILE_NAME }}'
 
       - name: 'Setup with onsdriver'
         id: onsdriver_setup
-        uses: noris-plugins-for-obs/onsdriver@v0
+        uses: noris-plugins-for-obs/onsdriver@63e771126ada7a685538e146b87dcfae220384de # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -131,7 +133,7 @@ jobs:
 
       - name: Retry setup with onsdriver
         if: steps.onsdriver_setup.outcome == 'failure'
-        uses: noris-plugins-for-obs/onsdriver@v0
+        uses: noris-plugins-for-obs/onsdriver@63e771126ada7a685538e146b87dcfae220384de # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -147,7 +149,7 @@ jobs:
         if: always()
         timeout-minutes: 3
         continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-${{ env.artifactName }}-linux-obs${{ matrix.obs }}-${{ matrix.ubuntu }}
           path: |
@@ -180,12 +182,14 @@ jobs:
         shell: bash
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
 
       - name: Install Rust 1.98.0
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6 # 1.98.0
+        with:
+          toolchain: 1.98.0
 
       - name: Setup Environment
         id: setup
@@ -241,7 +245,7 @@ jobs:
 
       - name: Restore ccache
         id: ccache-cache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ github.workspace }}/.ccache
           key: macos-obs${{ matrix.obs }}-${{ matrix.arch }}-ccache
@@ -275,7 +279,7 @@ jobs:
 
       - name: Download obs-studio development environment
         id: obsdeps
-        uses: norihiro/obs-studio-devel-action@v3
+        uses: norihiro/obs-studio-devel-action@02a425c434e39ae068e0bb830bc21bf68273fda3 # v3
         with:
           arch: ${{ matrix.arch }}
           obs: ${{ matrix.obs }}
@@ -416,14 +420,14 @@ jobs:
 
       - name: Notarize
         if: ${{ startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' && steps.setup.outputs.haveNotarizationUser == 'true' }}
-        uses: norihiro/macos-notarize-action@v1
+        uses: norihiro/macos-notarize-action@188aebd8f795d9e1ce8d48d4a54f5ce6d2c9864c # v1
         with:
           path: package/*
           keychainProfile: AC_PASSWORD
           verbose: true
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.artifactName }}-macos-obs${{ matrix.obs }}-${{ matrix.arch }}
           path: package/*
@@ -438,7 +442,7 @@ jobs:
       - name: 'Setup with onsdriver'
         if: ${{ matrix.obs == 33 && matrix.arch == 'arm64' }}
         timeout-minutes: 15
-        uses: noris-plugins-for-obs/onsdriver@v0
+        uses: noris-plugins-for-obs/onsdriver@63e771126ada7a685538e146b87dcfae220384de # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOME: ${{ runner.temp }}/faithfulframe-obs-home
@@ -464,7 +468,7 @@ jobs:
         if: ${{ always() && matrix.obs == 33 && matrix.arch == 'arm64' }}
         timeout-minutes: 3
         continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-${{ env.artifactName }}-macos-obs${{ matrix.obs }}-${{ matrix.arch }}
           path: logs/*
@@ -479,7 +483,7 @@ jobs:
       - name: Setup Apple Silicon OBS from signed release package
         if: ${{ startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' && matrix.obs == 33 && matrix.arch == 'arm64' }}
         timeout-minutes: 15
-        uses: noris-plugins-for-obs/onsdriver@v0
+        uses: noris-plugins-for-obs/onsdriver@63e771126ada7a685538e146b87dcfae220384de # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOME: ${{ runner.temp }}/faithfulframe-obs-signed-home
@@ -502,14 +506,14 @@ jobs:
         if: ${{ always() && startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' && matrix.obs == 33 && matrix.arch == 'arm64' }}
         timeout-minutes: 3
         continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-${{ env.artifactName }}-macos-obs${{ matrix.obs }}-${{ matrix.arch }}-signed-package
           path: logs-signed-package/*
 
       - name: 'Setup with onsdriver from signed release package'
         if: ${{ startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' && !(matrix.obs == 33 && matrix.arch == 'arm64') }}
-        uses: noris-plugins-for-obs/onsdriver@v0
+        uses: noris-plugins-for-obs/onsdriver@63e771126ada7a685538e146b87dcfae220384de # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -527,7 +531,7 @@ jobs:
         if: ${{ always() && startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' && !(matrix.obs == 33 && matrix.arch == 'arm64') }}
         timeout-minutes: 3
         continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-${{ env.artifactName }}-macos-obs${{ matrix.obs }}-${{ matrix.arch }}
           path: |
@@ -563,7 +567,7 @@ jobs:
         shell: pwsh
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
 
@@ -634,11 +638,13 @@ jobs:
           'hasCertificate=true' >> $env:GITHUB_OUTPUT
 
       - name: Install Rust 1.98.0
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6 # 1.98.0
+        with:
+          toolchain: 1.98.0
 
       - name: Download obs-studio
         id: obsdeps
-        uses: norihiro/obs-studio-devel-action@v3
+        uses: norihiro/obs-studio-devel-action@02a425c434e39ae068e0bb830bc21bf68273fda3 # v3
         with:
           obs: ${{ matrix.obs }}
           arch: ${{ matrix.arch }}
@@ -718,7 +724,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Packaged Authenticode verification failed with exit code $LASTEXITCODE" }
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.artifactName }}-windows-obs${{ matrix.obs }}-${{ matrix.arch }}
           path: package/*
@@ -728,7 +734,7 @@ jobs:
         # onsdriver bootstrap cannot install its helper plugin under ProgramData
         # on the Windows ARM runner. Keep OBS runtime validation on production x64.
         if: ${{ matrix.arch == 'x64' }}
-        uses: noris-plugins-for-obs/onsdriver@v0
+        uses: noris-plugins-for-obs/onsdriver@63e771126ada7a685538e146b87dcfae220384de # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -747,7 +753,7 @@ jobs:
         if: ${{ always() && matrix.arch == 'x64' }}
         timeout-minutes: 3
         continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-${{ env.artifactName }}-windows-obs${{ matrix.obs }}-${{ matrix.arch }}
           path: |
@@ -768,11 +774,12 @@ jobs:
         os: [ubuntu-24.04, macos-26, windows-2022]
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Rust 1.98.0
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6 # 1.98.0
         with:
+          toolchain: 1.98.0
           components: rustfmt, clippy
 
       - name: Test performance recording tools
@@ -807,16 +814,18 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
 
       - name: Install Rust 1.98.0
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6 # 1.98.0
+        with:
+          toolchain: 1.98.0
 
       - name: Download OBS development environment
         id: obsdeps
-        uses: norihiro/obs-studio-devel-action@v3
+        uses: norihiro/obs-studio-devel-action@02a425c434e39ae068e0bb830bc21bf68273fda3 # v3
         with:
           obs: 31
           verbose: true
@@ -864,16 +873,18 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
 
       - name: Install Rust 1.98.0
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6 # 1.98.0
+        with:
+          toolchain: 1.98.0
 
       - name: Download OBS development environment
         id: obsdeps
-        uses: norihiro/obs-studio-devel-action@v3
+        uses: norihiro/obs-studio-devel-action@02a425c434e39ae068e0bb830bc21bf68273fda3 # v3
         with:
           obs: 31
           verbose: true
