@@ -20,6 +20,98 @@ from onsdriver import obstest, obsui
 PLUGIN_NAME = 'face-tracker'
 
 
+def decode_obs_screenshot(image_data):
+    """Decode OBS's non-interlaced 8-bit RGB/RGBA PNG screenshots."""
+    encoded = image_data.partition(',')[2] or image_data
+    png = base64.b64decode(encoded)
+    if not png.startswith(b'\x89PNG\r\n\x1a\n'):
+        raise ValueError('OBS screenshot is not a PNG image')
+
+    width = height = bit_depth = color_type = interlace = None
+    compressed = bytearray()
+    offset = 8
+    while offset + 12 <= len(png):
+        length = struct.unpack_from('>I', png, offset)[0]
+        chunk_type = png[offset + 4 : offset + 8]
+        chunk_data = png[offset + 8 : offset + 8 + length]
+        if len(chunk_data) != length:
+            raise ValueError('truncated PNG chunk')
+        if chunk_type == b'IHDR':
+            width, height, bit_depth, color_type, _, _, interlace = struct.unpack(
+                '>IIBBBBB', chunk_data
+            )
+        elif chunk_type == b'IDAT':
+            compressed.extend(chunk_data)
+        elif chunk_type == b'IEND':
+            break
+        offset += length + 12
+
+    if bit_depth != 8 or color_type not in (2, 6) or interlace != 0:
+        raise ValueError('unsupported OBS screenshot PNG format')
+    channels = 3 if color_type == 2 else 4
+    stride = width * channels
+    raw = zlib.decompress(compressed)
+    if len(raw) != height * (stride + 1):
+        raise ValueError('invalid PNG scanline data')
+
+    pixels = bytearray(height * stride)
+    source_offset = 0
+    for row in range(height):
+        filter_type = raw[source_offset]
+        source_offset += 1
+        row_offset = row * stride
+        for column in range(stride):
+            value = raw[source_offset + column]
+            left = pixels[row_offset + column - channels] if column >= channels else 0
+            above = pixels[row_offset - stride + column] if row else 0
+            upper_left = (
+                pixels[row_offset - stride + column - channels]
+                if row and column >= channels
+                else 0
+            )
+            if filter_type == 1:
+                value += left
+            elif filter_type == 2:
+                value += above
+            elif filter_type == 3:
+                value += (left + above) // 2
+            elif filter_type == 4:
+                predictor = left + above - upper_left
+                distances = (
+                    abs(predictor - left),
+                    abs(predictor - above),
+                    abs(predictor - upper_left),
+                )
+                value += (left, above, upper_left)[distances.index(min(distances))]
+            elif filter_type != 0:
+                raise ValueError(f'unsupported PNG filter {filter_type}')
+            pixels[row_offset + column] = value & 0xFF
+        source_offset += stride
+
+    if channels == 4:
+        return width, height, bytes(pixels)
+    rgba = bytearray(width * height * 4)
+    for index in range(width * height):
+        rgba[index * 4 : index * 4 + 3] = pixels[index * 3 : index * 3 + 3]
+        rgba[index * 4 + 3] = 255
+    return width, height, bytes(rgba)
+
+
+def screenshots_match_with_render_tolerance(expected, actual):
+    """Allow tiny GPU color-rounding differences, while rejecting a different crop."""
+    try:
+        expected_width, expected_height, expected_pixels = decode_obs_screenshot(expected)
+        actual_width, actual_height, actual_pixels = decode_obs_screenshot(actual)
+    except (ValueError, zlib.error, struct.error):
+        return False
+    if (expected_width, expected_height) != (actual_width, actual_height):
+        return False
+    differences = [abs(a - b) for a, b in zip(expected_pixels, actual_pixels)]
+    mean_difference = sum(differences) / len(differences)
+    maximum_difference = max(differences, default=0)
+    return mean_difference <= 1.0 and maximum_difference <= 8
+
+
 def firsttime_setup_was_force_stopped(logsdir):
     firsttime_logs = glob.glob(os.path.join(logsdir, 'firsttime-*.txt'))
     for logfile in firsttime_logs:
@@ -948,7 +1040,10 @@ class PluginLoadTest(obstest.OBSTest):
             restored_output_error = None
             try:
                 adapter_restored = self._wait_for_screenshot(
-                    client, adapter_name, lambda image: image == camera_restored, timeout=10.0
+                    client,
+                    adapter_name,
+                    lambda image: screenshots_match_with_render_tolerance(camera_restored, image),
+                    timeout=10.0,
                 )
             except AssertionError as error:
                 restored_output_error = error
@@ -965,9 +1060,8 @@ class PluginLoadTest(obstest.OBSTest):
                     screenshot_path = os.path.join(logsdir, f'{label}-{suffix}.png')
                     with open(screenshot_path, 'wb') as screenshot_file:
                         screenshot_file.write(base64.b64decode(encoded))
-            self.assertEqual(
-                adapter_restored,
-                camera_restored,
+            self.assertTrue(
+                screenshots_match_with_render_tolerance(camera_restored, adapter_restored),
                 'A restored camera must use wide framing until the operator selects again; '
                 f'previous screenshot wait: {restored_output_error!s}',
             )
