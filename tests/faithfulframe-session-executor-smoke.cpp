@@ -757,6 +757,58 @@ bool retirement_handoffs_are_concurrent(const ff_session_config &config, const f
 	return both_reaped;
 }
 
+bool retirement_queue_reaps_many_sessions_concurrently(const ff_session_config &config,
+						       const ff_generations &generations)
+{
+	constexpr size_t session_count = 16;
+	std::array<std::shared_ptr<faithfulframe_session_executor>, session_count> executors{};
+	std::array<std::weak_ptr<faithfulframe_session_executor>, session_count> weak_executors{};
+	std::array<std::atomic<bool>, session_count> accepted{};
+	for (size_t i = 0; i < session_count; ++i) {
+		executors[i] = std::make_shared<faithfulframe_session_executor>(config, ff_identity{1000 + i, 2000 + i},
+										generations);
+		ff_snapshot snapshot{};
+		if (!await_snapshot(
+			    *executors[i], [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
+			    snapshot))
+			return false;
+		executors[i]->request_shutdown();
+		weak_executors[i] = executors[i];
+	}
+
+	std::barrier start(static_cast<std::ptrdiff_t>(session_count + 1));
+	std::array<std::thread, session_count> handoffs{};
+	for (size_t i = 0; i < session_count; ++i) {
+		handoffs[i] = std::thread([&, i] {
+			start.arrive_and_wait();
+			accepted[i].store(faithfulframe_retire_session_executor(executors[i]),
+					  std::memory_order_release);
+		});
+	}
+	start.arrive_and_wait();
+	for (auto &handoff : handoffs)
+		handoff.join();
+	for (size_t i = 0; i < session_count; ++i) {
+		if (!accepted[i].load(std::memory_order_acquire) || executors[i])
+			return false;
+	}
+
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	auto all_reaped = [&] {
+		for (const auto &executor : weak_executors) {
+			if (!executor.expired())
+				return false;
+		}
+		return true;
+	};
+	while (!all_reaped() && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::yield();
+	if (!all_reaped())
+		std::fprintf(stderr, "concurrent retirement stress: not all %zu executors were reaped\n",
+			     session_count);
+	return all_reaped();
+}
+
 bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config, const ff_generations &generations)
 {
 	auto paused_executor =
@@ -1483,6 +1535,9 @@ int run_smoke()
 	trace_session_smoke_checkpoint("concurrent retirement handoffs");
 	if (!retirement_handoffs_are_concurrent(config, ff_generations{1, 1, 1, 1, 1}))
 		return 110;
+	trace_session_smoke_checkpoint("many-session retirement stress");
+	if (!retirement_queue_reaps_many_sessions_concurrently(config, ff_generations{1, 1, 1, 1, 1}))
+		return 130;
 	trace_session_smoke_checkpoint("reaper queue lock handoff");
 	if (!reaper_handoff_does_not_wait_for_queue_lock(config, ff_generations{1, 1, 1, 1, 1}))
 		return 112;
