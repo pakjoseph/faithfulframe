@@ -47,7 +47,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust 1.98.0
-        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6 # 1.98.0
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # supports toolchain input
         with:
           toolchain: 1.98.0
 
@@ -187,7 +187,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust 1.98.0
-        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6 # 1.98.0
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # supports toolchain input
         with:
           toolchain: 1.98.0
 
@@ -638,7 +638,7 @@ jobs:
           'hasCertificate=true' >> $env:GITHUB_OUTPUT
 
       - name: Install Rust 1.98.0
-        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6 # 1.98.0
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # supports toolchain input
         with:
           toolchain: 1.98.0
 
@@ -777,7 +777,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Rust 1.98.0
-        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6 # 1.98.0
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # supports toolchain input
         with:
           toolchain: 1.98.0
           components: rustfmt, clippy
@@ -787,6 +787,9 @@ jobs:
           python -m unittest discover -s tests -p 'test_analyze_performance_logs.py'
           python -m unittest discover -s tests -p 'test_collect_obs_baseline.py'
           python -m unittest discover -s tests -p 'test_faithfulframe_offline_benchmark.py'
+
+      - name: Test GitHub Actions security policy
+        run: python -m unittest discover -s tests -p 'test_github_actions_security.py'
 
       - name: Verify Rust production dependency allowlist
         run: |
@@ -819,7 +822,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust 1.98.0
-        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6 # 1.98.0
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # supports toolchain input
         with:
           toolchain: 1.98.0
 
@@ -878,7 +881,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust 1.98.0
-        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6 # 1.98.0
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # supports toolchain input
         with:
           toolchain: 1.98.0
 
