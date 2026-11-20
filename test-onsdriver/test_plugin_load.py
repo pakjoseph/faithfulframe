@@ -750,6 +750,9 @@ class PluginLoadTest(obstest.OBSTest):
                     'target_name': camera_name,
                     'target_uuid': camera_uuid,
                     'safe_tracking_enabled': True,
+                    # Leave enough recovery time for the dock controls to be
+                    # polled while this test verifies explicit rearming.
+                    'safe_tracking_loss_grace_seconds': 15.0,
                     # Use a non-default framing target for this synthetic speaker workflow.
                     'safe_tracking_target_coverage_percent': 60.0,
                     # The synthetic source is already 640x360; keep the same
@@ -955,9 +958,7 @@ class PluginLoadTest(obstest.OBSTest):
                 'Enable automatic speaker following',
                 'click',
             )
-            self._wait_for_ui_status(
-                ui, 'No speaker selected; choose a visible face to start following'
-            )
+            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
             self._wait_for_ui_widget(ui, 'Tracking state: Searching')
             time.sleep(0.5)
             self._wait_for_ui_widget(
@@ -1076,6 +1077,16 @@ class PluginLoadTest(obstest.OBSTest):
             )
             self._wait_for_ui_status(ui, f'Tracking source: {camera_name}')
             self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
+
+            # The initial source-binding notice is valid until an operator
+            # acts. Acknowledge it before isolating scene-switch messaging.
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Reset framing to the full camera view',
+                'click',
+            )
+            self._wait_for_ui_status(ui, 'Wide framing; select a face to follow again')
 
             client.send('CreateScene', {'sceneName': fallback_scene})
             created_scenes.append(fallback_scene)
