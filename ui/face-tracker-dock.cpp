@@ -2158,6 +2158,7 @@ void FTDock::handlePreviewClick(const QPointF &position, const faithfulframe_pre
 		showOperatorNotice(failure);
 #else
 	UNUSED_PARAMETER(position);
+	UNUSED_PARAMETER(renderStamp);
 #endif
 }
 
