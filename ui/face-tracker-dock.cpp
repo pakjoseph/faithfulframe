@@ -2112,8 +2112,9 @@ void FTDock::handlePreviewClick(const QPointF &position, const faithfulframe_pre
 	current_stamp.display_height = static_cast<uint32_t>(std::max(0, display_size.height()));
 	current_stamp.output_width = preview.output_width;
 	current_stamp.output_height = preview.output_height;
-	current_stamp.crop = preview.crop;
-	current_stamp.viewport = preview.viewport;
+	current_stamp.crop = {preview.crop.x, preview.crop.y, preview.crop.width, preview.crop.height};
+	current_stamp.viewport = {preview.viewport.x, preview.viewport.y, preview.viewport.width,
+				  preview.viewport.height};
 	current_stamp.full_source = notrackButton->isChecked();
 	if (!faithfulframe_preview_render_stamp_matches(renderStamp, current_stamp)) {
 		showOperatorNotice("The preview changed. Wait for it to refresh, then click the face again.");

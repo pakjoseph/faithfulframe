@@ -22,19 +22,13 @@ static bool near(double actual, double expected)
 
 int main()
 {
-	ff_candidate prior_candidates[2]{};
-	prior_candidates[0].handle = 10;
-	prior_candidates[0].rect = ff_rect{0.2f, 0.3f, 0.1f, 0.2f};
-	prior_candidates[1].handle = 11;
-	prior_candidates[1].rect = ff_rect{0.7f, 0.3f, 0.1f, 0.2f};
-	ff_candidate current_candidates[2]{};
+	faithfulframe_preview_candidate_geometry prior_candidates[2]{};
+	prior_candidates[0] = {10, {0.2f, 0.3f, 0.1f, 0.2f}};
+	prior_candidates[1] = {11, {0.7f, 0.3f, 0.1f, 0.2f}};
+	faithfulframe_preview_candidate_geometry current_candidates[2]{};
 	current_candidates[0] = prior_candidates[0];
 	current_candidates[1] = prior_candidates[1];
 	check(faithfulframe_preview_candidate_geometry_matches(prior_candidates, 2, current_candidates, 2));
-	current_candidates[0].observed_at_ms++;
-	current_candidates[0].expires_at_ms++;
-	check(faithfulframe_preview_candidate_geometry_matches(prior_candidates, 2, current_candidates, 2));
-	current_candidates[0] = prior_candidates[0];
 	current_candidates[0].rect.x += 0.01f;
 	check(!faithfulframe_preview_candidate_geometry_matches(prior_candidates, 2, current_candidates, 2));
 	current_candidates[0] = prior_candidates[0];
@@ -63,8 +57,8 @@ int main()
 	rendered_stamp.display_height = 1080;
 	rendered_stamp.output_width = 1280;
 	rendered_stamp.output_height = 720;
-	rendered_stamp.crop = ff_rect{0.25f, 0.25f, 0.5f, 0.5f};
-	rendered_stamp.viewport = ff_rect{0.0f, 0.125f, 1.0f, 0.75f};
+	rendered_stamp.crop = {0.25f, 0.25f, 0.5f, 0.5f};
+	rendered_stamp.viewport = {0.0f, 0.125f, 1.0f, 0.75f};
 	faithfulframe_preview_render_stamp current_stamp = rendered_stamp;
 	check(faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
 	current_stamp.valid = false;

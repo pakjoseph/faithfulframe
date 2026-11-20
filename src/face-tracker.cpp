@@ -302,8 +302,27 @@ static uint64_t advance_preview_revision(faithfulframe_source_binding *binding)
 static bool preview_hit_geometry_changed(const faithfulframe_source_binding::preview_payload &current,
 					 const ff_candidate *candidates, size_t count)
 {
-	return !faithfulframe_preview_candidate_geometry_matches(current.candidates.data(), current.candidate_count,
-								 candidates, count);
+	if (current.candidate_count > current.candidates.size() || count > current.candidates.size() ||
+	    (count && !candidates))
+		return true;
+	std::array<faithfulframe_preview_candidate_geometry, faithfulframe_session_executor::max_candidates>
+		previous_geometry{};
+	std::array<faithfulframe_preview_candidate_geometry, faithfulframe_session_executor::max_candidates>
+		current_geometry{};
+	for (size_t i = 0; i < current.candidate_count; ++i) {
+		const ff_candidate &candidate = current.candidates[i];
+		previous_geometry[i] = {candidate.handle,
+					{candidate.rect.x, candidate.rect.y, candidate.rect.width,
+					 candidate.rect.height}};
+	}
+	for (size_t i = 0; i < count; ++i) {
+		const ff_candidate &candidate = candidates[i];
+		current_geometry[i] = {candidate.handle,
+				       {candidate.rect.x, candidate.rect.y, candidate.rect.width,
+					candidate.rect.height}};
+	}
+	return !faithfulframe_preview_candidate_geometry_matches(previous_geometry.data(), current.candidate_count,
+								 current_geometry.data(), count);
 }
 
 // Retired bindings are first released on OBS's destroy-task executor, where
@@ -2893,8 +2912,8 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 		render_stamp->candidate_preview_revision = candidate_preview_revision;
 		render_stamp->output_width = output_width;
 		render_stamp->output_height = output_height;
-		render_stamp->crop = crop;
-		render_stamp->viewport = viewport;
+		render_stamp->crop = {crop.x, crop.y, crop.width, crop.height};
+		render_stamp->viewport = {viewport.x, viewport.y, viewport.width, viewport.height};
 	}
 	if (bound_source)
 		obs_source_release(bound_source);

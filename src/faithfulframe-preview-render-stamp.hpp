@@ -3,7 +3,19 @@
 #include <cstdint>
 #include <cstddef>
 
-#include "faithfulframe_ffi.h"
+struct faithfulframe_preview_rect
+{
+	float x = 0.0f;
+	float y = 0.0f;
+	float width = 1.0f;
+	float height = 1.0f;
+};
+
+struct faithfulframe_preview_candidate_geometry
+{
+	uint64_t handle = 0;
+	faithfulframe_preview_rect rect{};
+};
 
 /// Version of the immutable tracking snapshot used for the most recently
 /// rendered monitor frame. Mouse selection must use this exact version.
@@ -24,15 +36,17 @@ struct faithfulframe_preview_render_stamp
 	uint32_t display_height = 0;
 	uint32_t output_width = 0;
 	uint32_t output_height = 0;
-	ff_rect crop{0.0f, 0.0f, 1.0f, 1.0f};
-	ff_rect viewport{0.0f, 0.0f, 1.0f, 1.0f};
+	faithfulframe_preview_rect crop{};
+	faithfulframe_preview_rect viewport{};
 	bool full_source = false;
 };
 
 /// Compare the ordered hitboxes that were offered for the displayed preview.
 /// Expiry and tracker timestamps may advance without changing mouse geometry.
-inline bool faithfulframe_preview_candidate_geometry_matches(const ff_candidate *previous, std::size_t previous_count,
-							     const ff_candidate *current, std::size_t current_count)
+inline bool faithfulframe_preview_candidate_geometry_matches(const faithfulframe_preview_candidate_geometry *previous,
+							     std::size_t previous_count,
+							     const faithfulframe_preview_candidate_geometry *current,
+							     std::size_t current_count)
 {
 	if (previous_count != current_count || (previous_count && !previous) || (current_count && !current))
 		return false;
