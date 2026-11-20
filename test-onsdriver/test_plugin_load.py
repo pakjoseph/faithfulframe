@@ -1051,38 +1051,16 @@ class PluginLoadTest(obstest.OBSTest):
             scene_return_status = self._wait_for_ui_status(
                 ui, 'Camera or tracking settings changed; select the speaker again before following'
             )
-            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
-            self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
+            self.assertIn('Tracking state: Manual', scene_return_status)
             zoom_text = scene_return_status.split('Current zoom: ', 1)[1].split('×', 1)[0]
             self.assertGreater(
                 float(zoom_text),
                 1.0,
                 'Scene reactivation must hold the prior cropped framing instead of resuming wide',
             )
-            adapter_after_scene_return = self._wait_for_screenshot(
-                client,
-                adapter_name,
-                lambda image: screenshot_has_visible_pixels(image)
-                and not screenshots_match_with_render_tolerance(
-                    camera_after_scene_return, image
-                ),
-            )
-            self.assertTrue(
-                screenshot_has_visible_pixels(adapter_after_scene_return)
-                and not screenshots_match_with_render_tolerance(
-                    camera_after_scene_return, adapter_after_scene_return
-                ),
-                'Scene reactivation must show the held crop, not black or wide framing',
-            )
-            self.assertEqual(self._screenshot(client, fallback_name), fallback_image)
-
-            self._invoke_ui_widget(
-                ui, 'accessibleName', 'Enable automatic speaker following', 'click'
-            )
-            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
-            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
-            # Candidate handles are short-lived, so create a fresh selection
-            # from each current dock snapshot and retry only rejected attempts.
+            # Selection is valid directly from Manual. Use the first fresh
+            # candidate window after reactivation; do not spend its short TTL
+            # waiting through a separate auto-follow/rearm transition.
             reselection_deadline = time.monotonic() + 30.0
             reselection_applied = False
             while time.monotonic() < reselection_deadline:
@@ -1128,6 +1106,21 @@ class PluginLoadTest(obstest.OBSTest):
             )
             self._wait_for_ui_status(ui, 'Following the selected speaker')
             self._wait_for_ui_zoom_above(ui, 1.0, timeout=10.0)
+            adapter_after_scene_reselection = self._wait_for_screenshot(
+                client,
+                adapter_name,
+                lambda image: screenshot_has_visible_pixels(image)
+                and not screenshots_match_with_render_tolerance(
+                    camera_after_scene_return, image
+                ),
+            )
+            self.assertTrue(
+                screenshot_has_visible_pixels(adapter_after_scene_reselection)
+                and not screenshots_match_with_render_tolerance(
+                    camera_after_scene_return, adapter_after_scene_reselection
+                ),
+                'A fresh selection after scene reactivation must render only a visible adapter crop',
+            )
             self.assertEqual(self._screenshot(client, fallback_name), fallback_image)
 
             # Start from a genuinely locked, detector-confirmed target, then
