@@ -7,10 +7,12 @@ import glob
 import os
 import shutil
 import subprocess
+import struct
 import tempfile
 import time
 import uuid
 import unittest
+import zlib
 from types import SimpleNamespace
 from unittest.mock import Mock
 from onsdriver import obstest, obsui
@@ -146,6 +148,24 @@ def write_synthetic_person_y4m(output_path):
             output_file.write(luma)
             output_file.write(chroma_u)
             output_file.write(chroma_v)
+
+
+def write_synthetic_signal_png(output_path, width=320, height=180):
+    """Write a small solid-color PNG for deterministic OBS signal tests."""
+
+    def chunk(kind, data):
+        body = kind + data
+        checksum = zlib.crc32(body) & 0xFFFFFFFF
+        return struct.pack('>I', len(data)) + body + struct.pack('>I', checksum)
+
+    row = bytes((0x4A, 0x76, 0xC4)) * width
+    image_data = b''.join(b'\x00' + row for _ in range(height))
+    png = b'\x89PNG\r\n\x1a\n'
+    png += chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
+    png += chunk(b'IDAT', zlib.compress(image_data))
+    png += chunk(b'IEND', b'')
+    with open(output_path, 'wb') as output_file:
+        output_file.write(png)
 
 
 class SetupShutdownSentinelTest(unittest.TestCase):
@@ -1474,6 +1494,185 @@ class PluginLoadTest(obstest.OBSTest):
                 adapter_after,
                 camera_after,
                 'A geometry change must return only the protected adapter to full-source framing',
+            )
+
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Enable automatic speaker following',
+                'click',
+            )
+            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
+        finally:
+            if dock_created:
+                try:
+                    self._invoke_ui_widget(ui, 'objectName', 'FTDock_ft_dock', 'removeDock')
+                except Exception:
+                    pass
+
+            try:
+                if original_scene:
+                    client.send('SetCurrentProgramScene', {'sceneName': original_scene})
+            except Exception:
+                pass
+
+            try:
+                names = self._input_names(client)
+                for input_name in reversed(created_inputs):
+                    if input_name in names:
+                        client.send('RemoveInput', {'inputName': input_name})
+            except Exception:
+                pass
+
+            if scene_created:
+                try:
+                    client.send('RemoveScene', {'sceneName': scene_name})
+                except Exception:
+                    pass
+
+    def test_safe_adapter_requires_reselection_after_camera_signal_loss(self):
+        'Hold safely while the bound camera signal is lost and restored'
+        client = self.obs.get_obsws()
+        ui = obsui.OBSUI(client)
+        suffix = uuid.uuid4().hex
+        scene_name = f'FaithfulFrame signal recovery {suffix}'
+        camera_name = f'FaithfulFrame signal camera {suffix}'
+        adapter_name = f'FaithfulFrame signal adapter {suffix}'
+        original_scene = None
+        scene_created = False
+        created_inputs = []
+        dock_created = False
+        temporary = tempfile.TemporaryDirectory(prefix='faithfulframe-signal-')
+        # Keep the image alive until OBS exits even if a Windows runner still
+        # has the source decoder open during unittest cleanup.
+        self.addCleanup(temporary.cleanup)
+        image_path = os.path.join(temporary.name, 'camera-signal.png')
+        write_synthetic_signal_png(image_path)
+
+        try:
+            scene_response = client.send('GetCurrentProgramScene', {})
+            original_scene = getattr(scene_response, 'scene_name', None) or getattr(
+                scene_response, 'current_program_scene_name', None
+            )
+            self.assertTrue(original_scene, 'OBS must have an active program scene')
+
+            kinds_response = client.send('GetInputKindList', {'unversioned': False})
+            self.assertIn(
+                'image_source',
+                kinds_response.input_kinds,
+                'OBS Image Source is required for hardware-free signal testing',
+            )
+
+            client.send('CreateScene', {'sceneName': scene_name})
+            scene_created = True
+            client.send('SetCurrentProgramScene', {'sceneName': scene_name})
+            client.send('CreateInput', {
+                'sceneName': scene_name,
+                'inputName': camera_name,
+                'inputKind': 'image_source',
+                'inputSettings': {'file': image_path, 'unload': False},
+            })
+            created_inputs.append(camera_name)
+            camera_uuid = self._input_uuid(client, camera_name)
+            client.send('CreateInput', {
+                'sceneName': scene_name,
+                'inputName': adapter_name,
+                'inputKind': 'face_tracker_source',
+                'inputSettings': {
+                    'target_name': camera_name,
+                    'target_uuid': camera_uuid,
+                    'safe_tracking_enabled': True,
+                },
+            })
+            created_inputs.append(adapter_name)
+
+            camera_before = self._wait_for_screenshot(client, camera_name, bool)
+            self.assertEqual(
+                self._wait_for_screenshot(
+                    client, adapter_name, lambda image: image == camera_before
+                ),
+                camera_before,
+                'The bound adapter must initially show its camera',
+            )
+
+            menu_tree = ui.menu_list().get('menu', [])
+            dock_menu_path = self._find_menu_path(menu_tree, 'New FaithfulFrame Dock')
+            self.assertIsNotNone(dock_menu_path, 'FaithfulFrame dock action must be available in OBS Tools')
+            ui.request('menu-trigger', {'path': dock_menu_path})
+            dock_created = True
+            source_selector_name = 'Camera source with FaithfulFrame tracking filter'
+            self._wait_for_ui_widget(ui, source_selector_name)
+            self._invoke_ui_widget(
+                ui, 'accessibleName', source_selector_name, 'setCurrentIndex', arg1=1
+            )
+            self._wait_for_ui_status(ui, f'Tracking source: {camera_name}')
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Reset framing to the full camera view',
+                'click',
+            )
+            self._wait_for_ui_status(ui, 'Wide framing; select a face to follow again')
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Enable automatic speaker following',
+                'click',
+            )
+            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
+
+            # Clearing an OBS Image Source removes its decoded dimensions,
+            # exercising the same zero-size signal-loss path as a disconnected
+            # camera without requiring capture hardware.
+            client.send('SetInputSettings', {
+                'inputName': camera_name,
+                'inputSettings': {'file': ''},
+                'overlay': True,
+            })
+            disconnected_settings = client.send('GetInputSettings', {'inputName': camera_name})
+            self.assertEqual(disconnected_settings.input_settings.get('file'), '')
+            self._wait_for_ui_status(
+                ui, 'Camera disconnected; restore the camera, then select the speaker again'
+            )
+            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+            self._wait_for_ui_widget(
+                ui, 'Enable automatic speaker following', enabled=False
+            )
+            self.assertNotEqual(
+                self._wait_for_screenshot(
+                    client, adapter_name, lambda image: bool(image) and image != camera_before
+                ),
+                camera_before,
+                'The adapter must fail closed instead of rendering a stale camera frame',
+            )
+
+            client.send('SetInputSettings', {
+                'inputName': camera_name,
+                'inputSettings': {'file': image_path},
+                'overlay': True,
+            })
+            restored_settings = client.send('GetInputSettings', {'inputName': camera_name})
+            self.assertEqual(restored_settings.input_settings.get('file'), image_path)
+            self._wait_for_ui_status(
+                ui,
+                'Camera or tracking settings changed; select the speaker again before following',
+            )
+            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+            self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
+            camera_restored = self._wait_for_screenshot(client, camera_name, bool)
+            self.assertEqual(
+                camera_restored,
+                camera_before,
+                'Camera signal recovery must not change the original source',
+            )
+            self.assertEqual(
+                self._wait_for_screenshot(
+                    client, adapter_name, lambda image: image == camera_restored
+                ),
+                camera_restored,
+                'Signal restoration must put the adapter at safe-wide framing',
             )
 
             self._invoke_ui_widget(
