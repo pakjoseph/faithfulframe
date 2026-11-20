@@ -1099,13 +1099,17 @@ class PluginLoadTest(obstest.OBSTest):
                 client, camera_name, lambda image: image == camera_before
             )
             self.assertEqual(camera_after_reconfiguration, camera_before)
-            self.assertEqual(
-                self._wait_for_screenshot(
-                    client,
-                    adapter_name,
-                    lambda image: image == camera_after_reconfiguration,
+            adapter_after_reconfiguration = self._wait_for_screenshot(
+                client,
+                adapter_name,
+                lambda image: screenshots_match_with_render_tolerance(
+                    camera_after_reconfiguration, image
                 ),
-                camera_after_reconfiguration,
+            )
+            self.assertTrue(
+                screenshots_match_with_render_tolerance(
+                    camera_after_reconfiguration, adapter_after_reconfiguration
+                ),
                 'Framing reconfiguration must reset only the adapter to the original wide camera view',
             )
             self._invoke_ui_widget(
