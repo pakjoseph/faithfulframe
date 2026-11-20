@@ -71,6 +71,7 @@ static const struct
 	// Presets restore safe framing only; enabling safety policy remains an explicit operator choice.
 	{"safe_tracking_dead_zone_percent", copy_data_double, preset_mask_safe},
 	{"safe_tracking_max_zoom", copy_data_double, preset_mask_safe},
+	{"safe_tracking_target_coverage_percent", copy_data_double, preset_mask_safe},
 	{"safe_tracking_pan_response", copy_data_double, preset_mask_safe},
 	{"safe_tracking_zoom_response", copy_data_double, preset_mask_safe},
 	{"safe_tracking_loss_grace_seconds", copy_data_double, preset_mask_safe},

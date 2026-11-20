@@ -750,6 +750,8 @@ class PluginLoadTest(obstest.OBSTest):
                     'target_name': camera_name,
                     'target_uuid': camera_uuid,
                     'safe_tracking_enabled': True,
+                    # Use a non-default framing target for this synthetic speaker workflow.
+                    'safe_tracking_target_coverage_percent': 60.0,
                     # The synthetic source is already 640x360; keep the same
                     # detector working resolution without making OBS render a
                     # larger image for this operator-workflow test.
@@ -757,6 +759,12 @@ class PluginLoadTest(obstest.OBSTest):
                 },
             })
             created_inputs.append(adapter_name)
+
+            adapter_settings = client.send('GetInputSettings', {'inputName': adapter_name})
+            self.assertEqual(
+                adapter_settings.input_settings.get('safe_tracking_target_coverage_percent'),
+                60.0,
+            )
 
             camera_before = self._wait_for_screenshot(client, camera_name, bool)
             adapter_before = self._wait_for_screenshot(client, adapter_name, bool)

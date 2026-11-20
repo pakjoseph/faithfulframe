@@ -365,6 +365,7 @@ struct faithfulframe_source_runtime
 	std::string requested_target_name;
 	double requested_dead_zone_percent = 5.0;
 	double requested_max_zoom = 4.0;
+	double requested_target_coverage_percent = 45.0;
 	double requested_pan_smoothing = 0.25;
 	double requested_zoom_smoothing = 0.25;
 	double requested_loss_grace_seconds = 5.0;
@@ -659,6 +660,7 @@ static void fts_update(void *data, obs_data_t *settings)
 	bool binding_changed = false;
 	bool dead_zone_changed = false;
 	bool max_zoom_changed = false;
+	bool target_coverage_changed = false;
 	bool pan_smoothing_changed = false;
 	bool zoom_smoothing_changed = false;
 	bool loss_grace_changed = false;
@@ -676,6 +678,11 @@ static void fts_update(void *data, obs_data_t *settings)
 			const double requested_max_zoom = obs_data_get_double(settings, "safe_tracking_max_zoom");
 			max_zoom_changed = s->safe_runtime->requested_max_zoom != requested_max_zoom;
 			s->safe_runtime->requested_max_zoom = requested_max_zoom;
+			const double requested_target_coverage =
+				obs_data_get_double(settings, "safe_tracking_target_coverage_percent");
+			target_coverage_changed = s->safe_runtime->requested_target_coverage_percent !=
+						  requested_target_coverage;
+			s->safe_runtime->requested_target_coverage_percent = requested_target_coverage;
 			const double requested_pan_smoothing =
 				obs_data_get_double(settings, "safe_tracking_pan_response");
 			pan_smoothing_changed = s->safe_runtime->requested_pan_smoothing != requested_pan_smoothing;
@@ -696,8 +703,8 @@ static void fts_update(void *data, obs_data_t *settings)
 			// legacy crop path is selected, so OBS's settings callback never joins it.
 			defer_tracker_update = true;
 			const bool session_config_changed = dead_zone_changed || max_zoom_changed ||
-							    pan_smoothing_changed || zoom_smoothing_changed ||
-							    loss_grace_changed;
+							    target_coverage_changed || pan_smoothing_changed ||
+							    zoom_smoothing_changed || loss_grace_changed;
 			if (binding_changed || was_enabled != enabled || (session_config_changed && enabled)) {
 				// Both values share configuration_mutex with the matching clear check.
 				faithfulframe::advance_configuration_revision_locked(
@@ -1101,6 +1108,11 @@ static obs_properties_t *fts_properties(void *data)
 	property_list_add_video_input_sources_by_uuid(safe_source, s ? s->context : NULL);
 	obs_properties_add_float(safe_options, "safe_tracking_dead_zone_percent", "Pan dead zone (%)", 0.0, 24.0, 0.5);
 	obs_properties_add_float(safe_options, "safe_tracking_max_zoom", "Maximum zoom (×)", 1.0, 8.0, 0.25);
+	p = obs_properties_add_float(safe_options, "safe_tracking_target_coverage_percent", "Target size in frame (%)",
+				     1.0, 100.0, 1.0);
+	obs_property_set_long_description(
+		p,
+		"Approximate percentage of the output frame occupied by the selected face. Maximum zoom and source bounds may reduce the actual size.");
 	obs_properties_add_float(safe_options, "safe_tracking_pan_response", "Pan response (higher = faster)", 0.05,
 				 1.0, 0.05);
 	obs_properties_add_float(safe_options, "safe_tracking_zoom_response", "Zoom response (higher = faster)", 0.05,
@@ -1143,6 +1155,7 @@ static void ftf_get_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, "preset_mask_safe", true);
 	obs_data_set_default_double(settings, "safe_tracking_dead_zone_percent", 5.0);
 	obs_data_set_default_double(settings, "safe_tracking_max_zoom", 4.0);
+	obs_data_set_default_double(settings, "safe_tracking_target_coverage_percent", 45.0);
 	obs_data_set_default_double(settings, "safe_tracking_pan_response", 0.25);
 	obs_data_set_default_double(settings, "safe_tracking_zoom_response", 0.25);
 	obs_data_set_default_double(settings, "safe_tracking_loss_grace_seconds", 5.0);
@@ -1647,6 +1660,7 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 	ff_session_config config{};
 	double loss_grace_seconds = 5.0;
 	double max_zoom = 4.0;
+	double target_coverage_percent = 45.0;
 	double dead_zone_percent = 5.0;
 	double pan_smoothing = 0.25;
 	double zoom_smoothing = 0.25;
@@ -1654,12 +1668,14 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 		std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
 		loss_grace_seconds = s->safe_runtime->requested_loss_grace_seconds;
 		max_zoom = s->safe_runtime->requested_max_zoom;
+		target_coverage_percent = s->safe_runtime->requested_target_coverage_percent;
 		dead_zone_percent = s->safe_runtime->requested_dead_zone_percent;
 		pan_smoothing = s->safe_runtime->requested_pan_smoothing;
 		zoom_smoothing = s->safe_runtime->requested_zoom_smoothing;
 	}
 	if (!std::isfinite(loss_grace_seconds) || loss_grace_seconds < 0.5 || loss_grace_seconds > 15.0 ||
-	    !std::isfinite(max_zoom) || max_zoom < 1.0 || max_zoom > 8.0 || !std::isfinite(dead_zone_percent) ||
+	    !std::isfinite(max_zoom) || max_zoom < 1.0 || max_zoom > 8.0 || !std::isfinite(target_coverage_percent) ||
+	    target_coverage_percent < 1.0 || target_coverage_percent > 100.0 || !std::isfinite(dead_zone_percent) ||
 	    dead_zone_percent < 0.0 || dead_zone_percent > 24.0 || !std::isfinite(pan_smoothing) ||
 	    pan_smoothing < 0.05 || pan_smoothing > 1.0 || !std::isfinite(zoom_smoothing) || zoom_smoothing < 0.05 ||
 	    zoom_smoothing > 1.0)
@@ -1671,7 +1687,7 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 	config.source_height = source_height;
 	config.output_width = s->width_with_aspect;
 	config.output_height = s->height_with_aspect;
-	config.target_coverage = 0.45f;
+	config.target_coverage = static_cast<float>(target_coverage_percent * 0.01);
 	config.min_zoom = 1.0f;
 	config.pan_smoothing = static_cast<float>(pan_smoothing);
 	config.zoom_smoothing = static_cast<float>(zoom_smoothing);

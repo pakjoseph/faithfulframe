@@ -536,6 +536,27 @@ mod tests {
     }
 
     #[test]
+    fn target_coverage_changes_subject_size_in_the_desired_crop() {
+        let subject = target(0.45, 0.4, 0.1, 0.2);
+        let desired_crop = |target_coverage| {
+            FramingController::new(FramingConfig {
+                target_coverage,
+                max_zoom: 8.0,
+                ..FramingConfig::default()
+            })
+            .unwrap()
+            .desired(subject)
+        };
+
+        let loose = desired_crop(0.35);
+        let tight = desired_crop(0.65);
+        assert!(tight.width < loose.width);
+        assert!(tight.height < loose.height);
+        assert!(contains(loose, subject));
+        assert!(contains(tight, subject));
+    }
+
+    #[test]
     fn portrait_output_uses_wider_normalized_source_crop() {
         let mut controller = FramingController::new(FramingConfig {
             source_aspect: 16.0 / 9.0,

@@ -314,9 +314,10 @@ static QString safe_framing_preset(obs_source_t *source)
 	const char *name = obs_data_get_string(settings, "preset_name");
 	obs_data_t *presets = obs_data_get_obj(settings, "presets");
 	obs_data_t *preset = presets && name && *name ? obs_data_get_obj(presets, name) : nullptr;
-	static const char *const safe_fields[] = {"safe_tracking_dead_zone_percent", "safe_tracking_max_zoom",
-						  "safe_tracking_pan_response", "safe_tracking_zoom_response",
-						  "safe_tracking_loss_grace_seconds"};
+	static const char *const safe_fields[] = {
+		"safe_tracking_dead_zone_percent",       "safe_tracking_max_zoom",
+		"safe_tracking_target_coverage_percent", "safe_tracking_pan_response",
+		"safe_tracking_zoom_response",           "safe_tracking_loss_grace_seconds"};
 
 	bool matches = preset != nullptr;
 	for (const char *field : safe_fields) {
