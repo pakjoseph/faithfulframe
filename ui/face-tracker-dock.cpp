@@ -112,6 +112,8 @@ struct faithfulframe_safe_preview
 	bool signal_connected = false;
 	faithfulframe::safe_adapter_availability_issue configuration_issue =
 		faithfulframe::safe_adapter_availability_issue::none;
+	faithfulframe::safe_adapter_configuration_notice configuration_notice =
+		faithfulframe::safe_adapter_configuration_notice::none;
 	uint32_t state = 0;
 	uint32_t reason = 0;
 	uint32_t command_result = 0;
@@ -361,6 +363,10 @@ static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &
 	if (read_calldata_int(&cd, "configuration_issue", configuration_issue))
 		preview.configuration_issue =
 			static_cast<faithfulframe::safe_adapter_availability_issue>(configuration_issue);
+	uint64_t configuration_notice = 0;
+	if (read_calldata_int(&cd, "configuration_notice", configuration_notice))
+		preview.configuration_notice =
+			static_cast<faithfulframe::safe_adapter_configuration_notice>(configuration_notice);
 	long long snapshot_age_ms = -1;
 	if (calldata_get_int(&cd, "status_snapshot_age_ms", &snapshot_age_ms))
 		preview.status_snapshot_age_ms = snapshot_age_ms;
@@ -641,6 +647,20 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 	}
 	if (preview.session_closed)
 		return "Tracking session stopped; reselect the camera in Source Settings to resume";
+	if (preview.available && !preview.signal_connected)
+		return "Camera disconnected; restore the camera, then select the speaker again";
+	if (preview.available && !preview.target_active)
+		return "Camera inactive; activate its scene, then select the speaker again";
+	switch (preview.configuration_notice) {
+	case faithfulframe::safe_adapter_configuration_notice::source_binding_changed:
+		return "Camera source changed; confirm the source setup, then rearm and select a speaker";
+	case faithfulframe::safe_adapter_configuration_notice::framing_settings_changed:
+		return "Framing settings changed; rearm and select a speaker before following";
+	case faithfulframe::safe_adapter_configuration_notice::tracking_settings_changed:
+		return "Tracking settings changed; rearm and select a speaker before following";
+	case faithfulframe::safe_adapter_configuration_notice::none:
+		break;
+	}
 	if (!preview.available)
 		return "FaithfulFrame safe tracking: waiting for a valid source session";
 	if (preview.command_result == FF_COMMAND_REJECTED) {
@@ -672,10 +692,6 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 			return "Resume before selecting a speaker";
 		return "Command was rejected without changing framing; review status and try a valid action";
 	}
-	if (!preview.signal_connected)
-		return "Camera disconnected; restore the camera, then select the speaker again";
-	if (!preview.target_active)
-		return "Camera inactive; activate its scene, then select the speaker again";
 	if (!preview.operator_actions_available)
 		return "Camera or tracking settings are changing; wait for controls to become available";
 	if (preview.reason == FF_REASON_FRAMING_FAILURE)

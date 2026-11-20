@@ -373,6 +373,9 @@ struct faithfulframe_source_runtime
 	std::atomic<uint64_t> tracker_configuration_version{0};
 	std::atomic<uint32_t> configuration_issue{
 		static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::none)};
+	std::atomic<uint32_t> configuration_notice{
+		static_cast<uint32_t>(faithfulframe::safe_adapter_configuration_notice::none)};
+	std::atomic<uint64_t> configuration_notice_session_id{0};
 	std::atomic<uint32_t> last_output_width{0};
 	std::atomic<uint32_t> last_output_height{0};
 	std::mutex pending_settings_mutex;
@@ -472,6 +475,17 @@ static void retire_unpublished_binding_on_tick(faithfulframe_source_runtime *run
 		std::lock_guard<std::mutex> bindings_lock(runtime->bindings_mutex);
 		runtime->bindings.push_back(std::move(binding));
 	}
+}
+
+static void bind_configuration_notice_to_stable_session(faithfulframe_source_runtime *runtime, uint64_t session_id)
+{
+	if (!runtime || !session_id)
+		return;
+	std::lock_guard<std::mutex> lock(runtime->configuration_mutex);
+	if (!runtime->reconfiguration_pending.load(std::memory_order_acquire) &&
+	    runtime->configuration_notice.load(std::memory_order_acquire) !=
+		    static_cast<uint32_t>(faithfulframe::safe_adapter_configuration_notice::none))
+		runtime->configuration_notice_session_id.store(session_id, std::memory_order_release);
 }
 
 static std::atomic<uint64_t> faithfulframe_next_identity{1};
@@ -698,6 +712,33 @@ static void fts_update(void *data, obs_data_t *settings)
 			s->safe_runtime->requested_loss_grace_seconds = requested_loss_grace_seconds;
 			const bool enabled = obs_data_get_bool(settings, "safe_tracking_enabled");
 			const bool was_enabled = s->safe_runtime->enabled.load(std::memory_order_acquire);
+			const bool framing_config_changed = dead_zone_changed || max_zoom_changed ||
+							    target_coverage_changed || pan_smoothing_changed ||
+							    zoom_smoothing_changed;
+			if (!enabled) {
+				s->safe_runtime->configuration_notice_session_id.store(0, std::memory_order_release);
+				s->safe_runtime->configuration_notice.store(
+					static_cast<uint32_t>(faithfulframe::safe_adapter_configuration_notice::none),
+					std::memory_order_release);
+			} else if (binding_changed) {
+				s->safe_runtime->configuration_notice_session_id.store(0, std::memory_order_release);
+				s->safe_runtime->configuration_notice.store(
+					static_cast<uint32_t>(
+						faithfulframe::safe_adapter_configuration_notice::source_binding_changed),
+					std::memory_order_release);
+			} else if (loss_grace_changed) {
+				s->safe_runtime->configuration_notice_session_id.store(0, std::memory_order_release);
+				s->safe_runtime->configuration_notice.store(
+					static_cast<uint32_t>(faithfulframe::safe_adapter_configuration_notice::
+								      tracking_settings_changed),
+					std::memory_order_release);
+			} else if (framing_config_changed) {
+				s->safe_runtime->configuration_notice_session_id.store(0, std::memory_order_release);
+				s->safe_runtime->configuration_notice.store(
+					static_cast<uint32_t>(faithfulframe::safe_adapter_configuration_notice::
+								      framing_settings_changed),
+					std::memory_order_release);
+			}
 			// Updating a detector can stop and join dlib work. Always marshal
 			// adapter settings through the video-tick idle check, even when the
 			// legacy crop path is selected, so OBS's settings callback never joins it.
@@ -1701,6 +1742,7 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 	if (!source_id || !session_id)
 		return false;
 	binding->identity = ff_identity{source_id, session_id};
+	bind_configuration_notice_to_stable_session(s->safe_runtime, session_id);
 	const ff_generations initial{1, 1, 1, 1, 1};
 	// The binding is not published yet, so initialize its generation before the
 	// executor starts. No fallible lock acquisition should unwind an active
@@ -1765,6 +1807,16 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		faithfulframe::clear_reconfiguration_if_current(runtime->configuration_mutex,
 								runtime->configuration_version,
 								runtime->reconfiguration_pending, revision);
+	};
+	const auto clear_reconfiguration_for_session = [runtime, revision](uint64_t session_id) {
+		std::lock_guard<std::mutex> lock(runtime->configuration_mutex);
+		if (runtime->configuration_version.load(std::memory_order_acquire) != revision)
+			return false;
+		if (runtime->configuration_notice.load(std::memory_order_acquire) !=
+		    static_cast<uint32_t>(faithfulframe::safe_adapter_configuration_notice::none))
+			runtime->configuration_notice_session_id.store(session_id, std::memory_order_release);
+		runtime->reconfiguration_pending.store(false, std::memory_order_release);
+		return true;
 	};
 	if (!enabled) {
 		faithfulframe::single_adapter_lease::release(runtime);
@@ -1935,7 +1987,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 	runtime->last_output_height.store(published->output_height.load(std::memory_order_acquire),
 					  std::memory_order_release);
 	runtime->processed_tracker_configuration_version = tracker_revision;
-	clear_reconfiguration();
+	clear_reconfiguration_for_session(published->identity.session);
 	s->ftm->crop_cur = rectf_s{0.0f, 0.0f, (float)published->source_width.load(std::memory_order_acquire),
 				   (float)published->source_height.load(std::memory_order_acquire)};
 	if (target)
@@ -3268,6 +3320,10 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 		s->safe_runtime ? s->safe_runtime->configuration_issue.load(std::memory_order_acquire)
 				: static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::none);
 	calldata_set_int(cd, "configuration_issue", configuration_issue);
+	const uint32_t configuration_notice =
+		s->safe_runtime ? s->safe_runtime->configuration_notice.load(std::memory_order_acquire)
+				: static_cast<uint32_t>(faithfulframe::safe_adapter_configuration_notice::none);
+	calldata_set_int(cd, "configuration_notice", configuration_notice);
 	calldata_set_bool(cd, "available", false);
 	calldata_set_bool(cd, "operator_actions_available", false);
 	calldata_set_int(cd, "candidate_count", 0);
@@ -3333,6 +3389,19 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	    !faithfulframe_valid_normalized_rect(snapshot.crop) ||
 	    !faithfulframe_valid_normalized_rect(snapshot.viewport))
 		return;
+	if (snapshot.command_result == FF_COMMAND_APPLIED) {
+		std::lock_guard<std::mutex> lock(s->safe_runtime->configuration_mutex);
+		const uint64_t notice_session_id =
+			s->safe_runtime->configuration_notice_session_id.load(std::memory_order_acquire);
+		if (snapshot.identity.session == notice_session_id && notice_session_id != 0) {
+			s->safe_runtime->configuration_notice.store(
+				static_cast<uint32_t>(faithfulframe::safe_adapter_configuration_notice::none),
+				std::memory_order_release);
+			s->safe_runtime->configuration_notice_session_id.store(0, std::memory_order_release);
+			calldata_set_int(cd, "configuration_notice",
+					 static_cast<uint32_t>(faithfulframe::safe_adapter_configuration_notice::none));
+		}
+	}
 
 	calldata_set_bool(cd, "available", true);
 	calldata_set_bool(cd, "operator_actions_available",

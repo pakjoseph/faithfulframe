@@ -15,6 +15,13 @@ enum class safe_adapter_availability_issue : uint32_t {
 	session_worker_failed_safe_wide = 6,
 };
 
+enum class safe_adapter_configuration_notice : uint32_t {
+	none = 0,
+	source_binding_changed = 1,
+	framing_settings_changed = 2,
+	tracking_settings_changed = 3,
+};
+
 /// Process-wide lease for the one OBS adapter allowed to run safe tracking.
 class single_adapter_lease {
 public:

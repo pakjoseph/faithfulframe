@@ -917,6 +917,58 @@ class PluginLoadTest(obstest.OBSTest):
                 lambda image: bool(image) and image != adapter_before,
                 timeout=10.0,
             )
+
+            # A live framing-config change must invalidate the selected target
+            # and return only the adapter to safe-wide until the volunteer
+            # explicitly selects a candidate again.
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'safe_tracking_target_coverage_percent': 70.0},
+                'overlay': True,
+            })
+            self._wait_for_ui_status(
+                ui, 'Framing settings changed; rearm and select a speaker before following'
+            )
+            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+            self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
+            updated_settings = client.send('GetInputSettings', {'inputName': adapter_name})
+            self.assertEqual(
+                updated_settings.input_settings.get('safe_tracking_target_coverage_percent'),
+                70.0,
+            )
+            camera_after_reconfiguration = self._wait_for_screenshot(
+                client, camera_name, lambda image: image == camera_before
+            )
+            self.assertEqual(camera_after_reconfiguration, camera_before)
+            self.assertEqual(
+                self._wait_for_screenshot(
+                    client,
+                    adapter_name,
+                    lambda image: image == camera_after_reconfiguration,
+                ),
+                camera_after_reconfiguration,
+                'Framing reconfiguration must reset only the adapter to the original wide camera view',
+            )
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Enable automatic speaker following',
+                'click',
+            )
+            self._wait_for_ui_status(
+                ui, 'No speaker selected; choose a visible face to start following'
+            )
+            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
+            time.sleep(0.5)
+            self._wait_for_ui_widget(
+                ui,
+                'Tracking state: Searching',
+            )
+            self.assertEqual(
+                self._screenshot(client, camera_name),
+                camera_before,
+                'Rearming after framing changes must not alter the original camera feed',
+            )
         finally:
             if dock_created:
                 try:
