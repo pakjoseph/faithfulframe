@@ -278,8 +278,7 @@ faithfulframe_session_executor::faithfulframe_session_executor(const ff_session_
 faithfulframe_session_executor::~faithfulframe_session_executor()
 {
 	shutdown();
-	if (reaper_worker_reserved) {
-		reaper_worker_reserved = false;
+	if (reaper_worker_reserved.exchange(false, std::memory_order_acq_rel)) {
 		faithfulframe_release_reaper_worker(reaper);
 	}
 }
@@ -515,8 +514,7 @@ void faithfulframe_session_executor::join()
 		if (worker.joinable())
 			worker.join();
 		worker_started.store(false, std::memory_order_release);
-		if (reaper_worker_reserved) {
-			reaper_worker_reserved = false;
+		if (reaper_worker_reserved.exchange(false, std::memory_order_acq_rel)) {
 			release_reaper_reservation = true;
 		}
 	}
@@ -593,41 +591,26 @@ public:
 		condition.notify_all();
 	}
 
-	bool enqueue(const std::shared_ptr<faithfulframe_session_executor> &executor, bool wait_for_lock = false)
+	void enqueue(const std::shared_ptr<faithfulframe_session_executor> &executor)
 	{
-		if (!executor) {
-			return false;
-		}
-		// Keep the test gate outside the queue critical section. A delayed caller
-		// must not prevent independent sessions from handing off their workers.
 #ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
 		faithfulframe_test_run_reaper_enqueue_hook();
 #endif
-#ifdef FAITHFULFRAME_TEST_REAPER_WAIT_HOOK
-		if (wait_for_lock)
-			faithfulframe_test_run_reaper_wait_hook();
-#endif
-		{
-			std::unique_lock<std::mutex> lock(mutex, std::defer_lock);
-			if (wait_for_lock)
-				lock.lock();
-			else if (!lock.try_lock())
-				return false;
-			if (!accepting.load(std::memory_order_acquire))
-				return false;
-			if (executor->retirement_queued)
-				return true;
-#ifdef FAITHFULFRAME_TEST_REAPER_QUEUE_LOCK_HOOK
-			faithfulframe_test_run_reaper_queue_lock_hook();
-#endif
-			executor->retirement_keepalive = executor;
-			executor->retirement_queued = true;
-			executor->reap_task.callback = &faithfulframe_executor_reaper::join_executor;
-			executor->reap_task.context = executor.get();
-			append_locked(&executor->reap_task, true);
-		}
+		// A running executor reserves the reaper until its join completes, so
+		// this handoff cannot race terminal reaper shutdown. Avoid the cleanup
+		// queue mutex: OBS callbacks may request retirement from render/tick paths
+		// and must never wait for that queue or join inline.
+		bool expected = false;
+		if (!executor->retirement_queued.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+									 std::memory_order_acquire))
+			return;
+		executor->retirement_keepalive = executor;
+		auto *head = retirement_head.load(std::memory_order_relaxed);
+		do {
+			executor->retirement_next = head;
+		} while (!retirement_head.compare_exchange_weak(head, executor.get(), std::memory_order_release,
+								std::memory_order_relaxed));
 		condition.notify_one();
-		return true;
 	}
 
 	bool enqueue_cleanup(faithfulframe_reap_task *task, void (*callback)(void *), void *context,
@@ -647,6 +630,9 @@ public:
 				return false;
 			if (!accepting.load(std::memory_order_acquire) || task->queued)
 				return false;
+#ifdef FAITHFULFRAME_TEST_REAPER_QUEUE_LOCK_HOOK
+			faithfulframe_test_run_reaper_queue_lock_hook();
+#endif
 			task->callback = callback;
 			task->context = context;
 			append_locked(task, false);
@@ -689,18 +675,45 @@ private:
 	void run()
 	{
 		for (;;) {
+			auto *pending = retirement_head.exchange(nullptr, std::memory_order_acquire);
+			if (pending) {
+				// Reverse the producer stack so joins retain retirement order within
+				// each drained batch while remaining lock-free for OBS callers.
+				faithfulframe_session_executor *ordered = nullptr;
+				while (pending) {
+					auto *next = pending->retirement_next;
+					pending->retirement_next = ordered;
+					ordered = pending;
+					pending = next;
+				}
+				while (ordered) {
+					auto *next = ordered->retirement_next;
+					ordered->retirement_next = nullptr;
+					join_executor(ordered);
+					ordered = next;
+				}
+				continue;
+			}
+
 			faithfulframe_reap_task *task = nullptr;
 			void (*callback)(void *) = nullptr;
 			void *context = nullptr;
 			{
 				std::unique_lock<std::mutex> lock(mutex);
-				condition.wait(lock, [this] {
-					return (head && head->ready.load(std::memory_order_acquire)) ||
+				// Retirement publishers avoid this mutex. The timed wake bounds the
+				// condition-variable notify race without making OBS callbacks block.
+				condition.wait_for(lock, std::chrono::milliseconds(10), [this] {
+					return retirement_head.load(std::memory_order_acquire) != nullptr ||
+					       (head && head->ready.load(std::memory_order_acquire)) ||
 					       (shutdown_requested && active_executor_workers == 0 && !head &&
-						!task_in_progress);
+						!task_in_progress &&
+						retirement_head.load(std::memory_order_acquire) == nullptr);
 				});
+				if (retirement_head.load(std::memory_order_acquire))
+					continue;
 				if (!head) {
-					if (shutdown_requested && active_executor_workers == 0 && !task_in_progress) {
+					if (shutdown_requested && active_executor_workers == 0 && !task_in_progress &&
+					    retirement_head.load(std::memory_order_acquire) == nullptr) {
 						accepting.store(false, std::memory_order_release);
 						worker_stopped.store(true, std::memory_order_release);
 #ifdef FAITHFULFRAME_TEST_REAPER_SHUTDOWN_HOOK
@@ -713,6 +726,8 @@ private:
 					}
 					continue;
 				}
+				if (!head->ready.load(std::memory_order_acquire))
+					continue;
 				task = head;
 				head = task->next;
 				if (!head)
@@ -733,11 +748,9 @@ private:
 	}
 
 private:
-	static void join_executor(void *context)
+	static void join_executor(faithfulframe_session_executor *executor)
 	{
-		auto *executor = static_cast<faithfulframe_session_executor *>(context);
-		// Keep the embedded task node alive until this callback returns, then drop
-		// the reaper's self-reference after the worker has been joined.
+		// Keep the executor alive until its worker has been joined.
 		auto keepalive = std::move(executor->retirement_keepalive);
 		if (keepalive) {
 #ifdef FAITHFULFRAME_TEST_REAPER_JOIN_HOOK
@@ -769,6 +782,7 @@ private:
 	std::mutex shutdown_mutex;
 	std::mutex mutex;
 	std::condition_variable condition;
+	std::atomic<faithfulframe_session_executor *> retirement_head{nullptr};
 	faithfulframe_reap_task *head = nullptr;
 	faithfulframe_reap_task *tail = nullptr;
 	bool shutdown_requested = false;
@@ -837,13 +851,17 @@ void faithfulframe_activate_reap_task(faithfulframe_reap_task *task)
 		wake(wake_context);
 }
 
-bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor,
-					   bool wait_for_reaper)
+bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor)
 {
 	if (!executor)
 		return true;
-	if (!executor->reaper || !executor->reaper->enqueue(executor, wait_for_reaper))
-		return false;
+	// A workerless executor has no thread to join. Its destructor's shutdown path
+	// is immediate and releases no reaper reservation.
+	if (!executor->reaper_worker_reserved.load(std::memory_order_acquire)) {
+		executor.reset();
+		return true;
+	}
+	executor->reaper->enqueue(executor);
 	executor.reset();
 	return true;
 }

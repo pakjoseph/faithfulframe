@@ -235,8 +235,8 @@ struct faithfulframe_source_binding
 		if (!obs_resources_released.load(std::memory_order_acquire))
 			return false;
 		auto session = std::atomic_load_explicit(&executor, std::memory_order_acquire);
-		if (session && !faithfulframe_retire_session_executor(session, wait_for_reaper))
-			return false;
+		if (session)
+			faithfulframe_retire_session_executor(session);
 		executor_handed_to_reaper.store(true, std::memory_order_release);
 		return faithfulframe_defer_reap_task(&reap_task, destroy_reaped_binding, this, wait_for_reaper);
 	}
@@ -280,11 +280,9 @@ struct faithfulframe_source_binding
 			&executor, std::shared_ptr<faithfulframe_session_executor>{}, std::memory_order_acq_rel);
 		if (session && !executor_handed_to_reaper.load(std::memory_order_acquire)) {
 			session->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
-			// The OBS handles have already been released by an OBS callback. Wait
-			// for transient queue-lock contention here so this fallback cannot turn
-			// into an inline worker join on an OBS callback thread.
-			if (!faithfulframe_retire_session_executor(session, true))
-				session->shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+			// The reaper owns the join. This destructor may run on OBS's destroy
+			// executor, so it must never turn a failed handoff into an inline join.
+			faithfulframe_retire_session_executor(session);
 		}
 	}
 };

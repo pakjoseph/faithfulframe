@@ -156,8 +156,7 @@ public:
 
 private:
 	friend class faithfulframe_executor_reaper;
-	friend bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor,
-							  bool wait_for_reaper);
+	friend bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
 
 	enum class work_kind : uint8_t { tick, candidates, command, lifecycle, stop };
 	struct work_item
@@ -195,10 +194,9 @@ private:
 	// off without consulting a global mutex, and unload cannot reclaim the
 	// reaper while an adapter still owns an executor.
 	const std::shared_ptr<faithfulframe_executor_reaper> reaper;
-	// Prevent the module reaper from closing while this worker still needs its
-	// join queue, even if source-instance teardown reaches the shutdown barrier
-	// before the worker's retirement task is enqueued.
-	bool reaper_worker_reserved = false;
+	// Prevent the module reaper from closing until this worker has been joined,
+	// even if source-instance teardown reaches the shutdown barrier first.
+	std::atomic<bool> reaper_worker_reserved{false};
 	std::array<work_item, max_queued_work + 1> queue{};
 	size_t queue_head = 0;
 	size_t queue_size = 0;
@@ -226,19 +224,17 @@ private:
 	std::atomic<uint64_t> last_processing_us{0};
 	std::atomic<uint64_t> max_processing_us{0};
 
-	// The module-wide reaper links pending joins through these fields. Keeping
-	// an owning reference in the node makes handoff allocation-free and keeps
-	// the executor alive until the reaper has taken responsibility for it.
+	// The module-wide reaper links pending joins through this lock-free MPSC
+	// stack. This owning reference pins the executor through the join.
 	std::shared_ptr<faithfulframe_session_executor> retirement_keepalive;
-	bool retirement_queued = false;
-	faithfulframe_reap_task reap_task{};
+	faithfulframe_session_executor *retirement_next = nullptr;
+	std::atomic<bool> retirement_queued{false};
 };
 
-/// Allocation-free handoff of a stopped executor to its pinned module reaper.
-/// By default this is nonblocking for OBS callbacks; controlled teardown may
-/// wait briefly for the reaper queue lock. False leaves ownership with caller.
-bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor,
-					   bool wait_for_reaper = false);
+/// Allocation-free lock-free handoff of a stopped executor to its pinned
+/// module reaper. Safe for OBS callbacks; workerless executors are released
+/// immediately. A constructed executor always completes the handoff.
+bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
 /// Enqueue a single-use cleanup task without making it executable. The caller
 /// must release its ownership, then activate the task before its lifetime ends.
 /// By default returns false without taking ownership if the queue is contended
