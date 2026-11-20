@@ -231,6 +231,11 @@ private:
 	std::atomic<bool> retirement_queued{false};
 };
 
+static_assert(std::atomic<faithfulframe_session_executor *>::is_always_lock_free,
+	      "OBS-safe executor retirement requires lock-free pointer atomics");
+static_assert(std::atomic<bool>::is_always_lock_free,
+	      "OBS-safe executor retirement requires lock-free boolean atomics");
+
 /// Allocation-free lock-free handoff of a stopped executor to its pinned
 /// module reaper. Safe for OBS callbacks; workerless executors are released
 /// immediately. A constructed executor always completes the handoff.
