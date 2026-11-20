@@ -782,10 +782,13 @@ class PluginLoadTest(obstest.OBSTest):
         ui = obsui.OBSUI(client)
         suffix = uuid.uuid4().hex
         tracked_scene = f'FaithfulFrame synthetic speaker {suffix}'
+        fallback_scene = f'FaithfulFrame synthetic fallback {suffix}'
         camera_name = f'FaithfulFrame synthetic face input {suffix}'
+        fallback_name = f'FaithfulFrame synthetic fallback camera {suffix}'
         adapter_name = f'FaithfulFrame synthetic face adapter {suffix}'
         original_scene = None
         scene_created = False
+        fallback_scene_created = False
         created_inputs = []
         dock_created = False
         temporary = tempfile.TemporaryDirectory(prefix='faithfulframe-synthetic-face-')
@@ -994,6 +997,119 @@ class PluginLoadTest(obstest.OBSTest):
                 timeout=10.0,
             )
 
+            # A scene deactivation must invalidate a previously locked target.
+            # Returning to the same source must restore safe-wide framing and
+            # require a new operator selection before following can resume.
+            color_kinds = [
+                kind
+                for kind in kinds_response.input_kinds
+                if kind == 'color_source' or kind.startswith('color_source_v')
+            ]
+            self.assertTrue(color_kinds, 'OBS color source is required for scene-switch testing')
+            color_kind = max(
+                color_kinds,
+                key=lambda kind: int(kind.rsplit('_v', 1)[1]) if '_v' in kind else 0,
+            )
+            client.send('CreateScene', {'sceneName': fallback_scene})
+            fallback_scene_created = True
+            client.send('CreateInput', {
+                'sceneName': fallback_scene,
+                'inputName': fallback_name,
+                'inputKind': color_kind,
+                'inputSettings': {'color': 0xFF00FF00, 'width': 320, 'height': 180},
+            })
+            created_inputs.append(fallback_name)
+            client.send('SetCurrentProgramScene', {'sceneName': fallback_scene})
+            fallback_image = self._wait_for_screenshot(client, fallback_name, bool)
+            inactive_adapter = self._wait_for_screenshot(
+                client,
+                adapter_name,
+                lambda image: bool(image) and image != camera_before,
+            )
+            self.assertNotEqual(inactive_adapter, camera_before)
+            self._wait_for_ui_status(ui, 'Camera inactive; activate its scene')
+            self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=False)
+            self.assertEqual(self._screenshot(client, fallback_name), fallback_image)
+
+            client.send('SetCurrentProgramScene', {'sceneName': tracked_scene})
+            camera_after_scene_return = self._wait_for_screenshot(
+                client, camera_name, lambda image: image == camera_before
+            )
+            self.assertEqual(camera_after_scene_return, camera_before)
+            self._wait_for_ui_status(
+                ui, 'Camera or tracking settings changed; select the speaker again before following'
+            )
+            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+            self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
+            wide_after_scene_return = self._wait_for_screenshot(
+                client,
+                adapter_name,
+                lambda image: screenshots_match_with_render_tolerance(
+                    camera_after_scene_return, image
+                ),
+            )
+            self.assertTrue(
+                screenshots_match_with_render_tolerance(
+                    camera_after_scene_return, wide_after_scene_return
+                ),
+                'Scene reactivation must restore wide framing until a fresh target selection',
+            )
+            self.assertEqual(self._screenshot(client, fallback_name), fallback_image)
+
+            self._invoke_ui_widget(
+                ui, 'accessibleName', 'Enable automatic speaker following', 'click'
+            )
+            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
+            # Candidate handles are short-lived, so create a fresh selection
+            # from each current dock snapshot and retry only rejected attempts.
+            reselection_deadline = time.monotonic() + 30.0
+            reselection_applied = False
+            while time.monotonic() < reselection_deadline:
+                widget_tree = ui.request('widget-list', {})
+                widgets = widget_tree.get('children', [])
+                if self._find_ui_widget(widgets, 'Tracking state: Locked'):
+                    reselection_applied = True
+                    break
+                candidates_widget = self._find_ui_widget(widgets, 'Detected face candidates')
+                if candidates_widget and candidates_widget.get('count', 0) >= 3:
+                    try:
+                        self._invoke_ui_widget_from_tree(
+                            ui,
+                            widget_tree,
+                            'accessibleName',
+                            'Detected face candidates',
+                            'setCurrentIndex',
+                            arg1=1,
+                        )
+                        self._invoke_ui_widget_from_tree(
+                            ui,
+                            widget_tree,
+                            'accessibleName',
+                            'Select the highlighted face as the speaker',
+                            'click',
+                        )
+                    except AssertionError:
+                        time.sleep(0.05)
+                        continue
+                    lock_deadline = min(time.monotonic() + 1.0, reselection_deadline)
+                    while time.monotonic() < lock_deadline:
+                        lock_widgets = ui.request('widget-list', {}).get('children', [])
+                        if self._find_ui_widget(lock_widgets, 'Tracking state: Locked'):
+                            reselection_applied = True
+                            break
+                        time.sleep(0.05)
+                    if reselection_applied:
+                        break
+                time.sleep(0.05)
+            self.assertTrue(
+                reselection_applied,
+                'Returning to the tracked scene must require a fresh candidate selection',
+            )
+            self._wait_for_ui_status(ui, 'Following the selected speaker')
+            self._wait_for_ui_zoom_above(ui, 1.0, timeout=10.0)
+            self.assertEqual(self._screenshot(client, fallback_name), fallback_image)
+
             # Start from a genuinely locked, detector-confirmed target, then
             # clear the synthetic image input. This exercises camera-loss
             # invalidation through OBS callbacks, the serialized Rust session,
@@ -1154,6 +1270,11 @@ class PluginLoadTest(obstest.OBSTest):
             if scene_created:
                 try:
                     client.send('RemoveScene', {'sceneName': tracked_scene})
+                except Exception:
+                    pass
+            if fallback_scene_created:
+                try:
+                    client.send('RemoveScene', {'sceneName': fallback_scene})
                 except Exception:
                     pass
 
