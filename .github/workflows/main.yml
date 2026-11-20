@@ -186,22 +186,39 @@ jobs:
 
       - name: Setup Environment
         id: setup
+        env:
+          MACOS_SIGNING_APPLICATION_IDENTITY: ${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}
+          MACOS_SIGNING_INSTALLER_IDENTITY: ${{ secrets.MACOS_SIGNING_INSTALLER_IDENTITY }}
+          MACOS_SIGNING_CERT: ${{ secrets.MACOS_SIGNING_CERT }}
+          MACOS_SIGNING_CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
+          MACOS_NOTARIZATION_USERNAME: ${{ secrets.MACOS_NOTARIZATION_USERNAME }}
+          MACOS_NOTARIZATION_PASSWORD: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
         run: |
           set -e
           echo '::group::Set up code signing'
           have_codesign_ident=false
           have_notarization_user=false
-          if [[ '${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}' != '' && \
-                '${{ secrets.MACOS_SIGNING_INSTALLER_IDENTITY }}' != '' && \
-                '${{ secrets.MACOS_SIGNING_CERT }}' != '' && \
-                '${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}' != '' ]]; then
+          if [[ -n "$MACOS_SIGNING_APPLICATION_IDENTITY" || \
+                -n "$MACOS_SIGNING_INSTALLER_IDENTITY" || \
+                -n "$MACOS_SIGNING_CERT" || \
+                -n "$MACOS_SIGNING_CERT_PASSWORD" ]]; then
+            if [[ -z "$MACOS_SIGNING_APPLICATION_IDENTITY" || \
+                  -z "$MACOS_SIGNING_INSTALLER_IDENTITY" || \
+                  -z "$MACOS_SIGNING_CERT" || \
+                  -z "$MACOS_SIGNING_CERT_PASSWORD" ]]; then
+              echo '::error::macOS signing configuration is incomplete.'
+              exit 1
+            fi
             have_codesign_ident=true
             echo "haveCodesignIdent=true" >> $GITHUB_OUTPUT
           else
             echo "haveCodesignIdent=false" >> $GITHUB_OUTPUT
           fi
-          if [[ '${{ secrets.MACOS_NOTARIZATION_USERNAME }}' != '' && \
-                '${{ secrets.MACOS_NOTARIZATION_PASSWORD }}' != '' ]]; then
+          if [[ -n "$MACOS_NOTARIZATION_USERNAME" || -n "$MACOS_NOTARIZATION_PASSWORD" ]]; then
+            if [[ -z "$MACOS_NOTARIZATION_USERNAME" || -z "$MACOS_NOTARIZATION_PASSWORD" ]]; then
+              echo '::error::macOS notarization configuration is incomplete.'
+              exit 1
+            fi
             have_notarization_user=true
             echo "haveNotarizationUser=true" >> $GITHUB_OUTPUT
           else
@@ -236,13 +253,22 @@ jobs:
 
       - name: Set Signing Identity
         if: ${{ startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' && steps.setup.outputs.haveNotarizationUser == 'true' }}
+        env:
+          MACOS_SIGNING_APPLICATION_IDENTITY: ${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}
+          MACOS_NOTARIZATION_USERNAME: ${{ secrets.MACOS_NOTARIZATION_USERNAME }}
+          MACOS_NOTARIZATION_PASSWORD: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
         run: |
           set -e
-          TEAM_ID=$(echo "${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}" | sed 's/.*(\([A-Za-z0-9]*\))$/\1/')
+          if [[ "$MACOS_SIGNING_APPLICATION_IDENTITY" =~ \(([A-Za-z0-9]+)\)$ ]]; then
+            TEAM_ID="${BASH_REMATCH[1]}"
+          else
+            echo '::error::The macOS signing identity must end with a parenthesized team ID.'
+            exit 1
+          fi
           xcrun notarytool store-credentials AC_PASSWORD \
-            --apple-id "${{ secrets.MACOS_NOTARIZATION_USERNAME }}" \
+            --apple-id "$MACOS_NOTARIZATION_USERNAME" \
             --team-id "$TEAM_ID" \
-            --password "${{ secrets.MACOS_NOTARIZATION_PASSWORD }}"
+            --password "$MACOS_NOTARIZATION_PASSWORD"
 
       - name: Download obs-studio development environment
         id: obsdeps
@@ -258,6 +284,8 @@ jobs:
           DESTDIR='./' ci/download-dlib-models.sh
 
       - name: Build plugin
+        env:
+          MACOS_SIGNING_APPLICATION_IDENTITY: ${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}
         run: |
           arch=${{ matrix.arch }}
           GIT_TAG=$(git describe --tags --always)
@@ -280,7 +308,7 @@ jobs:
             -D cblas_lib="$SDKROOT/usr/lib/libcblas.tbd" \
             -D lapack_lib="$SDKROOT/usr/lib/liblapack.tbd" \
             -D PKG_SUFFIX=$PKG_SUFFIX \
-            -D OBS_BUNDLE_CODESIGN_IDENTITY='${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}' \
+            -D "OBS_BUNDLE_CODESIGN_IDENTITY=${MACOS_SIGNING_APPLICATION_IDENTITY}" \
             ${{ steps.obsdeps.outputs.PLUGIN_CMAKE_OPTIONS }}
           grep -q '^CMAKE_OSX_DEPLOYMENT_TARGET:STRING=13.0$' build/CMakeCache.txt
           cmake --build build --config RelWithDebInfo
@@ -371,11 +399,13 @@ jobs:
 
       - name: Productsign
         if: ${{ github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' }}
+        env:
+          MACOS_SIGNING_INSTALLER_IDENTITY: ${{ secrets.MACOS_SIGNING_INSTALLER_IDENTITY }}
         run: |
           . build/ci/ci_includes.generated.sh
           pkgfile=package/${PLUGIN_NAME}${PKG_SUFFIX}.pkg
           set -e
-          productsign --sign "${{ secrets.MACOS_SIGNING_INSTALLER_IDENTITY }}" $pkgfile package/${PLUGIN_NAME}-signed.pkg
+          productsign --sign "$MACOS_SIGNING_INSTALLER_IDENTITY" "$pkgfile" "package/${PLUGIN_NAME}-signed.pkg"
           mv package/${PLUGIN_NAME}-signed.pkg $pkgfile
           signature_info="$(pkgutil --check-signature "$pkgfile")"
           printf '%s\n' "$signature_info"
