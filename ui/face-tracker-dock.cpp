@@ -152,6 +152,7 @@ struct faithfulframe_safe_preview
 	uint64_t stream_generation = 0;
 	uint64_t geometry_generation = 0;
 	uint64_t tracker_generation = 0;
+	uint64_t candidate_preview_revision = 0;
 	ff_rect crop{0.0f, 0.0f, 1.0f, 1.0f};
 	ff_rect viewport{0.0f, 0.0f, 1.0f, 1.0f};
 	QString target_name;
@@ -431,6 +432,7 @@ static bool read_safe_preview(obs_source_t *source, faithfulframe_safe_preview &
 	if (target_name)
 		preview.target_name = QString::fromUtf8(target_name);
 	preview.framing_preset = safe_framing_preset(source);
+	read_calldata_int(&cd, "candidate_preview_revision", preview.candidate_preview_revision);
 	uint64_t candidate_count = 0;
 	if (preview.available && read_calldata_int(&cd, "candidate_count", candidate_count)) {
 		uint64_t candidate_source_id = 0, candidate_session_id = 0, candidate_observation_version = 0;
@@ -2091,28 +2093,32 @@ void FTDock::handlePreviewClick(const QPointF &position, const faithfulframe_pre
 	}
 	if (preview.state != FF_STATE_MANUAL && preview.state != FF_STATE_SEARCHING && preview.state != FF_STATE_LOST)
 		return;
+	if (notrackButton->isChecked())
+		use_full_source_preview_transform(preview);
 	const QSize display_size = ftWidget->size() * ftWidget->devicePixelRatioF();
-	const faithfulframe_preview_render_stamp current_stamp{
-		preview.available,
-		preview.source_id,
-		preview.session_id,
-		preview.status_version,
-		preview.observation_version,
-		preview.source_generation,
-		preview.session_generation,
-		preview.stream_generation,
-		preview.geometry_generation,
-		preview.tracker_generation,
-		static_cast<uint32_t>(std::max(0, display_size.width())),
-		static_cast<uint32_t>(std::max(0, display_size.height())),
-		notrackButton->isChecked()};
+	faithfulframe_preview_render_stamp current_stamp{};
+	current_stamp.valid = preview.available && preview.candidate_preview_revision != 0;
+	current_stamp.source_id = preview.source_id;
+	current_stamp.session_id = preview.session_id;
+	current_stamp.status_version = preview.status_version;
+	current_stamp.observation_version = preview.observation_version;
+	current_stamp.source_generation = preview.source_generation;
+	current_stamp.session_generation = preview.session_generation;
+	current_stamp.stream_generation = preview.stream_generation;
+	current_stamp.geometry_generation = preview.geometry_generation;
+	current_stamp.tracker_generation = preview.tracker_generation;
+	current_stamp.candidate_preview_revision = preview.candidate_preview_revision;
+	current_stamp.display_width = static_cast<uint32_t>(std::max(0, display_size.width()));
+	current_stamp.display_height = static_cast<uint32_t>(std::max(0, display_size.height()));
+	current_stamp.output_width = preview.output_width;
+	current_stamp.output_height = preview.output_height;
+	current_stamp.crop = preview.crop;
+	current_stamp.viewport = preview.viewport;
+	current_stamp.full_source = notrackButton->isChecked();
 	if (!faithfulframe_preview_render_stamp_matches(renderStamp, current_stamp)) {
 		showOperatorNotice("The preview changed. Wait for it to refresh, then click the face again.");
 		return;
 	}
-	if (notrackButton->isChecked())
-		use_full_source_preview_transform(preview);
-
 	// FTWidget and Qt mouse events use logical pixels. The monitor's rendered
 	// preview uses the same aspect-fit transform, so normalizing inside the
 	// letterboxed image accounts for both HiDPI scaling and padding.

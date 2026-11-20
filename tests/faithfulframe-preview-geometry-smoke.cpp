@@ -22,7 +22,49 @@ static bool near(double actual, double expected)
 
 int main()
 {
-	const faithfulframe_preview_render_stamp rendered_stamp{true, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1920, 1080, false};
+	ff_candidate prior_candidates[2]{};
+	prior_candidates[0].handle = 10;
+	prior_candidates[0].rect = ff_rect{0.2f, 0.3f, 0.1f, 0.2f};
+	prior_candidates[1].handle = 11;
+	prior_candidates[1].rect = ff_rect{0.7f, 0.3f, 0.1f, 0.2f};
+	ff_candidate current_candidates[2]{};
+	current_candidates[0] = prior_candidates[0];
+	current_candidates[1] = prior_candidates[1];
+	check(faithfulframe_preview_candidate_geometry_matches(prior_candidates, 2, current_candidates, 2));
+	current_candidates[0].observed_at_ms++;
+	current_candidates[0].expires_at_ms++;
+	check(faithfulframe_preview_candidate_geometry_matches(prior_candidates, 2, current_candidates, 2));
+	current_candidates[0] = prior_candidates[0];
+	current_candidates[0].rect.x += 0.01f;
+	check(!faithfulframe_preview_candidate_geometry_matches(prior_candidates, 2, current_candidates, 2));
+	current_candidates[0] = prior_candidates[0];
+	current_candidates[0].handle++;
+	check(!faithfulframe_preview_candidate_geometry_matches(prior_candidates, 2, current_candidates, 2));
+	current_candidates[0] = prior_candidates[1];
+	current_candidates[1] = prior_candidates[0];
+	check(!faithfulframe_preview_candidate_geometry_matches(prior_candidates, 2, current_candidates, 2));
+	check(!faithfulframe_preview_candidate_geometry_matches(prior_candidates, 2, current_candidates, 1));
+	check(!faithfulframe_preview_candidate_geometry_matches(nullptr, 1, current_candidates, 1));
+	check(faithfulframe_preview_candidate_geometry_matches(nullptr, 0, nullptr, 0));
+
+	faithfulframe_preview_render_stamp rendered_stamp{};
+	rendered_stamp.valid = true;
+	rendered_stamp.source_id = 1;
+	rendered_stamp.session_id = 2;
+	rendered_stamp.status_version = 3;
+	rendered_stamp.observation_version = 4;
+	rendered_stamp.source_generation = 5;
+	rendered_stamp.session_generation = 6;
+	rendered_stamp.stream_generation = 7;
+	rendered_stamp.geometry_generation = 8;
+	rendered_stamp.tracker_generation = 9;
+	rendered_stamp.candidate_preview_revision = 10;
+	rendered_stamp.display_width = 1920;
+	rendered_stamp.display_height = 1080;
+	rendered_stamp.output_width = 1280;
+	rendered_stamp.output_height = 720;
+	rendered_stamp.crop = ff_rect{0.25f, 0.25f, 0.5f, 0.5f};
+	rendered_stamp.viewport = ff_rect{0.0f, 0.125f, 1.0f, 0.75f};
 	faithfulframe_preview_render_stamp current_stamp = rendered_stamp;
 	check(faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
 	current_stamp.valid = false;
@@ -49,6 +91,9 @@ int main()
 	current_stamp.tracker_generation++;
 	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
 	current_stamp = rendered_stamp;
+	current_stamp.candidate_preview_revision++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
 	current_stamp.source_id++;
 	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
 	current_stamp = rendered_stamp;
@@ -62,6 +107,15 @@ int main()
 	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
 	current_stamp = rendered_stamp;
 	current_stamp.full_source = true;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.crop.x += 0.01f;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.viewport.height -= 0.01f;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.output_width++;
 	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
 	check(!faithfulframe_preview_render_stamp_matches(faithfulframe_preview_render_stamp{}, rendered_stamp));
 

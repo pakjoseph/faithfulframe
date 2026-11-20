@@ -117,6 +117,7 @@ struct faithfulframe_source_binding
 		ff_identity identity{};
 		ff_generations generations{};
 		uint64_t observation_version = 0;
+		uint64_t revision = 0;
 		uint64_t published_at_ms = 0;
 		size_t candidate_count = 0;
 		std::array<ff_candidate, faithfulframe_session_executor::max_candidates> candidates{};
@@ -180,6 +181,9 @@ struct faithfulframe_source_binding
 	std::atomic<bool> obs_resources_released{false};
 	std::atomic<bool> cleanup_reservation{false};
 	std::mutex preview_mutex;
+	// Incremented whenever the preview rectangles are republished, including
+	// ordinary tracker motion that does not change the candidate handle set.
+	uint64_t preview_revision = 0;
 	preview_payload preview;
 	faithfulframe_reap_task reap_task{};
 
@@ -284,6 +288,23 @@ struct faithfulframe_source_binding
 		}
 	}
 };
+
+// Called only while preview_mutex is held. A saturated revision disables
+// mouse hit testing rather than allowing changed rectangles to alias an old
+// rendered preview version.
+static uint64_t advance_preview_revision(faithfulframe_source_binding *binding)
+{
+	if (!binding || binding->preview_revision >= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+		return 0;
+	return ++binding->preview_revision;
+}
+
+static bool preview_hit_geometry_changed(const faithfulframe_source_binding::preview_payload &current,
+					 const ff_candidate *candidates, size_t count)
+{
+	return !faithfulframe_preview_candidate_geometry_matches(current.candidates.data(), current.candidate_count,
+								 candidates, count);
+}
 
 // Retired bindings are first released on OBS's destroy-task executor, where
 // libobs references and signal callbacks may be disconnected safely. Only then
@@ -872,7 +893,8 @@ static void *ftf_create_internal(obs_data_t *settings, obs_source_t *context, bo
 			 "out int render_stamp_session_id, out int render_stamp_status_version, "
 			 "out int render_stamp_observation_version, out int render_stamp_source_generation, "
 			 "out int render_stamp_session_generation, out int render_stamp_stream_generation, "
-			 "out int render_stamp_geometry_generation, out int render_stamp_tracker_generation)",
+			 "out int render_stamp_geometry_generation, out int render_stamp_tracker_generation, "
+			 "out int render_stamp_candidate_preview_revision)",
 			 cb_render_frame, s);
 	proc_handler_add(ph, "void render_info(bool notrack)", cb_render_info, s);
 	proc_handler_add(ph, "void get_target_size(out int width, out int height)", cb_get_target_size, s);
@@ -2116,6 +2138,9 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 			binding->candidate_signature_count = count;
 			std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
 			if (lock.owns_lock()) {
+				if (preview_hit_geometry_changed(binding->preview, preview_candidates.data(),
+								 preview_count))
+					binding->preview.revision = advance_preview_revision(binding);
 				binding->preview.identity = binding->identity;
 				binding->preview.generations = generations;
 				binding->preview.observation_version = version;
@@ -2136,6 +2161,8 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 				binding->candidate_signature_count = 0;
 				std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
 				if (lock.owns_lock()) {
+					if (preview_hit_geometry_changed(binding->preview, nullptr, 0))
+						binding->preview.revision = advance_preview_revision(binding);
 					binding->preview.identity = binding->identity;
 					binding->preview.generations = generations;
 					binding->preview.observation_version = version;
@@ -2147,6 +2174,8 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		} else {
 			std::unique_lock<std::mutex> lock(binding->preview_mutex, std::try_to_lock);
 			if (lock.owns_lock()) {
+				if (preview_hit_geometry_changed(binding->preview, nullptr, 0))
+					binding->preview.revision = advance_preview_revision(binding);
 				binding->preview.identity = binding->identity;
 				binding->preview.generations = generations;
 				binding->preview.observation_version = binding->observation_version;
@@ -2731,7 +2760,8 @@ static ff_rect full_source_viewport(uint32_t source_width, uint32_t source_heigh
 
 static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, const ff_snapshot &snapshot,
 				       uint64_t snapshot_at, const ff_rect &crop, const ff_rect &viewport,
-				       uint32_t output_width, uint32_t output_height);
+				       uint32_t output_width, uint32_t output_height,
+				       uint64_t *candidate_preview_revision);
 
 static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_binding *binding,
 				   faithfulframe_source_runtime *runtime = nullptr, bool force_black = false,
@@ -2845,20 +2875,26 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 			draw_sprite_crop_to_rect(dx0, dy0, dx1, dy1, u0, v0, u1, v1);
 	}
 	gs_blend_state_pop();
+	uint64_t candidate_preview_revision = 0;
 	if (draw_candidates && source_available && texture && has_displayed_snapshot)
 		draw_safe_candidate_bounds(binding, displayed_snapshot, displayed_snapshot_at, crop, viewport,
-					   output_width, output_height);
+					   output_width, output_height, &candidate_preview_revision);
 	if (render_stamp && source_available && texture && has_displayed_snapshot) {
-		*render_stamp = faithfulframe_preview_render_stamp{true,
-								   displayed_snapshot.identity.source,
-								   displayed_snapshot.identity.session,
-								   displayed_snapshot.status_version,
-								   displayed_snapshot.observation_version,
-								   displayed_snapshot.generations.source,
-								   displayed_snapshot.generations.session,
-								   displayed_snapshot.generations.stream,
-								   displayed_snapshot.generations.geometry,
-								   displayed_snapshot.generations.tracker};
+		render_stamp->valid = true;
+		render_stamp->source_id = displayed_snapshot.identity.source;
+		render_stamp->session_id = displayed_snapshot.identity.session;
+		render_stamp->status_version = displayed_snapshot.status_version;
+		render_stamp->observation_version = displayed_snapshot.observation_version;
+		render_stamp->source_generation = displayed_snapshot.generations.source;
+		render_stamp->session_generation = displayed_snapshot.generations.session;
+		render_stamp->stream_generation = displayed_snapshot.generations.stream;
+		render_stamp->geometry_generation = displayed_snapshot.generations.geometry;
+		render_stamp->tracker_generation = displayed_snapshot.generations.tracker;
+		render_stamp->candidate_preview_revision = candidate_preview_revision;
+		render_stamp->output_width = output_width;
+		render_stamp->output_height = output_height;
+		render_stamp->crop = crop;
+		render_stamp->viewport = viewport;
 	}
 	if (bound_source)
 		obs_source_release(bound_source);
@@ -2866,8 +2902,11 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 
 static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, const ff_snapshot &snapshot,
 				       uint64_t snapshot_at, const ff_rect &crop, const ff_rect &viewport,
-				       uint32_t output_width, uint32_t output_height)
+				       uint32_t output_width, uint32_t output_height,
+				       uint64_t *candidate_preview_revision)
 {
+	if (candidate_preview_revision)
+		*candidate_preview_revision = 0;
 	if (!binding || has_conflicting_legacy_filter(binding) || binding->closed.load(std::memory_order_acquire) ||
 	    binding->transition_pending.load(std::memory_order_acquire))
 		return;
@@ -2954,6 +2993,8 @@ static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, co
 		}
 	}
 	gs_blend_state_pop();
+	if (candidate_preview_revision)
+		*candidate_preview_revision = preview.revision;
 }
 #endif
 
@@ -3212,6 +3253,7 @@ static void cb_render_frame(void *data, calldata_t *cd)
 	calldata_set_int(cd, "render_stamp_stream_generation", 0);
 	calldata_set_int(cd, "render_stamp_geometry_generation", 0);
 	calldata_set_int(cd, "render_stamp_tracker_generation", 0);
+	calldata_set_int(cd, "render_stamp_candidate_preview_revision", 0);
 
 	bool debug_notrack = false;
 	calldata_get_bool(cd, "notrack", &debug_notrack);
@@ -3233,6 +3275,8 @@ static void cb_render_frame(void *data, calldata_t *cd)
 		calldata_set_int(cd, "render_stamp_stream_generation", ffi_integer(render_stamp.stream_generation));
 		calldata_set_int(cd, "render_stamp_geometry_generation", ffi_integer(render_stamp.geometry_generation));
 		calldata_set_int(cd, "render_stamp_tracker_generation", ffi_integer(render_stamp.tracker_generation));
+		calldata_set_int(cd, "render_stamp_candidate_preview_revision",
+				 ffi_integer(render_stamp.candidate_preview_revision));
 		return;
 	}
 #endif
@@ -3374,6 +3418,7 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	calldata_set_bool(cd, "available", false);
 	calldata_set_bool(cd, "operator_actions_available", false);
 	calldata_set_int(cd, "candidate_count", 0);
+	calldata_set_int(cd, "candidate_preview_revision", 0);
 	calldata_set_int(cd, "status_snapshot_age_ms", -1);
 	if (s->ftm) {
 		calldata_set_int(cd, "stagesurface_map_count",
@@ -3514,6 +3559,7 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	if (!candidates_current)
 		return;
 	const size_t count = std::min(preview.candidate_count, preview.candidates.size());
+	calldata_set_int(cd, "candidate_preview_revision", ffi_integer(preview.revision));
 	calldata_set_int(cd, "candidate_count", static_cast<long long>(count));
 	calldata_set_int(cd, "candidate_source_id", ffi_integer(preview.identity.source));
 	calldata_set_int(cd, "candidate_session_id", ffi_integer(preview.identity.session));
