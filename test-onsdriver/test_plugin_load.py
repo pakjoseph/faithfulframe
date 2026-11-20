@@ -1636,7 +1636,7 @@ class PluginLoadTest(obstest.OBSTest):
             self._wait_for_ui_status(
                 ui, 'Camera disconnected; restore the camera, then select the speaker again'
             )
-            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+            self._wait_for_ui_widget(ui, 'Tracking status: attention required')
             self._wait_for_ui_widget(
                 ui, 'Enable automatic speaker following', enabled=False
             )

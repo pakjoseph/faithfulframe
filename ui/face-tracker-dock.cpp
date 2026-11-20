@@ -647,9 +647,9 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 	}
 	if (preview.session_closed)
 		return "Tracking session stopped; reselect the camera in Source Settings to resume";
-	if (preview.available && !preview.signal_connected)
+	if (preview.enabled && !preview.signal_connected)
 		return "Camera disconnected; restore the camera, then select the speaker again";
-	if (preview.available && !preview.target_active)
+	if (preview.enabled && !preview.target_active)
 		return "Camera inactive; activate its scene, then select the speaker again";
 	switch (preview.configuration_notice) {
 	case faithfulframe::safe_adapter_configuration_notice::source_binding_changed:

@@ -3350,6 +3350,19 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 				      has_conflicting_legacy_filter(binding)));
 	auto executor = binding ? std::atomic_load_explicit(&binding->executor, std::memory_order_acquire)
 				: std::shared_ptr<faithfulframe_session_executor>{};
+	// These binding facts remain authoritative even when the last immutable
+	// session snapshot has aged out (for example, after a camera disconnect
+	// stops producing frame ticks). Publish them before any snapshot freshness
+	// return so the dock can still explain why tracking is unavailable.
+	if (binding) {
+		calldata_set_int(cd, "source_width", binding->source_width.load(std::memory_order_acquire));
+		calldata_set_int(cd, "source_height", binding->source_height.load(std::memory_order_acquire));
+		calldata_set_int(cd, "output_width", binding->output_width.load(std::memory_order_acquire));
+		calldata_set_int(cd, "output_height", binding->output_height.load(std::memory_order_acquire));
+		calldata_set_string(cd, "target_name", binding->target_name.c_str());
+		calldata_set_bool(cd, "target_active", binding->effective_active.load(std::memory_order_acquire));
+		calldata_set_bool(cd, "signal_connected", binding->signal_connected.load(std::memory_order_acquire));
+	}
 	if (!binding || !executor || has_conflicting_legacy_filter(binding) ||
 	    binding->closed.load(std::memory_order_acquire) ||
 	    binding->transition_pending.load(std::memory_order_acquire))
@@ -3422,10 +3435,6 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	calldata_set_int(cd, "command_result", snapshot.command_result);
 	calldata_set_int(cd, "rejection_reason", snapshot.rejection_reason);
 	calldata_set_int(cd, "selected_handle", ffi_integer(snapshot.selected_handle));
-	calldata_set_int(cd, "source_width", binding->source_width.load(std::memory_order_acquire));
-	calldata_set_int(cd, "source_height", binding->source_height.load(std::memory_order_acquire));
-	calldata_set_int(cd, "output_width", binding->output_width.load(std::memory_order_acquire));
-	calldata_set_int(cd, "output_height", binding->output_height.load(std::memory_order_acquire));
 	calldata_set_float(cd, "crop_x", snapshot.crop.x);
 	calldata_set_float(cd, "crop_y", snapshot.crop.y);
 	calldata_set_float(cd, "crop_width", snapshot.crop.width);
@@ -3434,9 +3443,6 @@ static void cb_get_faithfulframe_preview(void *data, calldata_t *cd)
 	calldata_set_float(cd, "viewport_y", snapshot.viewport.y);
 	calldata_set_float(cd, "viewport_width", snapshot.viewport.width);
 	calldata_set_float(cd, "viewport_height", snapshot.viewport.height);
-	calldata_set_string(cd, "target_name", binding->target_name.c_str());
-	calldata_set_bool(cd, "target_active", binding->effective_active.load(std::memory_order_acquire));
-	calldata_set_bool(cd, "signal_connected", binding->signal_connected.load(std::memory_order_acquire));
 	// While a changed candidate set is queued or its immutable preview payload
 	// has not been published, do not offer the previous set for selection.
 	if (binding->candidate_observation_pending.load(std::memory_order_acquire))
