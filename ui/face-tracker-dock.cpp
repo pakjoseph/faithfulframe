@@ -29,7 +29,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QSysInfo>
-#include "sanctuary-style.hpp"
+#include "faithfulframe-style.hpp"
 #include "plugin-macros.generated.h"
 #include "face-tracker-dock.hpp"
 #include "face-tracker-widget.hpp"
@@ -984,7 +984,7 @@ FTDock::FTDock(QWidget *parent) : QFrame(parent)
 
 	auto *safeStatusLayout = new QHBoxLayout();
 	safeStatusLayout->setContentsMargins(0, 0, 0, 0);
-	safeStatusLayout->setSpacing(sanctuary::style::space_2);
+	safeStatusLayout->setSpacing(faithfulframe::style::space_2);
 	safeStatusIcon = new QLabel(this);
 	safeStatusIcon->setFixedSize(20, 20);
 	safeStatusIcon->setAlignment(Qt::AlignLeft | Qt::AlignTop);
@@ -1136,12 +1136,12 @@ void FTDock::applyDesignTokens()
 {
 	if (!design_tokens_ready)
 		return;
-	mainLayout->setContentsMargins(sanctuary::style::space_4, sanctuary::style::space_4, sanctuary::style::space_4,
-				       sanctuary::style::space_4);
-	mainLayout->setSpacing(sanctuary::style::space_2);
+	mainLayout->setContentsMargins(faithfulframe::style::space_4, faithfulframe::style::space_4,
+				       faithfulframe::style::space_4, faithfulframe::style::space_4);
+	mainLayout->setSpacing(faithfulframe::style::space_2);
 
 	const QString button_style =
-		sanctuary::style::control_stylesheet(sanctuary::style::colors_from_palette(palette()));
+		faithfulframe::style::control_stylesheet(faithfulframe::style::colors_from_palette(palette()));
 	for (QPushButton *button : {pauseButton, resetButton, enableButton, propertyButton, autoFollowButton,
 				    manualOverrideButton, selectCandidateButton, performanceRecordButton}) {
 		if (button)
@@ -1150,12 +1150,12 @@ void FTDock::applyDesignTokens()
 	for (QPushButton *button : {pauseButton, resetButton, autoFollowButton, manualOverrideButton,
 				    selectCandidateButton, performanceRecordButton}) {
 		if (button)
-			button->setMinimumHeight(sanctuary::style::control_primary_height);
+			button->setMinimumHeight(faithfulframe::style::control_primary_height);
 	}
 	if (targetSelector)
-		targetSelector->setMinimumHeight(sanctuary::style::control_standard_height);
+		targetSelector->setMinimumHeight(faithfulframe::style::control_standard_height);
 	if (candidateSelector)
-		candidateSelector->setMinimumHeight(sanctuary::style::control_standard_height);
+		candidateSelector->setMinimumHeight(faithfulframe::style::control_standard_height);
 }
 
 FTDock::~FTDock()

@@ -7,7 +7,7 @@
 #include <QPalette>
 #include <QString>
 
-namespace sanctuary::style {
+namespace faithfulframe::style {
 
 inline constexpr int space_1 = 4;
 inline constexpr int space_2 = 8;
@@ -42,4 +42,4 @@ struct colors
 colors colors_from_palette(const QPalette &palette);
 QString control_stylesheet(const colors &tokens);
 
-} // namespace sanctuary::style
+} // namespace faithfulframe::style

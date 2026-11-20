@@ -1,6 +1,6 @@
-#include "sanctuary-style.hpp"
+#include "faithfulframe-style.hpp"
 
-namespace sanctuary::style {
+namespace faithfulframe::style {
 
 colors colors_from_palette(const QPalette &palette)
 {
@@ -43,4 +43,4 @@ QString control_stylesheet(const colors &tokens)
 		.arg(tokens.text_muted.name());
 }
 
-} // namespace sanctuary::style
+} // namespace faithfulframe::style
