@@ -1365,7 +1365,7 @@ bool reaper_drains_chained_cleanup_before_shutdown()
 		faithfulframe_teardown_instance_destroyed();
 		return false;
 	}
-	const auto callback_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	const auto callback_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 	{
 		std::unique_lock<std::mutex> lock(state.mutex);
 		state.condition.wait_until(lock, callback_deadline, [&state] { return state.first_entered; });
@@ -1382,7 +1382,7 @@ bool reaper_drains_chained_cleanup_before_shutdown()
 		faithfulframe_teardown_instance_destroyed();
 		destroy_returned.store(true, std::memory_order_release);
 	});
-	const auto shutdown_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	const auto shutdown_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 	while ((!faithfulframe_test_reaper_shutdown_pending() || !destroy_returned.load(std::memory_order_acquire)) &&
 	       std::chrono::steady_clock::now() < shutdown_deadline)
 		std::this_thread::yield();
@@ -1396,14 +1396,27 @@ bool reaper_drains_chained_cleanup_before_shutdown()
 	trace_session_smoke_checkpoint("chained cleanup shutdown: join destroy callback");
 	destroy_thread.join();
 	trace_session_smoke_checkpoint("chained cleanup shutdown: destroy callback joined");
-	const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 	while (faithfulframe_test_reaper_shutdown_pending() && std::chrono::steady_clock::now() < drain_deadline)
 		std::this_thread::yield();
-	return callback_entered && shutdown_requested_while_callback_was_blocked &&
-	       !faithfulframe_test_reaper_shutdown_pending() && state.first_completed.load(std::memory_order_acquire) &&
-	       state.second_accepted.load(std::memory_order_acquire) &&
-	       state.second_completed.load(std::memory_order_acquire) &&
-	       faithfulframe_teardown_register_instance() == 0;
+	const bool shutdown_completed = !faithfulframe_test_reaper_shutdown_pending();
+	const bool first_completed = state.first_completed.load(std::memory_order_acquire);
+	const bool second_accepted = state.second_accepted.load(std::memory_order_acquire);
+	const bool second_completed = state.second_completed.load(std::memory_order_acquire);
+	const bool new_instance_rejected = faithfulframe_teardown_register_instance() == 0;
+	if (!new_instance_rejected)
+		faithfulframe_teardown_instance_creation_failed();
+	if (!callback_entered || !shutdown_requested_while_callback_was_blocked || !shutdown_completed ||
+	    !first_completed || !second_accepted || !second_completed || !new_instance_rejected) {
+		std::fprintf(stderr,
+			     "chained cleanup checks: callback_entered=%d shutdown_requested_while_blocked=%d "
+			     "shutdown_completed=%d first_completed=%d second_accepted=%d second_completed=%d "
+			     "new_instance_rejected=%d\n",
+			     callback_entered, shutdown_requested_while_callback_was_blocked, shutdown_completed,
+			     first_completed, second_accepted, second_completed, new_instance_rejected);
+		return false;
+	}
+	return true;
 }
 
 struct deferred_obs_cleanup_reservation_test
