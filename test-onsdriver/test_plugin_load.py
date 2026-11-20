@@ -1051,7 +1051,7 @@ class PluginLoadTest(obstest.OBSTest):
             scene_return_status = self._wait_for_ui_status(
                 ui, 'Camera or tracking settings changed; select the speaker again before following'
             )
-            self.assertIn('Tracking state: Manual', scene_return_status)
+            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
             zoom_text = scene_return_status.split('Current zoom: ', 1)[1].split('×', 1)[0]
             self.assertGreater(
                 float(zoom_text),
