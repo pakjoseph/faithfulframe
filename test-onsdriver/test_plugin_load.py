@@ -112,6 +112,18 @@ def screenshots_match_with_render_tolerance(expected, actual):
     return mean_difference <= 1.0 and maximum_difference <= 8
 
 
+def screenshot_has_visible_pixels(image_data):
+    """Return whether an OBS screenshot contains rendered image content."""
+    try:
+        _, _, pixels = decode_obs_screenshot(image_data)
+    except (ValueError, zlib.error, struct.error):
+        return False
+    return any(
+        pixels[index] > 8 or pixels[index + 1] > 8 or pixels[index + 2] > 8
+        for index in range(0, len(pixels), 4)
+    )
+
+
 def firsttime_setup_was_force_stopped(logsdir):
     firsttime_logs = glob.glob(os.path.join(logsdir, 'firsttime-*.txt'))
     for logfile in firsttime_logs:
@@ -1036,23 +1048,31 @@ class PluginLoadTest(obstest.OBSTest):
                 client, camera_name, lambda image: image == camera_before
             )
             self.assertEqual(camera_after_scene_return, camera_before)
-            self._wait_for_ui_status(
+            scene_return_status = self._wait_for_ui_status(
                 ui, 'Camera or tracking settings changed; select the speaker again before following'
             )
             self._wait_for_ui_widget(ui, 'Tracking state: Manual')
             self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
-            held_after_scene_return = self._wait_for_screenshot(
+            zoom_text = scene_return_status.split('Current zoom: ', 1)[1].split('×', 1)[0]
+            self.assertGreater(
+                float(zoom_text),
+                1.0,
+                'Scene reactivation must hold the prior cropped framing instead of resuming wide',
+            )
+            adapter_after_scene_return = self._wait_for_screenshot(
                 client,
                 adapter_name,
-                lambda image: screenshots_match_with_render_tolerance(
-                    adapter_after, image
+                lambda image: screenshot_has_visible_pixels(image)
+                and not screenshots_match_with_render_tolerance(
+                    camera_after_scene_return, image
                 ),
             )
             self.assertTrue(
-                screenshots_match_with_render_tolerance(
-                    adapter_after, held_after_scene_return
+                screenshot_has_visible_pixels(adapter_after_scene_return)
+                and not screenshots_match_with_render_tolerance(
+                    camera_after_scene_return, adapter_after_scene_return
                 ),
-                'Scene reactivation must hold the last valid framing until a fresh target selection',
+                'Scene reactivation must show the held crop, not black or wide framing',
             )
             self.assertEqual(self._screenshot(client, fallback_name), fallback_image)
 
