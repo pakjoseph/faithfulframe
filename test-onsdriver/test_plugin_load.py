@@ -1444,14 +1444,16 @@ class PluginLoadTest(obstest.OBSTest):
             self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
             self._wait_for_ui_widget(ui, 'Tracking state: Searching')
 
+            # Keep the aspect ratio constant so screenshot equality checks the
+            # full-source fallback without conflating it with output padding.
             client.send('SetInputSettings', {
                 'inputName': camera_name,
-                'inputSettings': {'width': 640, 'height': 480},
+                'inputSettings': {'width': 640, 'height': 360},
                 'overlay': True,
             })
             updated_settings = client.send('GetInputSettings', {'inputName': camera_name})
             self.assertEqual(updated_settings.input_settings.get('width'), 640)
-            self.assertEqual(updated_settings.input_settings.get('height'), 480)
+            self.assertEqual(updated_settings.input_settings.get('height'), 360)
 
             self._wait_for_ui_status(
                 ui,
