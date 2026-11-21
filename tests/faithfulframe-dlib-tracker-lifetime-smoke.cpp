@@ -110,6 +110,14 @@ int main()
 		std::fprintf(stderr, "dlib tracker lifetime smoke failed to enter worker\n");
 		return 1;
 	}
+	if (!faithfulframe_teardown_register_cleanup()) {
+		release_worker.store(true, std::memory_order_release);
+		delete tracker;
+		faithfulframe_teardown_instance_destroyed();
+		faithfulframe_teardown_begin_module_unload();
+		std::fprintf(stderr, "dlib tracker lifetime smoke could not reserve deferred cleanup\n");
+		return 1;
+	}
 
 	deferred_tracker_teardown teardown;
 	teardown.tracker = tracker;
@@ -119,7 +127,7 @@ int main()
 	// Exercise the failed-first-enqueue recovery path: module unload has begun,
 	// the dlib worker is blocked, and the destroy callback must return without
 	// deleting the manager. The main thread below represents a later OBS destroy
-	// task that retries the handoff while the source reservation remains active.
+	// task that retries the handoff while the nested cleanup reservation remains active.
 	faithfulframe_teardown_begin_module_unload();
 	std::thread destroyer([&] {
 		teardown.destroy_thread = std::this_thread::get_id();
@@ -128,6 +136,7 @@ int main()
 		first_handoff_rejected.store(!faithfulframe_defer_reap_task(&teardown.task, nullptr, &teardown, true),
 					     std::memory_order_release);
 		handoff_succeeded.store(false, std::memory_order_release);
+		faithfulframe_teardown_instance_destroyed();
 		destroy_callback_returned.store(true, std::memory_order_release);
 	});
 
