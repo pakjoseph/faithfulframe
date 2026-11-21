@@ -488,10 +488,10 @@ jobs:
           path: package/*
 
       - name: Prepare isolated macOS OBS profile
-        if: ${{ matrix.obs == 33 && matrix.arch == 'arm64' }}
+        if: ${{ matrix.obs == 33 && (matrix.arch == 'arm64' || matrix.arch == 'x86_64') }}
         env:
-          HOME: ${{ runner.temp }}/faithfulframe-obs-home
-          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home
+          HOME: ${{ runner.temp }}/faithfulframe-obs-home-${{ matrix.arch }}
+          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home-${{ matrix.arch }}
         run: mkdir -p "$HOME/Library/Logs/DiagnosticReports"
 
       - name: 'Setup with onsdriver'
@@ -500,14 +500,33 @@ jobs:
         uses: noris-plugins-for-obs/onsdriver@63e771126ada7a685538e146b87dcfae220384de # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOME: ${{ runner.temp }}/faithfulframe-obs-home
+          HOME: ${{ runner.temp }}/faithfulframe-obs-home-arm64
           # OBS resolves its macOS Application Support path through Foundation,
           # which does not follow HOME alone when the account home is available.
           # Keep OBS and onsdriver on the same isolated per-job profile.
-          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home
+          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home-arm64
         with:
           obs-plugins: package/*.zip
           obs-architecture: ${{ matrix.arch }}
+          obs-version: ${{ matrix.obs-onsdriver }}
+          first-time-log: ./logs/
+
+      - name: 'Prepare OBS and attempt Intel first-run setup'
+        id: intel_onsdriver_setup
+        if: ${{ matrix.obs == 33 && matrix.arch == 'x86_64' }}
+        # onsdriver's full first-run UI path previously hung on the Intel runner.
+        # The next step independently verifies the module-load log and records
+        # whether this auxiliary first-run setup reached its own shutdown barrier.
+        timeout-minutes: 3
+        continue-on-error: true
+        uses: noris-plugins-for-obs/onsdriver@63e771126ada7a685538e146b87dcfae220384de # v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOME: ${{ runner.temp }}/faithfulframe-obs-home-x86_64
+          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home-x86_64
+        with:
+          obs-plugins: package/*.zip
+          obs-architecture: x86_64
           obs-version: ${{ matrix.obs-onsdriver }}
           first-time-log: ./logs/
 
@@ -515,9 +534,27 @@ jobs:
         if: ${{ matrix.obs == 33 && matrix.arch == 'arm64' }}
         timeout-minutes: 5
         env:
-          HOME: ${{ runner.temp }}/faithfulframe-obs-home
-          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home
+          HOME: ${{ runner.temp }}/faithfulframe-obs-home-arm64
+          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home-arm64
         run: python -m unittest discover test-onsdriver/
+
+      - name: Verify FaithfulFrame loaded in Intel OBS 33
+        if: ${{ always() && matrix.obs == 33 && matrix.arch == 'x86_64' }}
+        env:
+          HOME: ${{ runner.temp }}/faithfulframe-obs-home-x86_64
+          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home-x86_64
+          INTEL_SETUP_OUTCOME: ${{ steps.intel_onsdriver_setup.outcome }}
+        run: |
+          python3 ci/macos/verify-obs-plugin-load.py \
+            --config-root "$HOME/Library/Application Support/obs-studio" \
+            --firsttime-log-dir logs \
+            --artifact-dir logs/intel-obs-smoke/obs-logs \
+            --report logs/intel-obs-smoke/result.json \
+            --plugin face-tracker \
+            --obs-major 33 \
+            --api-version 33.0.0 \
+            --expected-architecture x86_64 \
+            --setup-outcome "$INTEL_SETUP_OUTCOME"
 
       - name: 'Upload Apple Silicon OBS smoke logs'
         if: ${{ always() && matrix.obs == 33 && matrix.arch == 'arm64' }}
@@ -527,6 +564,17 @@ jobs:
         with:
           name: test-${{ env.artifactName }}-macos-obs${{ matrix.obs }}-${{ matrix.arch }}
           path: logs/*
+
+      - name: Upload macOS Intel OBS module-load evidence
+        if: ${{ always() && matrix.obs == 33 && matrix.arch == 'x86_64' }}
+        timeout-minutes: 3
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: test-${{ env.artifactName }}-macos-obs${{ matrix.obs }}-${{ matrix.arch }}-module-load
+          path: |
+            logs/intel-obs-smoke/*
+            ${{ runner.temp }}/faithfulframe-obs-home-x86_64/Library/Application Support/obs-studio/logs/*
 
       - name: Prepare isolated Apple Silicon signed-package profile
         if: ${{ startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' && matrix.obs == 33 && matrix.arch == 'arm64' }}
@@ -843,6 +891,7 @@ jobs:
           python -m unittest discover -s tests -p 'test_collect_obs_baseline.py'
           python -m unittest discover -s tests -p 'test_faithfulframe_offline_benchmark.py'
           python -m unittest discover -s tests -p 'test_run_offline_detector_comparison.py'
+          python -m unittest discover -s tests -p 'test_macos_obs_plugin_load.py'
 
       - name: Test Windows installer naming and compatibility paths
         run: python -m unittest discover -s tests -p 'test_windows_installer_template.py'
