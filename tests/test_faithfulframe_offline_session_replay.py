@@ -55,6 +55,31 @@ def write_cartoon_faces_scene(
     path.write_bytes(f"P6\n{width} {height}\n255\n".encode("ascii") + pixels)
 
 
+def write_single_speaker_scene(path: Path, portrait_path: Path, scale: int) -> None:
+    if scale not in (1, 2):
+        raise ValueError("the geometry comparison uses 1080p and exact 2x 4K scenes")
+
+    portrait_width, portrait_height, portrait = read_synthetic_portrait(portrait_path)
+    width, height = 1920 * scale, 1080 * scale
+    pixels = bytearray([32, 38, 42]) * (width * height)
+    left, top = 800 * scale, 360 * scale
+
+    # Duplicate each RGB pixel exactly at 4K. The 4K replay's stride-2 detector
+    # input must therefore be byte-for-byte equivalent to the 1080p input.
+    for row in range(portrait_height):
+        source_start = row * portrait_width * 3
+        source_row = portrait[source_start : source_start + portrait_width * 3]
+        scaled_row = bytearray()
+        for x in range(portrait_width):
+            pixel_start = x * 3
+            scaled_row.extend(source_row[pixel_start : pixel_start + 3] * scale)
+        for y in range(scale):
+            target_start = ((top + row * scale + y) * width + left) * 3
+            pixels[target_start : target_start + len(scaled_row)] = scaled_row
+
+    path.write_bytes(f"P6\n{width} {height}\n255\n".encode("ascii") + pixels)
+
+
 def write_stage_projection_scene(
     path: Path,
     portrait_path: Path,
@@ -126,55 +151,113 @@ def write_cartoon_stage_frame(path: Path, portrait_path: Path, x: int) -> None:
 
 class OfflineSessionReplayTests(unittest.TestCase):
     def test_4k_input_scale_is_validated_and_recorded_for_1080p_output(self):
+        portrait = (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "offline-synthetic-person-320x360.ppm"
+        )
+        self.assertTrue(portrait.is_file(), f"missing synthetic person fixture: {portrait}")
+
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
-            frame = temporary / "black-3840x2160.ppm"
-            manifest = temporary / "frames.tsv"
-            trace = temporary / "trace.jsonl"
-            write_black_ppm(frame, 3840, 2160)
-            manifest.write_text(
-                "monotonic_ms\tframe_path\n0\tblack-3840x2160.ppm\n",
-                encoding="utf-8",
-            )
+            runs = {}
+            for scale, label in ((1, "1080p"), (2, "4k")):
+                frame = temporary / f"single-speaker-{label}.ppm"
+                manifest = temporary / f"{label}-frames.tsv"
+                trace = temporary / f"{label}-trace.jsonl"
+                write_single_speaker_scene(frame, portrait, scale)
+                manifest.write_text(
+                    "monotonic_ms\tframe_path\n"
+                    + "".join(
+                        f"{100 + frame_index * 500}\t{frame.name}\n" for frame_index in range(7)
+                    ),
+                    encoding="utf-8",
+                )
 
-            result = subprocess.run(
-                [
-                    str(self.binary),
-                    "--model",
-                    str(self.model),
-                    "--manifest",
-                    str(manifest),
-                    "--trace",
-                    str(trace),
-                    "--output-width",
-                    "1920",
-                    "--output-height",
-                    "1080",
-                    "--detection-scale",
-                    "2",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
-            diagnostics = next(event for event in events if event["kind"] == "tracker_diagnostics")
-            initial_tick = next(event for event in events if event["kind"] == "tick")
-            summary = next(event for event in events if event["kind"] == "summary")
+                result = subprocess.run(
+                    [
+                        str(self.binary),
+                        "--model",
+                        str(self.model),
+                        "--manifest",
+                        str(manifest),
+                        "--trace",
+                        str(trace),
+                        "--output-width",
+                        "1920",
+                        "--output-height",
+                        "1080",
+                        "--detection-scale",
+                        str(scale),
+                        "--operator-select-first-candidate-at-ms",
+                        "3100",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                failure_context = result.stderr
+                if result.returncode != 0 and trace.is_file():
+                    diagnostics = [
+                        json.loads(line)
+                        for line in trace.read_text(encoding="utf-8").splitlines()
+                        if '"kind":"tracker_diagnostics"' in line
+                    ]
+                    failure_context += f"\nDetector/tracker diagnostics: {diagnostics}"
+                self.assertEqual(result.returncode, 0, f"{label} replay failed: {failure_context}")
+
+                events = [
+                    json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()
+                ]
+                diagnostics = [event for event in events if event["kind"] == "tracker_diagnostics"]
+                candidates = [event for event in events if event["kind"] == "candidate"]
+                commands = [event for event in events if event["kind"] == "command"]
+                summary = next(event for event in events if event["kind"] == "summary")
+                self.assertTrue(diagnostics)
+                self.assertEqual(
+                    {
+                        (event["source_width"], event["source_height"])
+                        for event in diagnostics
+                    },
+                    {(1920 * scale, 1080 * scale)},
+                )
+                self.assertEqual(
+                    {
+                        (event["detector_input_width"], event["detector_input_height"])
+                        for event in diagnostics
+                    },
+                    {(1920, 1080)},
+                )
+                self.assertTrue(all(event["detection_scale"] == scale for event in diagnostics))
+                self.assertTrue(all(event["scaling_mode"] == "rgb_stride" for event in diagnostics))
+                self.assertGreater(max(event["detector_work_count"] for event in diagnostics), 0)
+                self.assertGreater(max(event["detection_count"] for event in diagnostics), 0)
+                self.assertTrue(candidates, f"{label} run published no tracking candidate")
+                self.assertEqual(len(commands), 1)
+                self.assertTrue(summary["operator_selection_applied"])
+                self.assertEqual(
+                    commands[0]["snapshot"]["selected_handle"], commands[0]["candidate_handle"]
+                )
+                selected = next(
+                    event["candidate"]
+                    for event in candidates
+                    if event["frame_index"] == commands[0]["frame_index"]
+                    and event["candidate"]["handle"] == commands[0]["candidate_handle"]
+                )
+                runs[label] = {
+                    "selected_rect": selected["rect"],
+                    "crop": commands[0]["snapshot"]["source_crop"],
+                    "initial_tick": next(event for event in events if event["kind"] == "tick"),
+                }
+
+            for actual, expected in zip(runs["4k"]["selected_rect"], runs["1080p"]["selected_rect"]):
+                self.assertAlmostEqual(actual, expected, delta=0.005)
+            for actual, expected in zip(runs["4k"]["crop"], runs["1080p"]["crop"]):
+                self.assertAlmostEqual(actual, expected, delta=0.005)
+            self.assertEqual(runs["4k"]["initial_tick"]["snapshot"]["source_crop"], [0, 0, 1, 1])
             self.assertEqual(
-                (diagnostics["source_width"], diagnostics["source_height"]), (3840, 2160)
+                runs["4k"]["initial_tick"]["snapshot"]["output_viewport"], [0, 0, 1, 1]
             )
-            self.assertEqual(
-                (diagnostics["detector_input_width"], diagnostics["detector_input_height"]),
-                (1920, 1080),
-            )
-            self.assertEqual(diagnostics["detection_scale"], 2)
-            self.assertEqual(diagnostics["scaling_mode"], "rgb_stride")
-            self.assertEqual(summary["detection_scale"], 2)
-            self.assertEqual(summary["scaling_mode"], "rgb_stride")
-            self.assertEqual(initial_tick["snapshot"]["source_crop"], [0, 0, 1, 1])
-            self.assertEqual(initial_tick["snapshot"]["output_viewport"], [0, 0, 1, 1])
 
             invalid_scale = subprocess.run(
                 [
@@ -182,7 +265,7 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     "--model",
                     str(self.model),
                     "--manifest",
-                    str(manifest),
+                    str(temporary / "4k-frames.tsv"),
                     "--detection-scale",
                     "0",
                 ],
