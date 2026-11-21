@@ -19,12 +19,6 @@ bool faithfulframe_monitor_get_render_stamp(obs_source_t *, faithfulframe_previe
 	return false;
 }
 
-class exposed_preview_widget final : public FTWidget {
-public:
-	using FTWidget::FTWidget;
-	using FTWidget::mousePressEvent;
-};
-
 static faithfulframe_preview_render_stamp make_stamp()
 {
 	faithfulframe_preview_render_stamp stamp{};
@@ -61,7 +55,7 @@ int main(int argc, char **argv)
 	}
 	const auto expected_stamp = make_stamp();
 	data->preview_render_stamp = expected_stamp;
-	exposed_preview_widget widget(data, nullptr);
+	FTWidget widget(data, nullptr);
 	int click_count = 0;
 	QPointF clicked_position;
 	faithfulframe_preview_render_stamp clicked_stamp{};
@@ -74,7 +68,7 @@ int main(int argc, char **argv)
 
 	QMouseEvent left_click(QEvent::MouseButtonPress, QPointF(17.25, 23.5), Qt::LeftButton, Qt::LeftButton,
 			       Qt::NoModifier);
-	widget.mousePressEvent(&left_click);
+	QApplication::sendEvent(&widget, &left_click);
 	if (!left_click.isAccepted() || click_count != 1 || clicked_position != QPointF(17.25, 23.5) ||
 	    !faithfulframe_preview_render_stamp_matches(expected_stamp, clicked_stamp)) {
 		std::fprintf(stderr, "left click did not publish its logical position and rendered snapshot version\n");
@@ -83,7 +77,7 @@ int main(int argc, char **argv)
 
 	QMouseEvent right_click(QEvent::MouseButtonPress, QPointF(31.0, 9.0), Qt::RightButton, Qt::RightButton,
 				Qt::NoModifier);
-	widget.mousePressEvent(&right_click);
+	QApplication::sendEvent(&widget, &right_click);
 	if (click_count != 1) {
 		std::fprintf(stderr, "non-left click emitted a speaker-selection request\n");
 		return 3;
@@ -92,7 +86,7 @@ int main(int argc, char **argv)
 	pthread_mutex_lock(&data->mutex);
 	QMouseEvent contended_click(QEvent::MouseButtonPress, QPointF(8.0, 12.0), Qt::LeftButton, Qt::LeftButton,
 				    Qt::NoModifier);
-	widget.mousePressEvent(&contended_click);
+	QApplication::sendEvent(&widget, &contended_click);
 	pthread_mutex_unlock(&data->mutex);
 	if (!contended_click.isAccepted() || click_count != 2 || clicked_stamp.valid) {
 		std::fprintf(stderr, "preview click blocked or reused a stamp while render data was contended\n");
