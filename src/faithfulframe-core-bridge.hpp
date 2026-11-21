@@ -131,7 +131,17 @@ public:
 	static constexpr size_t reserved_control_work = 4;
 	static constexpr size_t max_queued_background_work = max_queued_work - reserved_control_work;
 
+	// Production instances must use create() so their final owner release can
+	// transfer any worker join to the module reaper. Direct construction remains
+	// available only to the isolated executor smoke test.
+#ifdef FAITHFULFRAME_TEST_SESSION_EXECUTOR_ACCESS
+public:
+#else
+private:
+#endif
 	faithfulframe_session_executor(const ff_session_config &, const ff_identity &, const ff_generations &);
+
+public:
 	~faithfulframe_session_executor();
 	faithfulframe_session_executor(const faithfulframe_session_executor &) = delete;
 	faithfulframe_session_executor &operator=(const faithfulframe_session_executor &) = delete;

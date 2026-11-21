@@ -41,6 +41,22 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
         self.assertIn("faithfulframe_session_executor::create(", production)
         self.assertNotRegex(production, r"std::make_shared\s*<\s*faithfulframe_session_executor\s*>")
 
+    def test_production_executor_construction_is_confined_to_bridge_factory(self):
+        direct_construction = re.compile(
+            r"\bfaithfulframe_session_executor\s+[A-Za-z_]\w*\s*\(|"
+            r"\bnew\s+faithfulframe_session_executor\s*\(|"
+            r"std::make_shared\s*<\s*faithfulframe_session_executor\s*>"
+        )
+        call_sites = []
+        for path, source in production_sources().items():
+            if path in ("src/faithfulframe-core-bridge.cpp", "src/faithfulframe-core-bridge.hpp"):
+                continue
+            for match in direct_construction.finditer(source):
+                line_number = source.count("\n", 0, match.start()) + 1
+                call_sites.append(f"{path}:{line_number}")
+
+        self.assertEqual(call_sites, [])
+
     def test_direct_session_call_outside_the_bridge_is_detected(self):
         sources = {
             SERIALIZED_BRIDGE: "ff_session_tick(session, at, &snapshot);",
