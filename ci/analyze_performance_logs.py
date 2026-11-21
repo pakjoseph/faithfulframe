@@ -577,6 +577,40 @@ def _comparison_sample_gap_evidence(
     }
 
 
+def _video_configuration_mismatch_details(
+    reference_configurations: list[dict], candidate_configurations: list[dict]
+) -> list[str]:
+    if len(reference_configurations) != 1 or len(candidate_configurations) != 1:
+        return ["obs_video_configuration"]
+    reference_config = reference_configurations[0]
+    candidate_config = candidate_configurations[0]
+    setting_names = {
+        "obs_graphics_module": "graphics_module",
+        "obs_fps_num": "fps_num",
+        "obs_fps_den": "fps_den",
+        "obs_base_width": "base_width",
+        "obs_base_height": "base_height",
+        "obs_canvas_output_width": "output_width",
+        "obs_canvas_output_height": "output_height",
+        "obs_output_format": "output_format",
+        "obs_colorspace": "colorspace",
+        "obs_range": "range",
+        "obs_scale_type": "scale_type",
+        "obs_gpu_conversion": "gpu_conversion",
+    }
+    differences = []
+    for setting in sorted(reference_config.keys() | candidate_config.keys()):
+        reference_value = reference_config.get(setting)
+        candidate_value = candidate_config.get(setting)
+        if reference_value != candidate_value:
+            label = setting_names.get(setting, setting)
+            differences.append(
+                f"obs_video_configuration.{label} (reference={reference_value!r}, "
+                f"candidate={candidate_value!r})"
+            )
+    return differences or ["obs_video_configuration"]
+
+
 def load_log(path: str | Path) -> dict:
     path = Path(path)
     try:
@@ -965,13 +999,22 @@ def compare_logs(
             "runs are not comparable; common OBS video settings are incomplete; collect a schema v2 baseline"
         )
     if reference["comparison_video_configurations"] != candidate["comparison_video_configurations"]:
-        context_mismatches.append("obs_video_configuration")
+        context_mismatches.extend(
+            _video_configuration_mismatch_details(
+                reference["comparison_video_configurations"],
+                candidate["comparison_video_configurations"],
+            )
+        )
     elif (
         reference["obs_video_configuration_complete"]
         and candidate["obs_video_configuration_complete"]
         and reference["obs_video_configurations"] != candidate["obs_video_configurations"]
     ):
-        context_mismatches.append("obs_video_configuration")
+        context_mismatches.extend(
+            _video_configuration_mismatch_details(
+                reference["obs_video_configurations"], candidate["obs_video_configurations"]
+            )
+        )
     if reference_resolution != candidate_resolution:
         context_mismatches.append("video_resolutions")
     if reference["output_mode"] != candidate["output_mode"]:

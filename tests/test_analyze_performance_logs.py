@@ -603,7 +603,10 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
             candidate_rows[1][column] = ""
         candidate_path = self.write_log("faithfulframe.csv", candidate_rows)
 
-        with self.assertRaisesRegex(analyzer.PerformanceLogError, "mismatched context: obs_video_configuration"):
+        with self.assertRaisesRegex(
+            analyzer.PerformanceLogError,
+            r"obs_video_configuration\.colorspace \(reference=1, candidate=2\)",
+        ):
             analyzer.compare_logs(analyzer.load_log(baseline_path), analyzer.load_log(candidate_path))
 
     def test_baseline_profile_change_makes_video_configuration_unstable(self):
