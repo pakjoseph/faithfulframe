@@ -320,12 +320,10 @@ pub struct TrackingSession {
     state: State,
     reason: Reason,
     selected: Option<SelectedTarget>,
+    /// The C++ adapter owns the source-manager-lifetime monotonic handle
+    /// allocator. Retaining only this bounded observation cache avoids storing
+    /// every historical handle in Rust for the duration of a live stream.
     latest: BTreeMap<CandidateHandle, Candidate>,
-    /// Candidate handles stay reserved for the full session lifetime. Dlib
-    /// trackers can become publishable out of allocation order, so a numeric
-    /// high-water mark would incorrectly reject a valid lower handle that is
-    /// first observed after a higher one.
-    seen_candidate_handles: BTreeMap<CandidateHandle, ContinuityToken>,
     /// True only after a candidate opens this version's batch; a clear or
     /// lifecycle fence closes it so same-version late results stay stale.
     candidate_observation_open: bool,
@@ -378,7 +376,6 @@ impl TrackingSession {
             reason: Reason::Startup,
             selected: None,
             latest: BTreeMap::new(),
-            seen_candidate_handles: BTreeMap::new(),
             candidate_observation_open: false,
             held_crop: safe_wide,
             crop_action: CropAction::None,
@@ -621,8 +618,10 @@ impl TrackingSession {
         {
             return self.reject_command(Reason::InvalidCandidate);
         }
-        if let Some(previous_continuity) = self.seen_candidate_handles.get(&candidate.handle)
-            && *previous_continuity != candidate.continuity
+        if self
+            .latest
+            .get(&candidate.handle)
+            .is_some_and(|previous| previous.continuity != candidate.continuity)
         {
             return self.reject_command(Reason::InvalidCandidate);
         }
@@ -633,9 +632,6 @@ impl TrackingSession {
         {
             return self.reject_command(Reason::InvalidCandidate);
         }
-        self.seen_candidate_handles
-            .entry(candidate.handle)
-            .or_insert(candidate.continuity);
         self.latest.insert(candidate.handle, candidate);
         let protected_handle = if self.state == State::Locked {
             self.selected.map(|selected| {
@@ -728,9 +724,10 @@ impl TrackingSession {
         if observation_version == 0 || observation_version <= self.observation_version {
             return self.reject_command(Reason::InvalidCandidate);
         }
-        // Keep the bounded handle records so an active tracker may publish
-        // the same never-recycled handle in its next observation. Their older
-        // versions cannot be selected after this version fence advances.
+        // Keep currently retained handles so active trackers may publish fresh
+        // evidence in a later observation. The OBS adapter's private monotonic
+        // allocator guarantees that evicted handles are never recycled within
+        // this source-manager lifetime.
         self.observation_version = observation_version;
         self.candidate_observation_open = false;
         CommandResult::NotACommand
@@ -1415,7 +1412,6 @@ mod tests {
         reason: Reason,
         selected: Option<(CandidateHandle, ContinuityToken, Millis, Rect)>,
         latest: BTreeMap<CandidateHandle, Candidate>,
-        seen_candidate_handles: BTreeMap<CandidateHandle, ContinuityToken>,
         candidate_observation_open: bool,
         held_crop: Rect,
         crop_action: CropAction,
@@ -1448,7 +1444,6 @@ mod tests {
                 )
             }),
             latest: session.latest.clone(),
-            seen_candidate_handles: session.seen_candidate_handles.clone(),
             candidate_observation_open: session.candidate_observation_open,
             held_crop: session.held_crop,
             crop_action: session.crop_action,
@@ -1664,7 +1659,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_events_preserve_candidate_history_and_deadlines() {
+    fn invalid_events_preserve_candidate_cache_and_deadlines() {
         let mut session = session();
         let locked = lock_test_target(&mut session);
 
@@ -2164,7 +2159,7 @@ mod tests {
     }
 
     #[test]
-    fn reused_candidate_handle_with_different_continuity_is_rejected() {
+    fn active_candidate_handle_with_different_continuity_is_rejected() {
         let mut session = session();
         lock_test_target(&mut session);
         let before = session.snapshot();
@@ -2180,68 +2175,6 @@ mod tests {
     }
 
     #[test]
-    fn evicted_candidate_handles_cannot_be_recycled() {
-        let mut session = TrackingSession::new(
-            Config {
-                loss_grace_ms: 100,
-                max_evidence_age_ms: 10,
-                max_candidates: 1,
-                ..Config::default()
-            },
-            identity(),
-            generations(),
-        )
-        .unwrap();
-        observe(&mut session, candidate(10, 100, 1, 2), 2);
-        observe(&mut session, candidate(11, 110, 2, 3), 3);
-        assert_eq!(session.latest.len(), 1);
-        assert!(!session.latest.contains_key(&10));
-        let before = session.snapshot();
-
-        let after = observe(&mut session, candidate(10, 200, 3, 4), 4);
-
-        assert_eq!(
-            after.command_result,
-            CommandResult::Rejected(Reason::InvalidCandidate)
-        );
-        assert_policy_no_op(after, before);
-        assert_eq!(session.seen_candidate_handles.get(&10), Some(&100));
-    }
-
-    #[test]
-    fn candidate_handles_remain_reserved_across_tracker_generations() {
-        let mut session = session();
-        observe(&mut session, candidate(10, 100, 1, 2), 2);
-        let before_transition = session.snapshot();
-        let changed = session.apply(Event::Lifecycle {
-            at: 3,
-            identity: before_transition.identity,
-            event: Lifecycle::TrackerChanged {
-                generations: generations_after(
-                    before_transition.generations,
-                    false,
-                    false,
-                    false,
-                    false,
-                    true,
-                ),
-            },
-        });
-        assert!(session.latest.is_empty());
-        let mut recycled = candidate(10, 200, changed.observation_version + 1, 4);
-        recycled.generations = changed.generations;
-
-        let after = observe(&mut session, recycled, 4);
-
-        assert_eq!(
-            after.command_result,
-            CommandResult::Rejected(Reason::InvalidCandidate)
-        );
-        assert_policy_no_op(after, changed);
-        assert_eq!(session.seen_candidate_handles.get(&10), Some(&100));
-    }
-
-    #[test]
     fn active_older_handles_can_update_after_newer_candidates_exist() {
         let mut session = session();
         observe(&mut session, candidate(10, 100, 1, 2), 2);
@@ -2252,7 +2185,6 @@ mod tests {
         assert_eq!(refreshed.command_result, CommandResult::NotACommand);
         assert_eq!(refreshed.observation_version, 3);
         assert_eq!(session.latest.get(&10).unwrap().observed_at, 4);
-        assert_eq!(session.seen_candidate_handles.len(), 2);
     }
 
     #[test]
@@ -2265,7 +2197,6 @@ mod tests {
         assert_eq!(lower.command_result, CommandResult::NotACommand);
         assert_eq!(lower.observation_version, 2);
         assert_eq!(session.latest.get(&10).unwrap().continuity, 100);
-        assert_eq!(session.seen_candidate_handles.len(), 2);
     }
 
     #[test]
@@ -2892,9 +2823,9 @@ mod tests {
 
             assert_eq!(result.command_result, CommandResult::NotACommand);
             assert!(session.latest.len() <= MAX_SESSION_CANDIDATES);
-            assert_eq!(session.seen_candidate_handles.len(), version as usize);
         }
 
+        assert_eq!(session.latest.len(), MAX_SESSION_CANDIDATES);
         let before_stale_selection = session.snapshot();
         let oldest_evicted_handle = 1;
         assert!(!session.latest.contains_key(&oldest_evicted_handle));

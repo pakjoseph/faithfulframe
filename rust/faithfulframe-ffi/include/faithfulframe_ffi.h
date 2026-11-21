@@ -140,6 +140,9 @@ typedef struct ff_session_config
  */
 typedef struct ff_candidate
 {
+	// Nonzero and unique for the source-manager lifetime. The C++ adapter's
+	// private monotonic allocator enforces this without retaining an unbounded
+	// per-session history inside the Rust policy cache.
 	uint64_t handle;
 	uint64_t continuity_token;
 	ff_identity identity;
