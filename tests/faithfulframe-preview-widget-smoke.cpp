@@ -46,8 +46,10 @@ static faithfulframe_preview_render_stamp make_stamp()
 	stamp.tracker_generation = 19;
 	stamp.candidate_preview_revision = 20;
 	stamp.candidate_earliest_expiry_ms = 21;
-	stamp.display_width = 640;
-	stamp.display_height = 360;
+	// Render stamps use physical display pixels, while Qt mouse positions and
+	// widget dimensions use logical pixels. Simulate a 2x HiDPI surface here.
+	stamp.display_width = 1280;
+	stamp.display_height = 960;
 	stamp.output_width = 1920;
 	stamp.output_height = 1080;
 	stamp.crop = {0.1f, 0.2f, 0.7f, 0.6f};
@@ -80,7 +82,7 @@ int main(int argc, char **argv)
 	const auto expected_stamp = make_stamp();
 	data->preview_render_stamp = expected_stamp;
 	FTWidget widget(data, nullptr);
-	widget.resize(640, 360);
+	widget.resize(640, 480);
 	int click_count = 0;
 	QPointF clicked_position;
 	faithfulframe_preview_render_stamp clicked_stamp{};
@@ -112,6 +114,10 @@ int main(int argc, char **argv)
 		std::fprintf(stderr, "left click did not publish its logical position and rendered snapshot version\n");
 		return 2;
 	}
+	if (selection_result != ff_preview_click_result::outside_image || selected_index != 73) {
+		std::fprintf(stderr, "a click in the preview letterbox selected a candidate\n");
+		return 10;
+	}
 
 	send_mouse_press(widget, QPointF(31.0, 9.0), Qt::RightButton);
 	if (click_count != 1) {
@@ -132,7 +138,13 @@ int main(int argc, char **argv)
 		return 7;
 	}
 
-	send_mouse_press(widget, QPointF(320.0, 180.0), Qt::LeftButton);
+	send_mouse_press(widget, QPointF(64.0, 100.0), Qt::LeftButton);
+	if (selection_result != ff_preview_click_result::no_hit || selected_index != 73) {
+		std::fprintf(stderr, "a click away from all visible faces selected a candidate\n");
+		return 11;
+	}
+
+	send_mouse_press(widget, QPointF(320.0, 240.0), Qt::LeftButton);
 	if (selection_result != ff_preview_click_result::selected || selected_index != 1 ||
 	    candidate_handles[selected_index] != 42) {
 		std::fprintf(stderr, "a preview click did not resolve to the intended visible candidate handle\n");
@@ -141,7 +153,7 @@ int main(int argc, char **argv)
 
 	selected_index = 73;
 	current_preview_is_stale = true;
-	send_mouse_press(widget, QPointF(320.0, 180.0), Qt::LeftButton);
+	send_mouse_press(widget, QPointF(320.0, 240.0), Qt::LeftButton);
 	if (selection_result != ff_preview_click_result::stale_preview || selected_index != 73) {
 		std::fprintf(stderr, "a stale preview click changed the selected candidate\n");
 		return 9;
