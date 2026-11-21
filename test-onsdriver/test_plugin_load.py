@@ -508,6 +508,18 @@ class PluginLoadTest(obstest.OBSTest):
             time.sleep(0.1)
         self.fail(f'FaithfulFrame status did not contain {text!r}: {last_status!r}')
 
+    def _wait_for_ui_status_any(self, ui, texts, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        last_status = None
+        while time.monotonic() < deadline:
+            response = ui.request('widget-list', {})
+            widget = self._find_ui_widget(response.get('children', []), 'FaithfulFrame tracking status')
+            last_status = widget.get('text') if widget else None
+            if last_status and any(text in last_status for text in texts):
+                return last_status
+            time.sleep(0.1)
+        self.fail(f'FaithfulFrame status did not contain any of {texts!r}: {last_status!r}')
+
     def _wait_for_ui_zoom_above(self, ui, minimum_zoom, timeout=10.0):
         deadline = time.monotonic() + timeout
         last_status = None
@@ -732,7 +744,20 @@ class PluginLoadTest(obstest.OBSTest):
             self.assertIn('press space', select_control.get('accessibleDescription', '').lower())
 
             self._invoke_ui_widget(ui, 'accessibleName', 'Enable automatic speaker following', 'click')
-            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+            status = self._wait_for_ui_status_any(
+                ui,
+                (
+                    'No speaker selected; choose a visible face',
+                    'Selection or command expired; choose again from the current preview',
+                    'Command rejected;',
+                ),
+            )
+            if 'No speaker selected; choose a visible face' not in status:
+                self.assertTrue('rejected' in status.lower() or 'expired' in status.lower(), status)
+                self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+                self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
+                self._invoke_ui_widget(ui, 'accessibleName', 'Enable automatic speaker following', 'click')
+                self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
             self._wait_for_ui_widget(ui, 'Tracking state: Searching')
 
             self._invoke_ui_widget(ui, 'accessibleName', 'Freeze automatic tracking', 'click')

@@ -654,16 +654,6 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 		return "Camera disconnected; restore the camera, then select the speaker again";
 	if (preview.enabled && !preview.target_active)
 		return "Camera inactive; activate its scene, then select the speaker again";
-	switch (preview.configuration_notice) {
-	case faithfulframe::safe_adapter_configuration_notice::source_binding_changed:
-		return "Camera source changed; confirm the source setup, then rearm and select a speaker";
-	case faithfulframe::safe_adapter_configuration_notice::framing_settings_changed:
-		return "Framing settings changed; rearm and select a speaker before following";
-	case faithfulframe::safe_adapter_configuration_notice::tracking_settings_changed:
-		return "Tracking settings changed; rearm and select a speaker before following";
-	case faithfulframe::safe_adapter_configuration_notice::none:
-		break;
-	}
 	if (!preview.available)
 		return "FaithfulFrame safe tracking: waiting for a valid source session";
 	if (preview.command_result == FF_COMMAND_REJECTED) {
@@ -694,6 +684,16 @@ static QString safe_state_text(const faithfulframe_safe_preview &preview)
 		if (preview.rejection_reason == FF_REJECTION_INVALID_COMMAND && preview.state == FF_STATE_FROZEN)
 			return "Resume before selecting a speaker";
 		return "Command was rejected without changing framing; review status and try a valid action";
+	}
+	switch (preview.configuration_notice) {
+	case faithfulframe::safe_adapter_configuration_notice::source_binding_changed:
+		return "Camera source changed; confirm the source setup, then rearm and select a speaker";
+	case faithfulframe::safe_adapter_configuration_notice::framing_settings_changed:
+		return "Framing settings changed; rearm and select a speaker before following";
+	case faithfulframe::safe_adapter_configuration_notice::tracking_settings_changed:
+		return "Tracking settings changed; rearm and select a speaker before following";
+	case faithfulframe::safe_adapter_configuration_notice::none:
+		break;
 	}
 	if (!preview.operator_actions_available)
 		return "Camera or tracking settings are changing; wait for controls to become available";
