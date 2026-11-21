@@ -26,13 +26,13 @@
 #include "source_list.h"
 #include "faithfulframe-preview-render-stamp.hpp"
 #include "faithfulframe-atomic-shared-ptr.hpp"
-#include "faithfulframe-full-source-viewport.hpp"
 #ifdef ENABLE_RUST_CORE_BRIDGE
 #include "faithfulframe-core-bridge.hpp"
 #include "faithfulframe-active-slot.hpp"
 #include "faithfulframe-adapter-lease.hpp"
 #include "faithfulframe-config-guard.hpp"
 #include "faithfulframe-crop-selector.hpp"
+#include "faithfulframe-full-source-viewport.hpp"
 #include "faithfulframe-preview-geometry.hpp"
 #include "faithfulframe-source-identity.hpp"
 #endif
