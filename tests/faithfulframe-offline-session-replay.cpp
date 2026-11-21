@@ -99,12 +99,13 @@ public:
 void usage(std::ostream &out)
 {
 	out << "Usage: faithfulframe-offline-session-replay --model <frontal_face_detector.dat> "
-	       "(--manifest <frames.tsv> | --ppm-stdin [--fps <1..120>]) [--trace <trace.jsonl>] "
+	       "(--manifest <frames.tsv> | --ppm-stdin) [--fps <1..120>] [--trace <trace.jsonl>] "
 	       "[--detection-scale <1..16>] [--output-width <pixels>] [--output-height <pixels>] "
 	       "[--operator-select-first-candidate-at-ms <timestamp> | "
 	       "--operator-select-leftmost-candidate-at-ms <timestamp>] "
 	       "[--operator-min-candidate-count <1..8>]\n"
 	    << "Manifest format: monotonic_ms<TAB>relative-or-absolute-frame-path. Frames must be P6 PPM, max value 255.\n"
+	    << "--fps sets stdin timestamp cadence and the nominal initial frame interval for manifest replays.\n"
 	    << "The replay uses the production dlib HOG detector, face_tracker_manager, dlib correlation trackers, and Rust session policy.\n"
 	    << "Detection scaling uses the production RGB frame-stride path and preserves source-space candidate coordinates.\n"
 	    << "It records numeric candidate and crop traces only; it does not save video frames or face imagery. "
