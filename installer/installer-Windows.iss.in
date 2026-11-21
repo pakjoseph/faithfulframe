@@ -1,18 +1,19 @@
 #define MyAppName "@PROJECT_NAME@"
+#define MyAppDisplayName "@PLUGIN_DISPLAY_NAME@"
 #define MyAppVersion "@PROJECT_VERSION@"
 #define MyAppPublisher "@PLUGIN_AUTHOR@"
 #define MyAppURL "@PLUGIN_URL@"
 
 [Setup]
 AppId={{@WIN_INSTALLER_UUID@}
-AppName={#MyAppName}
+AppName={#MyAppDisplayName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 DefaultDirName={commonappdata}\obs-studio\plugins\{#MyAppName}
-DefaultGroupName={#MyAppName}
+DefaultGroupName={#MyAppDisplayName}
 OutputBaseFilename={#MyAppName}-{#MyAppVersion}-Windows-Installer
 Compression=lzma
 SolidCompression=yes

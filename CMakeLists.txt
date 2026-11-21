@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.12)
 include(cmake/FaithfulFrameMacOSDefaults.cmake)
 
 project(face-tracker VERSION 0.9.1)
+set(PLUGIN_DISPLAY_NAME "FaithfulFrame")
 set(PLUGIN_URL "https://github.com/pakjoseph/faithfulframe")
 set(PLUGIN_AUTHOR "FaithfulFrame contributors")
 set(MACOS_BUNDLEID "net.nagater.obs-face-tracker")
