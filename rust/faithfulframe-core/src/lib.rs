@@ -637,16 +637,27 @@ impl TrackingSession {
             .entry(candidate.handle)
             .or_insert(candidate.continuity);
         self.latest.insert(candidate.handle, candidate);
+        let protected_handle = if self.state == State::Locked {
+            self.selected.map(|selected| {
+                if selected.continuity == candidate.continuity
+                    && candidate.detector_confirmed_at != 0
+                    && candidate.observed_at > selected.last_seen
+                {
+                    // This observation advances the locked identity under a
+                    // new tracker handle, so retain the incoming handle.
+                    candidate.handle
+                } else {
+                    selected.handle
+                }
+            })
+        } else {
+            None
+        };
         while self.latest.len() > self.config.max_candidates {
             let oldest_unselected = self
                 .latest
                 .iter()
-                .filter(|(handle, _)| {
-                    !(self.state == State::Locked
-                        && self
-                            .selected
-                            .is_some_and(|selected| selected.handle == **handle))
-                })
+                .filter(|(handle, _)| protected_handle != Some(**handle))
                 .min_by_key(|(handle, candidate)| {
                     (candidate.observed_at, candidate.expires_at, **handle)
                 })
@@ -2304,6 +2315,56 @@ mod tests {
         assert_eq!(selected.command_result, CommandResult::Applied);
         assert_eq!(selected.state, State::Locked);
         assert_eq!(selected.selected, Some(10));
+    }
+
+    #[test]
+    fn candidate_cache_retains_new_handle_for_locked_continuity() {
+        let mut session = TrackingSession::new(
+            Config {
+                loss_grace_ms: 100,
+                max_evidence_age_ms: 10,
+                max_candidates: 2,
+                ..Config::default()
+            },
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
+        send(
+            &mut session,
+            3,
+            Command::SelectCandidate {
+                handle: 10,
+                observation_version: 1,
+            },
+        );
+        observe(&mut session, candidate(20, 200, 2, 4), 4);
+
+        // This observation is later than the selected target's evidence but
+        // older than another candidate's evidence. Continuity must protect the
+        // incoming handle even though ordinary LRU eviction would remove it.
+        let advanced = observe(&mut session, candidate(30, 100, 3, 3), 5);
+
+        assert_eq!(advanced.state, State::Locked);
+        assert_eq!(advanced.selected, Some(30));
+        assert!(session.latest.contains_key(&30));
+        assert!(session.latest.contains_key(&20));
+        assert!(!session.latest.contains_key(&10));
+
+        send(&mut session, 6, Command::ManualOverride);
+        let selected = send(
+            &mut session,
+            7,
+            Command::SelectCandidate {
+                handle: 30,
+                observation_version: 3,
+            },
+        );
+
+        assert_eq!(selected.command_result, CommandResult::Applied);
+        assert_eq!(selected.selected, Some(30));
     }
 
     #[test]
