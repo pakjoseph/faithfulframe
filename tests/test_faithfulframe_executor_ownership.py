@@ -57,6 +57,13 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
 
         self.assertEqual(call_sites, [])
 
+    def test_single_adapter_lease_does_not_block_obs_callbacks(self):
+        source = (ROOT / "src/faithfulframe-adapter-lease.hpp").read_text(encoding="utf-8")
+
+        self.assertIn("std::atomic<const void *> owner_slot", source)
+        self.assertIn("is_always_lock_free", source)
+        self.assertNotRegex(source, r"std::(?:mutex|lock_guard|unique_lock|condition_variable)")
+
     def test_direct_session_call_outside_the_bridge_is_detected(self):
         sources = {
             SERIALIZED_BRIDGE: "ff_session_tick(session, at, &snapshot);",
