@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -13,6 +14,15 @@ from pathlib import Path
 
 def write_black_ppm(path: Path, width: int, height: int) -> None:
     path.write_bytes(f"P6\n{width} {height}\n255\n".encode("ascii") + bytes(width * height * 3))
+
+
+def as_float32(value: float) -> float:
+    return struct.unpack("=f", struct.pack("=f", value))[0]
+
+
+def float32_sum(left: float, right: float) -> float:
+    """Add values with the same f32 rounding used by the C ABI geometry."""
+    return as_float32(as_float32(left) + as_float32(right))
 
 
 def read_synthetic_portrait(portrait_path: Path) -> tuple[int, int, bytes]:
@@ -388,25 +398,28 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     self.assertGreater(height, 0.0)
                     self.assertGreaterEqual(x, 0.0)
                     self.assertGreaterEqual(y, 0.0)
-                    self.assertLessEqual(x + width, 1.000001)
-                    self.assertLessEqual(y + height, 1.000001)
+                    self.assertLessEqual(float32_sum(x, width), 1.0)
+                    self.assertLessEqual(float32_sum(y, height), 1.0)
                     self.assertGreater(crop_width, 0.0)
                     self.assertGreater(crop_height, 0.0)
                     self.assertGreaterEqual(crop_x, 0.0)
                     self.assertGreaterEqual(crop_y, 0.0)
-                    # The ABI carries these values as f32; decimal JSON
-                    # round-tripping can make an exact f32 boundary sum exceed
-                    # 1 by a few 1e-10 when Python promotes the operands to f64.
-                    self.assertLessEqual(crop_x + crop_width, 1.000001)
-                    self.assertLessEqual(crop_y + crop_height, 1.000001)
+                    # Trace decimals round-trip through f64. Check their
+                    # original f32 ABI arithmetic at the source boundary.
+                    self.assertLessEqual(float32_sum(crop_x, crop_width), 1.0)
+                    self.assertLessEqual(float32_sum(crop_y, crop_height), 1.0)
                     self.assertLessEqual(crop_x, x + 0.00001)
                     self.assertLessEqual(crop_y, y + 0.00001)
-                    self.assertGreaterEqual(crop_x + crop_width, x + width - 0.00001)
-                    self.assertGreaterEqual(crop_y + crop_height, y + height - 0.00001)
+                    self.assertGreaterEqual(
+                        float32_sum(crop_x, crop_width), float32_sum(x, width)
+                    )
+                    self.assertGreaterEqual(
+                        float32_sum(crop_y, crop_height), float32_sum(y, height)
+                    )
                     if label == "left":
                         self.assertLessEqual(x, 0.05)
                     else:
-                        self.assertGreaterEqual(x + width, 0.95)
+                        self.assertGreaterEqual(float32_sum(x, width), 0.95)
 
     def test_synthetic_face_flows_through_detection_tracking_and_explicit_selection(self):
         # This checked-in cartoon is procedurally drawn and contains no real
