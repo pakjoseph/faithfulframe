@@ -379,6 +379,8 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     "1080",
                     "--operator-select-leftmost-candidate-at-ms",
                     "2200",
+                    "--operator-min-candidate-count",
+                    "3",
                 ],
                 capture_output=True,
                 text=True,
@@ -428,8 +430,9 @@ class OfflineSessionReplayTests(unittest.TestCase):
             )
             self.assertLess(
                 selected_candidate["rect"][0] + selected_candidate["rect"][2] / 2,
-                0.5,
-                "the first explicit selection should lock the left cartoon speaker",
+                0.35,
+                "the explicit selection must resolve to the stage speaker, not the band member; "
+                f"selected candidate: {selected_candidate!r}",
             )
             selected_continuity = selected_candidate["continuity_token"]
             selected_center_x = (

@@ -69,6 +69,7 @@ struct arguments
 	bool select_leftmost_candidate = false;
 	uint64_t operator_selection_time_ms = 0;
 	size_t operator_candidate_index = 0;
+	size_t operator_min_candidate_count = 0;
 };
 
 class offline_tracking_manager final : public face_tracker_manager {
@@ -101,7 +102,8 @@ void usage(std::ostream &out)
 	       "(--manifest <frames.tsv> | --ppm-stdin [--fps <1..120>]) [--trace <trace.jsonl>] "
 	       "[--detection-scale <1..16>] [--output-width <pixels>] [--output-height <pixels>] "
 	       "[--operator-select-first-candidate-at-ms <timestamp> | "
-	       "--operator-select-leftmost-candidate-at-ms <timestamp>]\n"
+	       "--operator-select-leftmost-candidate-at-ms <timestamp>] "
+	       "[--operator-min-candidate-count <1..8>]\n"
 	    << "Manifest format: monotonic_ms<TAB>relative-or-absolute-frame-path. Frames must be P6 PPM, max value 255.\n"
 	    << "The replay uses the production dlib HOG detector, face_tracker_manager, dlib correlation trackers, and Rust session policy.\n"
 	    << "Detection scaling uses the production RGB frame-stride path and preserves source-space candidate coordinates.\n"
@@ -174,6 +176,14 @@ bool parse_arguments(int argc, char **argv, arguments &args)
 			}
 			args.select_leftmost_candidate = option == "--operator-select-leftmost-candidate-at-ms";
 			args.has_operator_selection_time = true;
+		} else if (option == "--operator-min-candidate-count") {
+			uint64_t parsed = 0;
+			if (!parse_integer(value, parsed) || parsed < 1 || parsed > faithfulframe_max_candidates) {
+				std::cerr << "--operator-min-candidate-count must be an integer from 1 through "
+					  << faithfulframe_max_candidates << '\n';
+				return false;
+			}
+			args.operator_min_candidate_count = static_cast<size_t>(parsed);
 		} else {
 			std::cerr << "Unknown option: " << option << '\n';
 			return false;
@@ -749,8 +759,10 @@ int main(int argc, char **argv)
 				selectable_candidates.push_back(i);
 		}
 		const bool selection_choices_ready =
-			args.select_leftmost_candidate ? selectable_candidates.size() >= 2
-						       : selectable_candidates.size() > args.operator_candidate_index;
+			args.operator_min_candidate_count
+				? selectable_candidates.size() >= args.operator_min_candidate_count
+			: args.select_leftmost_candidate ? selectable_candidates.size() >= 2
+							 : selectable_candidates.size() > args.operator_candidate_index;
 		if (!selection_attempted && args.has_operator_selection_time &&
 		    timestamp_ms >= args.operator_selection_time_ms && selection_choices_ready) {
 			selection_attempted = true;
