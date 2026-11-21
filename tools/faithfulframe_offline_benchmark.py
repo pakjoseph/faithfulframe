@@ -26,7 +26,7 @@ import time
 from typing import Any
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_DETECTION_SCALE = 16
 
 
@@ -329,6 +329,16 @@ def _source_revision(repository_root: Path) -> dict[str, Any]:
     }
 
 
+def _replay_binary_metadata(binary: Path, build_source_revision: str | None) -> dict[str, Any]:
+    revision = build_source_revision.strip() if build_source_revision else None
+    return {
+        "filename": binary.name,
+        "sha256": _sha256_file(binary),
+        "build_source_revision": revision,
+        "build_source_revision_status": "operator_supplied_unverified" if revision else "unknown",
+    }
+
+
 def _run_replay(
     binary: Path,
     model: Path,
@@ -461,6 +471,10 @@ def _write_json_atomically(path: Path, report: dict[str, Any]) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path, help="offline session replay executable")
+    parser.add_argument(
+        "--binary-source-revision",
+        help="operator-supplied, unverified source revision for the replay binary; omitted means unknown",
+    )
     parser.add_argument("--model", required=True, type=Path, help="dlib frontal face detector model")
     parser.add_argument("--manifest", required=True, type=Path, help="monotonic timestamp/PPM manifest")
     parser.add_argument("--output", required=True, type=Path, help="destination JSON report")
@@ -496,6 +510,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--fps must be from 1 through 120")
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
         parser.error("--timeout-seconds must be finite and greater than zero")
+    if args.binary_source_revision is not None and not args.binary_source_revision.strip():
+        parser.error("--binary-source-revision must not be empty")
 
     binary = args.binary.expanduser().resolve()
     if not binary.is_file():
@@ -549,8 +565,8 @@ def main(argv: list[str] | None = None) -> int:
             "logical_cpu_count": os.cpu_count(),
             "python_version": platform.python_version(),
         },
-        "source_revision": _source_revision(repository_root),
-        "replay_binary": {"filename": binary.name, "sha256": _sha256_file(binary)},
+        "benchmark_tool_source_revision": _source_revision(repository_root),
+        "replay_binary": _replay_binary_metadata(binary, args.binary_source_revision),
         "model": {"filename": model.name, "sha256": _sha256_file(model)},
         "manifest": {
             "sha256": _sha256_file(manifest),

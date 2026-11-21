@@ -65,11 +65,26 @@ def main() -> int:
             print(f"offline benchmark did not produce valid JSON: {error}", file=sys.stderr)
             return 1
 
+        if report.get("schema_version") != 3:
+            print("offline benchmark did not emit the current report schema", file=sys.stderr)
+            return 1
         if report.get("evidence_scope") != "offline_development_measurement":
             print("benchmark scope was not marked as an offline development measurement", file=sys.stderr)
             return 1
         if report.get("production_acceptance_eligible") is not False or report.get("obs_runtime_version") is not None:
             print("offline benchmark was incorrectly marked as production acceptance evidence", file=sys.stderr)
+            return 1
+        if report.get("benchmark_tool_source_revision") is None:
+            print("benchmark report omitted the checkout used by the report generator", file=sys.stderr)
+            return 1
+        replay_binary = report.get("replay_binary", {})
+        if replay_binary.get("build_source_revision") is not None or replay_binary.get(
+            "build_source_revision_status"
+        ) != "unknown":
+            print(
+                "benchmark report assigned source provenance to a binary without a build record",
+                file=sys.stderr,
+            )
             return 1
         measured = report.get("metrics_scope", {}).get("measured", [])
         if not any("process CPU" in metric for metric in measured) or not any("resident memory" in metric for metric in measured):

@@ -54,6 +54,20 @@ class OfflineBenchmarkTests(unittest.TestCase):
         trace.write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
         return trace
 
+    def test_binary_provenance_is_separate_from_benchmark_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "offline-session-replay"
+            binary.write_bytes(b"replay binary fixture")
+
+            unknown = benchmark._replay_binary_metadata(binary, None)
+            supplied = benchmark._replay_binary_metadata(binary, "  abc123  ")
+
+        self.assertIsNone(unknown["build_source_revision"])
+        self.assertEqual(unknown["build_source_revision_status"], "unknown")
+        self.assertEqual(supplied["build_source_revision"], "abc123")
+        self.assertEqual(supplied["build_source_revision_status"], "operator_supplied_unverified")
+        self.assertEqual(unknown["sha256"], supplied["sha256"])
+
     def test_summarizes_latency_and_numeric_tracking_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:
             trace = self.write_trace(
