@@ -108,6 +108,30 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
             "a fixed OBS proc callback must not write undeclared calldata outputs",
         )
 
+    def test_fixed_render_proc_only_writes_declared_outputs(self):
+        source = (ROOT / "src/face-tracker.cpp").read_text(encoding="utf-8")
+        signature = re.search(
+            r'proc_handler_add\(ph,\s*((?:"[^"]*"\s*)+),\s*cb_render_frame\b',
+            source,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(signature)
+        declaration = "".join(re.findall(r'"([^"]*)"', signature.group(1)))
+        declared_outputs = set(re.findall(r"\bout\s+\w+\s+(\w+)", declaration))
+        self.assertTrue(declared_outputs)
+
+        callback_start = source.index("static void cb_render_frame(void *data, calldata_t *cd)\n{")
+        callback_end = source.index("\nstatic void cb_render_info(", callback_start)
+        callback = source[callback_start:callback_end]
+        written_fields = set(re.findall(r'calldata_set_\w+\(cd,\s*"([^"]+)"', callback))
+
+        self.assertTrue(written_fields)
+        self.assertLessEqual(
+            written_fields,
+            declared_outputs,
+            "a fixed OBS proc callback must not write undeclared calldata outputs",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
