@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 
 #include "faithfulframe_ffi.h"
 #include "faithfulframe-candidate-limits.hpp"
@@ -140,9 +141,9 @@ public:
 private:
 #endif
 	faithfulframe_session_executor(const ff_session_config &, const ff_identity &, const ff_generations &);
+	~faithfulframe_session_executor();
 
 public:
-	~faithfulframe_session_executor();
 	faithfulframe_session_executor(const faithfulframe_session_executor &) = delete;
 	faithfulframe_session_executor &operator=(const faithfulframe_session_executor &) = delete;
 	/// Create a shared production executor whose final owner release transfers
@@ -262,6 +263,12 @@ private:
 	std::atomic<bool> retirement_queued{false};
 	std::atomic<bool> destroy_after_retirement{false};
 };
+
+#ifndef FAITHFULFRAME_TEST_SESSION_EXECUTOR_ACCESS
+static_assert(!std::is_constructible_v<faithfulframe_session_executor, const ff_session_config &, const ff_identity &,
+				       const ff_generations &>);
+static_assert(!std::is_destructible_v<faithfulframe_session_executor>);
+#endif
 
 static_assert(std::atomic<faithfulframe_session_executor *>::is_always_lock_free,
 	      "OBS-safe executor retirement requires lock-free pointer atomics");
