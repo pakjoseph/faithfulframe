@@ -43,6 +43,26 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
 
         self.assertEqual(direct_session_call_sites(sources), ["src/face-tracker.cpp:1"])
 
+    def test_video_tick_lifecycle_reads_defer_instead_of_waiting_for_the_mutex(self):
+        source = (ROOT / "src/face-tracker.cpp").read_text(encoding="utf-8")
+        publish_start = source.index("static void publish_source_candidates(")
+        settle_start = source.index("static void settle_source_transition(", publish_start)
+        tick_end = source.index("static void fts_tick(", settle_start)
+        publish = source[publish_start:settle_start]
+        settle = source[settle_start:tick_end]
+
+        self.assertIn(
+            "std::unique_lock<std::mutex> lifecycle_lock(binding->lifecycle_mutex, std::try_to_lock);",
+            publish,
+        )
+        self.assertIn("if (!lifecycle_lock.owns_lock())\n\t\treturn;", publish)
+        self.assertNotIn("std::lock_guard<std::mutex>", publish + settle, "video-tick paths must not wait on locks")
+        self.assertIn(
+            "std::unique_lock<std::mutex> lock(binding->lifecycle_mutex, std::try_to_lock);",
+            settle,
+        )
+        self.assertIn("if (!lock.owns_lock())\n\t\treturn;", settle)
+
 
 if __name__ == "__main__":
     unittest.main()
