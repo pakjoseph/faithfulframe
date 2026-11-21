@@ -56,6 +56,18 @@ static faithfulframe_preview_render_stamp make_stamp()
 	return stamp;
 }
 
+static bool send_mouse_press(QWidget &widget, const QPointF &position, Qt::MouseButton button)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+	QMouseEvent event(QEvent::MouseButtonPress, position, widget.mapToGlobal(position.toPoint()), button, button,
+			  Qt::NoModifier);
+#else
+	QMouseEvent event(QEvent::MouseButtonPress, position, button, button, Qt::NoModifier);
+#endif
+	QApplication::sendEvent(&widget, &event);
+	return event.isAccepted();
+}
+
 int main(int argc, char **argv)
 {
 	QApplication application(argc, argv);
@@ -94,29 +106,24 @@ int main(int argc, char **argv)
 										candidates.size(), selected_index);
 			 });
 
-	QMouseEvent left_click(QEvent::MouseButtonPress, QPointF(17.25, 23.5), Qt::LeftButton, Qt::LeftButton,
-			       Qt::NoModifier);
-	QApplication::sendEvent(&widget, &left_click);
-	if (!left_click.isAccepted() || click_count != 1 || clicked_position != QPointF(17.25, 23.5) ||
+	if (!send_mouse_press(widget, QPointF(17.25, 23.5), Qt::LeftButton) || click_count != 1 ||
+	    clicked_position != QPointF(17.25, 23.5) ||
 	    !faithfulframe_preview_render_stamp_matches(expected_stamp, clicked_stamp)) {
 		std::fprintf(stderr, "left click did not publish its logical position and rendered snapshot version\n");
 		return 2;
 	}
 
-	QMouseEvent right_click(QEvent::MouseButtonPress, QPointF(31.0, 9.0), Qt::RightButton, Qt::RightButton,
-				Qt::NoModifier);
-	QApplication::sendEvent(&widget, &right_click);
+	send_mouse_press(widget, QPointF(31.0, 9.0), Qt::RightButton);
 	if (click_count != 1) {
 		std::fprintf(stderr, "non-left click emitted a speaker-selection request\n");
 		return 3;
 	}
 
+	bool contended_click_accepted = false;
 	pthread_mutex_lock(&data->mutex);
-	QMouseEvent contended_click(QEvent::MouseButtonPress, QPointF(8.0, 12.0), Qt::LeftButton, Qt::LeftButton,
-				    Qt::NoModifier);
-	QApplication::sendEvent(&widget, &contended_click);
+	contended_click_accepted = send_mouse_press(widget, QPointF(8.0, 12.0), Qt::LeftButton);
 	pthread_mutex_unlock(&data->mutex);
-	if (!contended_click.isAccepted() || click_count != 2 || clicked_stamp.valid) {
+	if (!contended_click_accepted || click_count != 2 || clicked_stamp.valid) {
 		std::fprintf(stderr, "preview click blocked or reused a stamp while render data was contended\n");
 		return 4;
 	}
@@ -125,9 +132,7 @@ int main(int argc, char **argv)
 		return 7;
 	}
 
-	QMouseEvent select_face(QEvent::MouseButtonPress, QPointF(320.0, 180.0), Qt::LeftButton, Qt::LeftButton,
-				Qt::NoModifier);
-	QApplication::sendEvent(&widget, &select_face);
+	send_mouse_press(widget, QPointF(320.0, 180.0), Qt::LeftButton);
 	if (selection_result != ff_preview_click_result::selected || selected_index != 1 ||
 	    candidate_handles[selected_index] != 42) {
 		std::fprintf(stderr, "a preview click did not resolve to the intended visible candidate handle\n");
@@ -136,9 +141,7 @@ int main(int argc, char **argv)
 
 	selected_index = 73;
 	current_preview_is_stale = true;
-	QMouseEvent stale_face_click(QEvent::MouseButtonPress, QPointF(320.0, 180.0), Qt::LeftButton, Qt::LeftButton,
-				     Qt::NoModifier);
-	QApplication::sendEvent(&widget, &stale_face_click);
+	send_mouse_press(widget, QPointF(320.0, 180.0), Qt::LeftButton);
 	if (selection_result != ff_preview_click_result::stale_preview || selected_index != 73) {
 		std::fprintf(stderr, "a stale preview click changed the selected candidate\n");
 		return 9;
