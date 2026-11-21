@@ -1,7 +1,7 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
-#include <mutex>
 
 namespace faithfulframe {
 
@@ -29,44 +29,34 @@ public:
 	{
 		if (!owner)
 			return false;
-		std::lock_guard<std::mutex> lock(mutex());
-		const void *&current_owner = owner_slot();
-		if (current_owner && current_owner != owner)
-			return false;
-		current_owner = owner;
-		return true;
+		const void *expected = nullptr;
+		if (owner_slot.compare_exchange_strong(expected, owner, std::memory_order_acq_rel,
+						       std::memory_order_acquire))
+			return true;
+		return expected == owner;
 	}
 
 	static void release(const void *owner)
 	{
 		if (!owner)
 			return;
-		std::lock_guard<std::mutex> lock(mutex());
-		const void *&current_owner = owner_slot();
-		if (current_owner == owner)
-			current_owner = nullptr;
+		const void *expected = owner;
+		owner_slot.compare_exchange_strong(expected, nullptr, std::memory_order_release,
+						   std::memory_order_relaxed);
 	}
 
 	static bool owns(const void *owner)
 	{
 		if (!owner)
 			return false;
-		std::lock_guard<std::mutex> lock(mutex());
-		return owner_slot() == owner;
+		return owner_slot.load(std::memory_order_acquire) == owner;
 	}
 
 private:
-	static std::mutex &mutex()
-	{
-		static std::mutex instance;
-		return instance;
-	}
-
-	static const void *&owner_slot()
-	{
-		static const void *owner = nullptr;
-		return owner;
-	}
+	inline static std::atomic<const void *> owner_slot{nullptr};
 };
+
+static_assert(std::atomic<const void *>::is_always_lock_free,
+	      "safe-adapter lease operations must not block OBS callbacks");
 
 } // namespace faithfulframe
