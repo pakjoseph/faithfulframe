@@ -63,6 +63,24 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
         )
         self.assertIn("if (!lock.owns_lock())\n\t\treturn;", settle)
 
+    def test_video_tick_session_reads_use_the_binding_pinned_atomic_pointer(self):
+        source = (ROOT / "src/face-tracker.cpp").read_text(encoding="utf-8")
+        publish_start = source.index("static void publish_source_candidates(")
+        settle_start = source.index("static void settle_source_transition(", publish_start)
+        tick_safe_start = source.index("static void tick_safe_source(", settle_start)
+        tick_safe_end = source.index("\n#endif\n", tick_safe_start)
+        publish_and_settle = source[publish_start:tick_safe_start]
+        tick_safe = source[tick_safe_start:tick_safe_end]
+        steady_state_start = tick_safe.index("const uint32_t width = obs_source_get_width(target);")
+        steady_state_end = tick_safe.index("if (binding->policy_faulted", steady_state_start)
+        steady_state = tick_safe[steady_state_start:steady_state_end]
+
+        self.assertIn("auto binding_lease = runtime->active.read();", tick_safe)
+        self.assertIn("std::atomic<faithfulframe_session_executor *> callback_executor{nullptr};", source)
+        self.assertNotIn("atomic_shared_ptr_load(&binding->executor", publish_and_settle + steady_state)
+        self.assertIn("binding->callback_executor.load(std::memory_order_acquire)", publish_and_settle)
+        self.assertIn("binding->callback_executor.load(std::memory_order_acquire)", steady_state)
+
 
 if __name__ == "__main__":
     unittest.main()
