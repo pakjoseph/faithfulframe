@@ -60,6 +60,7 @@ def write_stage_projection_scene(
     portrait_path: Path,
     include_stage_speaker: bool,
     speaker_brightness: float = 1.0,
+    include_band_member: bool = False,
 ) -> None:
     portrait_width, portrait_height, portrait = read_synthetic_portrait(portrait_path)
     width, height = 1920, 1080
@@ -97,6 +98,11 @@ def write_stage_projection_scene(
 
     if include_stage_speaker:
         paste_portrait(320, speaker_brightness)
+    if include_band_member:
+        # Keep a separate synthetic candidate onstage while the main speaker
+        # is dimmed or absent. It represents a band member behind the speaker,
+        # not a face shown on the projection screen.
+        paste_portrait(720)
     paste_portrait(1280)
     path.write_bytes(f"P6\n{width} {height}\n255\n".encode("ascii") + pixels)
 
@@ -318,7 +324,7 @@ class OfflineSessionReplayTests(unittest.TestCase):
             self.assertNotIn("pixels", trace_text)
             self.assertNotIn("frame_path", trace_text)
 
-    def test_low_light_speaker_and_projection_face_do_not_cause_target_switch(self):
+    def test_low_light_speaker_band_member_and_projection_do_not_cause_target_switch(self):
         portrait = (
             Path(__file__).resolve().parent
             / "fixtures"
@@ -326,16 +332,24 @@ class OfflineSessionReplayTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
-            both = temporary / "both-cartoon-faces.ppm"
-            low_light = temporary / "low-light-speaker-and-projection.ppm"
-            right_only = temporary / "right-cartoon-face.ppm"
+            both = temporary / "speaker-band-and-projection.ppm"
+            low_light = temporary / "low-light-speaker-band-and-projection.ppm"
+            right_only = temporary / "band-and-projection-only.ppm"
             manifest = temporary / "frames.tsv"
             trace = temporary / "trace.jsonl"
-            write_stage_projection_scene(both, portrait, include_stage_speaker=True)
             write_stage_projection_scene(
-                low_light, portrait, include_stage_speaker=True, speaker_brightness=0.08
+                both, portrait, include_stage_speaker=True, include_band_member=True
             )
-            write_stage_projection_scene(right_only, portrait, include_stage_speaker=False)
+            write_stage_projection_scene(
+                low_light,
+                portrait,
+                include_stage_speaker=True,
+                speaker_brightness=0.08,
+                include_band_member=True,
+            )
+            write_stage_projection_scene(
+                right_only, portrait, include_stage_speaker=False, include_band_member=True
+            )
 
             rows = ["monotonic_ms\tframe_path\n"]
             for frame_index in range(210):
@@ -444,9 +458,22 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 and event["candidate"]["detector_confirmed_at_ms"] != 0
                 and event["candidate"]["rect"][0] + event["candidate"]["rect"][2] / 2 > 0.6
             ]
+            band_member_candidates = [
+                event
+                for event in candidates
+                if 140 <= event["frame_index"] < 160
+                and event["candidate"]["detector_confirmed_at_ms"] != 0
+                and 0.35
+                < event["candidate"]["rect"][0] + event["candidate"]["rect"][2] / 2
+                < 0.6
+            ]
             self.assertTrue(
                 projected_face_candidates,
                 "the face remaining on the projection screen should be visible as an unselected decoy",
+            )
+            self.assertTrue(
+                band_member_candidates,
+                "the band member should remain a detected, unselected stage face while the speaker is absent",
             )
             if detector_misses:
                 first_hold = detector_misses[0]
