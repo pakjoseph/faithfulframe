@@ -822,6 +822,9 @@ jobs:
           python -m unittest discover -s tests -p 'test_collect_obs_baseline.py'
           python -m unittest discover -s tests -p 'test_faithfulframe_offline_benchmark.py'
 
+      - name: Test Windows installer naming and compatibility paths
+        run: python -m unittest discover -s tests -p 'test_windows_installer_template.py'
+
       - name: Test GitHub Actions security policy
         run: python -m unittest discover -s tests -p 'test_github_actions_security.py'
 
