@@ -572,9 +572,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-${{ env.artifactName }}-macos-obs${{ matrix.obs }}-${{ matrix.arch }}-module-load
-          path: |
-            logs/intel-obs-smoke/*
-            ${{ runner.temp }}/faithfulframe-obs-home-x86_64/Library/Application Support/obs-studio/logs/*
+          # The verifier copies OBS startup logs into this directory. Upload the
+          # directory itself so the nested obs-logs folder is included too.
+          path: logs/intel-obs-smoke/
 
       - name: Prepare isolated Apple Silicon signed-package profile
         if: ${{ startsWith(github.ref, 'refs/tags/') && github.event_name != 'pull_request' && steps.setup.outputs.haveCodesignIdent == 'true' && matrix.obs == 33 && matrix.arch == 'arm64' }}
