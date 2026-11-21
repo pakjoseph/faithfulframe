@@ -579,6 +579,35 @@ add_library(${PROJECT_NAME} MODULE ${PLUGIN_SOURCES})
 if (WITH_DOCK)
 	set(QT_NO_CREATE_VERSIONLESS_TARGETS OFF)
 	find_package(Qt${QT_VERSION} COMPONENTS Widgets Core Gui)
+	add_executable(faithfulframe-preview-widget-smoke
+		tests/faithfulframe-preview-widget-smoke.cpp ui/face-tracker-widget.cpp)
+	target_include_directories(faithfulframe-preview-widget-smoke PRIVATE
+		${CMAKE_CURRENT_BINARY_DIR} src ui "$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
+	target_link_libraries(faithfulframe-preview-widget-smoke PRIVATE Qt::Widgets OBS::libobs)
+	set(_preview_widget_smoke_env "QT_QPA_PLATFORM=offscreen")
+	set(_qt_core_dir_variable "Qt${QT_VERSION}Core_DIR")
+	get_filename_component(_qt_core_config_dir "${${_qt_core_dir_variable}}" ABSOLUTE)
+	get_filename_component(_qt_platform_plugins_dir "${_qt_core_config_dir}/../../../plugins/platforms" ABSOLUTE)
+	if (EXISTS "${_qt_platform_plugins_dir}")
+		list(APPEND _preview_widget_smoke_env "QT_QPA_PLATFORM_PLUGIN_PATH=${_qt_platform_plugins_dir}")
+	endif()
+	if (WIN32)
+		target_link_libraries(faithfulframe-preview-widget-smoke PRIVATE OBS::w32-pthreads)
+		add_custom_command(TARGET faithfulframe-preview-widget-smoke POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different
+				"$<TARGET_FILE:OBS::w32-pthreads>"
+				"$<TARGET_FILE_DIR:faithfulframe-preview-widget-smoke>"
+			VERBATIM)
+		string(JOIN "$<SEMICOLON>" _preview_widget_runtime_path ${FAITHFULFRAME_SESSION_REPLAY_TEST_PATH})
+		if (_preview_widget_runtime_path)
+			list(APPEND _preview_widget_smoke_env "PATH=${_preview_widget_runtime_path}$<SEMICOLON>$ENV{PATH}")
+		endif()
+	elseif (APPLE)
+		list(APPEND _preview_widget_smoke_env ${FAITHFULFRAME_SESSION_REPLAY_TEST_ENV})
+	endif()
+	add_test(NAME faithfulframe-preview-widget-smoke
+		COMMAND ${CMAKE_COMMAND} -E env ${_preview_widget_smoke_env}
+			"$<TARGET_FILE:faithfulframe-preview-widget-smoke>")
 	if (Qt${QT_VERSION}Core_VERSION VERSION_GREATER_EQUAL "6.8")
 		add_executable(faithfulframe-accessibility-announcer-smoke
 			tests/faithfulframe-accessibility-announcer-smoke.cpp)
