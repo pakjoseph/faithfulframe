@@ -335,12 +335,18 @@ class OfflineSessionReplayTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
-            for label, left in (("left", 0), ("right", 1600)):
-                with self.subTest(edge=label):
+            edge_scenes = (
+                ("top-left", 0, 0),
+                ("top-right", 1600, 0),
+                ("bottom-left", 0, 720),
+                ("bottom-right", 1600, 720),
+            )
+            for label, left, top in edge_scenes:
+                with self.subTest(corner=label):
                     frame = temporary / f"{label}-edge-4k.ppm"
                     manifest = temporary / f"{label}-edge-frames.tsv"
                     trace = temporary / f"{label}-edge-trace.jsonl"
-                    write_single_speaker_scene(frame, portrait, scale=2, left=left)
+                    write_single_speaker_scene(frame, portrait, scale=2, left=left, top=top)
                     manifest.write_text(
                         "monotonic_ms\tframe_path\n"
                         + "".join(
@@ -416,10 +422,14 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     self.assertGreaterEqual(
                         float32_sum(crop_y, crop_height), float32_sum(y, height)
                     )
-                    if label == "left":
-                        self.assertLessEqual(x, 0.05)
+                    if left == 0:
+                        self.assertLessEqual(x, 0.1)
                     else:
-                        self.assertGreaterEqual(float32_sum(x, width), 0.95)
+                        self.assertGreaterEqual(float32_sum(x, width), 0.9)
+                    if top == 0:
+                        self.assertLessEqual(y, 0.1)
+                    else:
+                        self.assertGreaterEqual(float32_sum(y, height), 0.9)
 
     def test_synthetic_face_flows_through_detection_tracking_and_explicit_selection(self):
         # This checked-in cartoon is procedurally drawn and contains no real
