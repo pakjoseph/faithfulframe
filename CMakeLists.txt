@@ -579,6 +579,23 @@ add_library(${PROJECT_NAME} MODULE ${PLUGIN_SOURCES})
 if (WITH_DOCK)
 	set(QT_NO_CREATE_VERSIONLESS_TARGETS OFF)
 	find_package(Qt${QT_VERSION} COMPONENTS Widgets Core Gui)
+	if (Qt${QT_VERSION}Core_VERSION VERSION_GREATER_EQUAL "6.8")
+		add_executable(faithfulframe-accessibility-announcer-smoke
+			tests/faithfulframe-accessibility-announcer-smoke.cpp)
+		target_include_directories(faithfulframe-accessibility-announcer-smoke PRIVATE ui)
+		target_link_libraries(faithfulframe-accessibility-announcer-smoke PRIVATE Qt::Gui)
+		if (WIN32)
+			set(_qt_gui_dir_variable "Qt${QT_VERSION}Gui_DIR")
+			get_filename_component(_qt_gui_config_dir "${${_qt_gui_dir_variable}}" ABSOLUTE)
+			get_filename_component(_qt_gui_runtime_dir "${_qt_gui_config_dir}/../../../bin" ABSOLUTE)
+			add_test(NAME faithfulframe-accessibility-announcer-smoke
+				COMMAND ${CMAKE_COMMAND} -E env "PATH=${_qt_gui_runtime_dir}$<SEMICOLON>$ENV{PATH}"
+					"$<TARGET_FILE:faithfulframe-accessibility-announcer-smoke>")
+		else()
+			add_test(NAME faithfulframe-accessibility-announcer-smoke
+				COMMAND faithfulframe-accessibility-announcer-smoke)
+		endif()
+	endif()
 	add_executable(faithfulframe-no-wheel-combo-box-smoke
 		tests/faithfulframe-no-wheel-combo-box-smoke.cpp)
 	target_include_directories(faithfulframe-no-wheel-combo-box-smoke PRIVATE ui)

@@ -11,6 +11,7 @@
 #include <obs.hpp>
 #include <obs-frontend-api.h>
 #include <util/platform.h>
+#include "faithfulframe-accessibility-announcer.hpp"
 #include "faithfulframe-preview-render-stamp.hpp"
 
 namespace faithfulframe::performance {
@@ -57,8 +58,7 @@ public:
 	std::unique_ptr<faithfulframe::performance::csv_spool> performanceSpool;
 	uint64_t performanceSampleCount = 0;
 	QString operatorNotice;
-	QString lastAnnouncedSafeStatusKey;
-	QString lastAnnouncedOperatorNotice;
+	faithfulframe::accessibility::status_announcer safeStatusAnnouncer;
 	QString performanceHardwareAndWorkloadNotes;
 	QElapsedTimer operatorNoticeTimer;
 

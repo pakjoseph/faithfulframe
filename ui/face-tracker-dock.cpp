@@ -30,9 +30,6 @@
 #include <QMessageBox>
 #include <QSysInfo>
 #include <QStringList>
-#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
-#include <QAccessibleAnnouncementEvent>
-#endif
 #include "faithfulframe-style.hpp"
 #include "plugin-macros.generated.h"
 #include "face-tracker-dock.hpp"
@@ -759,20 +756,6 @@ static QString safe_accessible_status_key(const faithfulframe_safe_preview &prev
 		.join(QLatin1Char(':'));
 }
 
-static void announce_accessibly(QObject *object, const QString &message)
-{
-#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
-	if (!object || message.trimmed().isEmpty())
-		return;
-	QAccessibleAnnouncementEvent event(object, message);
-	event.setPoliteness(QAccessible::AnnouncementPoliteness::Polite);
-	QAccessible::updateAccessibility(&event);
-#else
-	(void)object;
-	(void)message;
-#endif
-}
-
 static QStyle::StandardPixmap safe_state_icon(const faithfulframe_safe_preview &preview)
 {
 	if (preview.configuration_issue != faithfulframe::safe_adapter_availability_issue::none ||
@@ -1449,8 +1432,7 @@ void FTDock::updateState()
 		candidateSelector->hide();
 		selectCandidateButton->hide();
 		safeStatusLabel->hide();
-		lastAnnouncedSafeStatusKey.clear();
-		lastAnnouncedOperatorNotice.clear();
+		safeStatusAnnouncer.reset();
 		performanceToggle->hide();
 		performanceLabel->hide();
 		performanceRunNotes->hide();
@@ -1478,10 +1460,8 @@ void FTDock::updateState()
 	selectCandidateButton->setVisible(safe_mode);
 	safeStatusIcon->setVisible(safe_mode);
 	safeStatusLabel->setVisible(safe_mode);
-	if (!safe_mode) {
-		lastAnnouncedSafeStatusKey.clear();
-		lastAnnouncedOperatorNotice.clear();
-	}
+	if (!safe_mode)
+		safeStatusAnnouncer.reset();
 	performanceToggle->setVisible(safe_mode);
 	performanceLabel->setVisible(safe_mode && performanceToggle->isChecked());
 	performanceRunNotes->setVisible(
@@ -1526,19 +1506,9 @@ void FTDock::updateState()
 		}
 		safeStatusLabel->setText(status_text);
 		const QString status_key = safe_accessible_status_key(safe_preview);
-		const bool status_changed = status_key != lastAnnouncedSafeStatusKey;
-		const bool notice_changed = !operatorNotice.isEmpty() && operatorNotice != lastAnnouncedOperatorNotice;
-		if (status_changed || notice_changed) {
-			const QString state_message = safe_state_text(safe_preview);
-			const QString announcement = notice_changed ? operatorNotice + ". " + state_message
-								    : state_message;
-			announce_accessibly(safeStatusLabel, announcement);
-			lastAnnouncedSafeStatusKey = status_key;
-			if (notice_changed)
-				lastAnnouncedOperatorNotice = operatorNotice;
-		}
-		if (operatorNotice.isEmpty())
-			lastAnnouncedOperatorNotice.clear();
+		const QString announcement =
+			safeStatusAnnouncer.update(status_key, safe_state_text(safe_preview), operatorNotice);
+		faithfulframe::accessibility::announce_polite(safeStatusLabel, announcement);
 		if (performanceRecording && (safe_preview.source_id != performanceRecordingSourceId ||
 					     safe_preview.session_id != performanceRecordingSessionId)) {
 			performanceRecording = false;
