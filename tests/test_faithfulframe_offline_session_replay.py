@@ -441,6 +441,12 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 if event["candidate"]["continuity_token"] == selected_continuity
             ]
             for event in selected_track:
+                # A correlation tracker can publish a stale rectangle after
+                # the person leaves or is occluded. That rectangle is useful
+                # only as unconfirmed continuity evidence; it is not a
+                # measured person position and must not be judged as one.
+                if event["candidate"]["detector_confirmed_at_ms"] == 0:
+                    continue
                 center_x = (
                     event["candidate"]["rect"][0]
                     + event["candidate"]["rect"][2] / 2
@@ -448,7 +454,7 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 self.assertLess(
                     abs(center_x - selected_center_x),
                     0.12,
-                    f"selected speaker continuity drifted from its initial position at frame "
+                    f"confirmed selected speaker continuity drifted from its initial position at frame "
                     f"{event['frame_index']}: {center_x:.3f} vs {selected_center_x:.3f}",
                 )
             detector_misses = [
