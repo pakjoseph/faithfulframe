@@ -599,7 +599,10 @@ if (WITH_DOCK)
 				"$<TARGET_FILE:OBS::w32-pthreads>"
 				"$<TARGET_FILE_DIR:faithfulframe-preview-widget-smoke>"
 			VERBATIM)
-		string(JOIN "$<SEMICOLON>" _preview_widget_runtime_path ${FAITHFULFRAME_SESSION_REPLAY_TEST_PATH})
+		set(_preview_widget_runtime_dirs ${FAITHFULFRAME_SESSION_REPLAY_TEST_PATH})
+		get_filename_component(_qt_core_runtime_dir "${_qt_core_config_dir}/../../../bin" ABSOLUTE)
+		list(APPEND _preview_widget_runtime_dirs "${_qt_core_runtime_dir}")
+		string(JOIN "$<SEMICOLON>" _preview_widget_runtime_path ${_preview_widget_runtime_dirs})
 		if (_preview_widget_runtime_path)
 			list(APPEND _preview_widget_smoke_env "PATH=${_preview_widget_runtime_path}$<SEMICOLON>$ENV{PATH}")
 		endif()
