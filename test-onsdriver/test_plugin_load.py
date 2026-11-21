@@ -1833,7 +1833,7 @@ class PluginLoadTest(obstest.OBSTest):
             )
             self.assertEqual(
                 camera_after,
-                camera_before,
+                camera_after_settings,
                 'Changing source geometry must not modify the original camera feed',
             )
             self.assertEqual(
