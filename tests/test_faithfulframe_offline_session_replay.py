@@ -125,15 +125,15 @@ def write_cartoon_stage_frame(path: Path, portrait_path: Path, x: int) -> None:
 
 
 class OfflineSessionReplayTests(unittest.TestCase):
-    def test_detection_scale_is_validated_and_recorded_in_source_geometry(self):
+    def test_4k_input_scale_is_validated_and_recorded_for_1080p_output(self):
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
-            frame = temporary / "black-320x240.ppm"
+            frame = temporary / "black-3840x2160.ppm"
             manifest = temporary / "frames.tsv"
             trace = temporary / "trace.jsonl"
-            write_black_ppm(frame, 320, 240)
+            write_black_ppm(frame, 3840, 2160)
             manifest.write_text(
-                "monotonic_ms\tframe_path\n0\tblack-320x240.ppm\n",
+                "monotonic_ms\tframe_path\n0\tblack-3840x2160.ppm\n",
                 encoding="utf-8",
             )
 
@@ -146,6 +146,10 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     str(manifest),
                     "--trace",
                     str(trace),
+                    "--output-width",
+                    "1920",
+                    "--output-height",
+                    "1080",
                     "--detection-scale",
                     "2",
                 ],
@@ -156,18 +160,21 @@ class OfflineSessionReplayTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
             diagnostics = next(event for event in events if event["kind"] == "tracker_diagnostics")
+            initial_tick = next(event for event in events if event["kind"] == "tick")
             summary = next(event for event in events if event["kind"] == "summary")
             self.assertEqual(
-                (diagnostics["source_width"], diagnostics["source_height"]), (320, 240)
+                (diagnostics["source_width"], diagnostics["source_height"]), (3840, 2160)
             )
             self.assertEqual(
                 (diagnostics["detector_input_width"], diagnostics["detector_input_height"]),
-                (160, 120),
+                (1920, 1080),
             )
             self.assertEqual(diagnostics["detection_scale"], 2)
             self.assertEqual(diagnostics["scaling_mode"], "rgb_stride")
             self.assertEqual(summary["detection_scale"], 2)
             self.assertEqual(summary["scaling_mode"], "rgb_stride")
+            self.assertEqual(initial_tick["snapshot"]["source_crop"], [0, 0, 1, 1])
+            self.assertEqual(initial_tick["snapshot"]["output_viewport"], [0, 0, 1, 1])
 
             invalid_scale = subprocess.run(
                 [
