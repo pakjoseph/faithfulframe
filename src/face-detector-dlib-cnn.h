@@ -2,6 +2,7 @@
 #include <util/platform.h>
 #include <util/threading.h>
 #include "plugin-macros.generated.h"
+#include <string>
 #include "face-detector-base.h"
 
 class face_detector_dlib_cnn : public face_detector_base {
@@ -16,4 +17,5 @@ public:
 	void get_faces(std::vector<struct rect_s> &) override;
 
 	void set_model(const char *filename);
+	static bool validate_model_file(const char *filename, std::string &error);
 };

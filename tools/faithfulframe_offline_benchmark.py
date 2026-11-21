@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Run comparable detector-scale sweeps with the production offline replay.
+"""Run comparable dlib detector and scale sweeps with the production offline replay.
 
 The report is a development measurement, not a production acceptance record.
-It measures dlib HOG work, replay wall time, and process CPU/RSS for the offline
-replay process. It does not measure live OBS capture, rendering, encoding, or
-face-tracking quality on real camera footage.
+It measures selected dlib detector work, replay wall time, and process CPU/RSS
+for the offline replay process. It does not measure live OBS capture, rendering,
+encoding, or face-tracking quality on real camera footage.
 """
 
 from __future__ import annotations
@@ -26,8 +26,9 @@ import time
 from typing import Any
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MAX_DETECTION_SCALE = 16
+DETECTOR_ENGINES = ("dlib_hog", "dlib_cnn")
 
 
 class BenchmarkError(ValueError):
@@ -137,7 +138,11 @@ def _process_metrics(summary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def summarize_trace(trace_path: Path, detection_scale: int) -> dict[str, Any]:
+def summarize_trace(
+    trace_path: Path, detection_scale: int, detector_engine: str = "dlib_hog"
+) -> dict[str, Any]:
+    if detector_engine not in DETECTOR_ENGINES:
+        raise BenchmarkError("requested detector engine is unsupported")
     diagnostics: list[dict[str, Any]] = []
     candidate_observations = 0
     summary_events: list[dict[str, Any]] = []
@@ -152,6 +157,8 @@ def summarize_trace(trace_path: Path, detection_scale: int) -> dict[str, Any]:
                     raise BenchmarkError(f"trace line {line_number} is not an object")
                 kind = event.get("kind")
                 if kind == "tracker_diagnostics":
+                    if event.get("detector_engine") != detector_engine:
+                        raise BenchmarkError("trace detector engine does not match the requested engine")
                     diagnostics.append(event)
                 elif kind == "candidate":
                     candidate_observations += 1
@@ -225,6 +232,8 @@ def summarize_trace(trace_path: Path, detection_scale: int) -> dict[str, Any]:
         raise BenchmarkError("summary frame count does not match detector diagnostics")
     if _nonnegative_integer(final_summary.get("detection_scale"), "summary.detection_scale") != detection_scale:
         raise BenchmarkError("summary detection scale does not match the requested scale")
+    if final_summary.get("detector_engine") != detector_engine:
+        raise BenchmarkError("summary detector engine does not match the requested engine")
     if final_summary.get("scaling_mode") != "rgb_stride":
         raise BenchmarkError("summary does not identify the RGB stride scaling mode")
     process_metrics = _process_metrics(final_summary)
@@ -240,6 +249,7 @@ def summarize_trace(trace_path: Path, detection_scale: int) -> dict[str, Any]:
             source_geometry[1] // detection_scale,
         ],
         "detection_scale": detection_scale,
+        "detector_engine": detector_engine,
         "scaling_mode": "rgb_stride",
         "frame_count": len(diagnostics),
         "simulated_duration_ms": last_timestamp_ms - first_timestamp_ms,
@@ -345,6 +355,7 @@ def _run_replay(
     manifest: Path,
     output_resolution: tuple[int, int],
     fps: int,
+    detector_engine: str,
     scale: int,
     trace_path: Path,
     timeout_seconds: float,
@@ -359,6 +370,8 @@ def _run_replay(
         str(trace_path),
         "--fps",
         str(fps),
+        "--detector-engine",
+        detector_engine,
         "--output-width",
         str(output_resolution[0]),
         "--output-height",
@@ -376,16 +389,16 @@ def _run_replay(
             check=False,
         )
     except subprocess.TimeoutExpired as error:
-        raise BenchmarkError(f"replay timed out at detection scale {scale}") from error
+        raise BenchmarkError(f"replay timed out at {detector_engine} detection scale {scale}") from error
     except OSError as error:
         raise BenchmarkError(f"could not run offline replay: {error}") from error
     wall_time_ms = (time.perf_counter_ns() - started) / 1_000_000
     if completed.returncode != 0:
         detail = completed.stderr.strip()[-3000:]
         raise BenchmarkError(
-            f"replay failed at detection scale {scale} with exit code {completed.returncode}: {detail}"
+            f"replay failed at {detector_engine} detection scale {scale} with exit code {completed.returncode}: {detail}"
         )
-    metrics = summarize_trace(trace_path, scale)
+    metrics = summarize_trace(trace_path, scale, detector_engine)
     metrics["replay_wall_time_ms"] = round(wall_time_ms, 3)
     return metrics
 
@@ -397,7 +410,13 @@ def _aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     wall_samples = [run["replay_wall_time_ms"] for run in runs]
     first = runs[0]
     for run in runs[1:]:
-        for field in ("source_resolution", "detector_input_resolution", "frame_count", "simulated_duration_ms"):
+        for field in (
+            "source_resolution",
+            "detector_input_resolution",
+            "frame_count",
+            "simulated_duration_ms",
+            "detector_engine",
+        ):
             if run[field] != first[field]:
                 raise BenchmarkError(f"replay workload changed between repeats ({field})")
     process_runs = [run["process_metrics"] for run in runs]
@@ -405,6 +424,7 @@ def _aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     memory_runs = [run for run in process_runs if run["memory_valid"]]
     return {
         "repeats": len(runs),
+        "detector_engine": first["detector_engine"],
         "source_resolution": first["source_resolution"],
         "detector_input_resolution": first["detector_input_resolution"],
         "frame_count_per_run": first["frame_count"],
@@ -475,7 +495,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--binary-source-revision",
         help="operator-supplied, unverified source revision for the replay binary; omitted means unknown",
     )
-    parser.add_argument("--model", required=True, type=Path, help="dlib frontal face detector model")
+    parser.add_argument(
+        "--model", required=True, type=Path, help="dlib model matching the selected detector engine"
+    )
+    parser.add_argument(
+        "--detector-engine",
+        choices=DETECTOR_ENGINES,
+        default="dlib_hog",
+        help="existing production dlib backend to measure (default: dlib_hog)",
+    )
     parser.add_argument("--manifest", required=True, type=Path, help="monotonic timestamp/PPM manifest")
     parser.add_argument("--output", required=True, type=Path, help="destination JSON report")
     parser.add_argument("--scales", type=parse_scales, default=parse_scales("1,2,4"))
@@ -539,7 +567,7 @@ def main(argv: list[str] | None = None) -> int:
         except OSError as error:
             parser.error(f"could not create trace directory: {error}")
         expected_traces = [
-            trace_root / f"scale-{scale}-run-{repeat_index + 1}.jsonl"
+            trace_root / f"{args.detector_engine}-scale-{scale}-run-{repeat_index + 1}.jsonl"
             for scale in args.scales
             for repeat_index in range(args.repeats)
         ]
@@ -554,6 +582,7 @@ def main(argv: list[str] | None = None) -> int:
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "evidence_scope": "offline_development_measurement",
         "production_acceptance_eligible": False,
+        "detector_engine": args.detector_engine,
         "obs_runtime_version": None,
         "host": {
             "operating_system": platform.system(),
@@ -581,10 +610,10 @@ def main(argv: list[str] | None = None) -> int:
         },
         "metrics_scope": {
             "measured": [
-                "dlib HOG detector execution latency from the numeric replay trace",
+                f"{args.detector_engine} detector execution latency from the numeric replay trace",
                 "offline replay wall time",
                 (
-                    "offline replay process CPU time and CPU percentage from before HOG model validation "
+                    "offline replay process CPU time and CPU percentage from before model validation "
                     "through detector/tracker and Rust session teardown"
                 ),
                 (
@@ -609,7 +638,8 @@ def main(argv: list[str] | None = None) -> int:
                 runs: list[dict[str, Any]] = []
                 for repeat_index in range(args.repeats):
                     trace_path = (
-                        trace_root / f"scale-{scale}-run-{repeat_index + 1}.jsonl"
+                        trace_root
+                        / f"{args.detector_engine}-scale-{scale}-run-{repeat_index + 1}.jsonl"
                         if trace_root
                         else temporary_root / f"scale-{scale}-run-{repeat_index + 1}.jsonl"
                     )
@@ -619,6 +649,7 @@ def main(argv: list[str] | None = None) -> int:
                         manifest,
                         args.output_resolution,
                         args.fps,
+                        args.detector_engine,
                         scale,
                         trace_path,
                         args.timeout_seconds,
@@ -632,11 +663,15 @@ def main(argv: list[str] | None = None) -> int:
                 report["scales"].append(
                     {
                         "detection_scale": scale,
+                        "detector_engine": args.detector_engine,
                         "scaling_mode": "rgb_stride",
                         "detector_input_resolution": runs[0]["detector_input_resolution"],
                         "summary": _aggregate_runs(runs),
                         "trace_files": (
-                            [f"scale-{scale}-run-{i + 1}.jsonl" for i in range(args.repeats)]
+                            [
+                                f"{args.detector_engine}-scale-{scale}-run-{i + 1}.jsonl"
+                                for i in range(args.repeats)
+                            ]
                             if trace_root
                             else []
                         ),

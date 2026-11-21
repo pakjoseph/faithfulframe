@@ -42,6 +42,24 @@ face_detector_dlib_cnn::face_detector_dlib_cnn()
 	p = new private_s;
 }
 
+bool face_detector_dlib_cnn::validate_model_file(const char *filename, std::string &error)
+{
+	if (!filename || !*filename) {
+		error = "model filename is empty";
+		return false;
+	}
+	try {
+		net_type net;
+		deserialize(filename) >> net;
+		return true;
+	} catch (const std::exception &exception) {
+		error = exception.what();
+	} catch (...) {
+		error = "unknown error";
+	}
+	return false;
+}
+
 face_detector_dlib_cnn::~face_detector_dlib_cnn()
 {
 	// The worker calls detect_main() through this derived object and accesses p.

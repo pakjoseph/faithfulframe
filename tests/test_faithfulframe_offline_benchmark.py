@@ -21,6 +21,7 @@ def diagnostic(frame_index, work_count, work_us, *, width=3840, height=2160, sca
         "source_height": height,
         "detector_input_width": width // scale,
         "detector_input_height": height // scale,
+        "detector_engine": "dlib_hog",
         "detection_scale": scale,
         "scaling_mode": "rgb_stride",
         "detector_work_count": work_count,
@@ -32,6 +33,7 @@ def diagnostic(frame_index, work_count, work_us, *, width=3840, height=2160, sca
 
 def process_summary(**overrides):
     summary = {
+        "detector_engine": "dlib_hog",
         "process_wall_us": 1000,
         "process_cpu_valid": True,
         "process_cpu_us": 250,
@@ -68,6 +70,20 @@ class OfflineBenchmarkTests(unittest.TestCase):
         self.assertEqual(supplied["build_source_revision_status"], "operator_supplied_unverified")
         self.assertEqual(unknown["sha256"], supplied["sha256"])
 
+    def test_benchmark_selects_existing_dlib_backend_explicitly(self):
+        parser = benchmark._build_parser()
+        args = parser.parse_args(
+            [
+                "--binary", "replay",
+                "--model", "model.dat",
+                "--manifest", "frames.tsv",
+                "--output", "report.json",
+                "--workload-label", "synthetic",
+                "--detector-engine", "dlib_cnn",
+            ]
+        )
+        self.assertEqual(args.detector_engine, "dlib_cnn")
+
     def test_summarizes_latency_and_numeric_tracking_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:
             trace = self.write_trace(
@@ -91,6 +107,7 @@ class OfflineBenchmarkTests(unittest.TestCase):
 
         self.assertEqual(result["source_resolution"], [3840, 2160])
         self.assertEqual(result["detector_input_resolution"], [1920, 1080])
+        self.assertEqual(result["detector_engine"], "dlib_hog")
         self.assertEqual(result["frame_count"], 4)
         self.assertEqual(result["simulated_duration_ms"], 120)
         self.assertEqual(result["detector_work_samples_us"], [1200, 1800])
@@ -213,6 +230,25 @@ class OfflineBenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(benchmark.BenchmarkError, "skipped detector completions"):
                 benchmark.summarize_trace(skipped, 2)
 
+    def test_rejects_detector_engine_mismatch_in_trace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = self.write_trace(
+                directory,
+                [
+                    diagnostic(0, 0, 0),
+                    diagnostic(1, 1, 100),
+                    {
+                        "kind": "summary",
+                        "frames": 2,
+                        "detection_scale": 2,
+                        "scaling_mode": "rgb_stride",
+                        **process_summary(),
+                    },
+                ],
+            )
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "requested engine"):
+                benchmark.summarize_trace(trace, 2, "dlib_cnn")
+
     def test_rejects_geometry_change_within_comparison_run(self):
         with tempfile.TemporaryDirectory() as directory:
             trace = self.write_trace(
@@ -252,6 +288,7 @@ class OfflineBenchmarkTests(unittest.TestCase):
 
     def test_aggregates_repeats_only_when_workload_shape_matches(self):
         common = {
+            "detector_engine": "dlib_hog",
             "source_resolution": [3840, 2160],
             "detector_input_resolution": [1920, 1080],
             "frame_count": 150,

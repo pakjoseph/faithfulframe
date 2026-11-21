@@ -65,8 +65,11 @@ def main() -> int:
             print(f"offline benchmark did not produce valid JSON: {error}", file=sys.stderr)
             return 1
 
-        if report.get("schema_version") != 3:
+        if report.get("schema_version") != 4:
             print("offline benchmark did not emit the current report schema", file=sys.stderr)
+            return 1
+        if report.get("detector_engine") != "dlib_hog":
+            print("offline benchmark did not record its selected detector engine", file=sys.stderr)
             return 1
         if report.get("evidence_scope") != "offline_development_measurement":
             print("benchmark scope was not marked as an offline development measurement", file=sys.stderr)
@@ -90,7 +93,7 @@ def main() -> int:
         if not any("process CPU" in metric for metric in measured) or not any("resident memory" in metric for metric in measured):
             print("offline benchmark did not identify its process CPU and memory measurements", file=sys.stderr)
             return 1
-        if not any("before HOG model validation" in metric for metric in measured) or not any(
+        if not any("before model validation" in metric for metric in measured) or not any(
             "process-lifetime high-water mark" in metric for metric in measured
         ):
             print("offline benchmark did not document its process metric boundaries", file=sys.stderr)
@@ -107,6 +110,9 @@ def main() -> int:
             return 1
         for scale in scales:
             summary = scale.get("summary", {})
+            if summary.get("detector_engine") != "dlib_hog":
+                print("benchmark scale did not retain its detector engine", file=sys.stderr)
+                return 1
             if summary.get("detector_work_samples_count", 0) <= 0:
                 print("benchmark scale has no detector latency samples", file=sys.stderr)
                 return 1

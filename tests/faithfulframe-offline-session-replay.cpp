@@ -6,6 +6,7 @@
 #include "faithfulframe-offline-frame-sequence.hpp"
 #include "faithfulframe-offline-process-metrics.hpp"
 #include "face-tracker-association.hpp"
+#include "face-detector-dlib-cnn.h"
 #include "face-detector-dlib-hog.h"
 #include "face-tracker-manager.hpp"
 #include "faithfulframe-candidate-limits.hpp"
@@ -29,6 +30,7 @@
 #include <locale>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -55,11 +57,19 @@ using faithfulframe::offline::elapsed_cpu_microseconds;
 using faithfulframe::offline::signed_difference;
 using steady_clock = std::chrono::steady_clock;
 
+enum class offline_detector_engine { dlib_hog, dlib_cnn };
+
+const char *detector_engine_name(offline_detector_engine engine)
+{
+	return engine == offline_detector_engine::dlib_cnn ? "dlib_cnn" : "dlib_hog";
+}
+
 struct arguments
 {
 	std::filesystem::path model;
 	std::filesystem::path manifest;
 	std::filesystem::path trace;
+	offline_detector_engine detector_engine = offline_detector_engine::dlib_hog;
 	bool ppm_stdin = false;
 	uint32_t fps = 30;
 	uint32_t detection_scale = 1;
@@ -98,15 +108,16 @@ public:
 
 void usage(std::ostream &out)
 {
-	out << "Usage: faithfulframe-offline-session-replay --model <frontal_face_detector.dat> "
+	out << "Usage: faithfulframe-offline-session-replay --model <dlib_model.dat> "
 	       "(--manifest <frames.tsv> | --ppm-stdin) [--fps <1..120>] [--trace <trace.jsonl>] "
-	       "[--detection-scale <1..16>] [--output-width <pixels>] [--output-height <pixels>] "
+	       "[--detector-engine dlib_hog|dlib_cnn] [--detection-scale <1..16>] "
+	       "[--output-width <pixels>] [--output-height <pixels>] "
 	       "[--operator-select-first-candidate-at-ms <timestamp> | "
 	       "--operator-select-leftmost-candidate-at-ms <timestamp>] "
 	       "[--operator-min-candidate-count <1..8>]\n"
 	    << "Manifest format: monotonic_ms<TAB>relative-or-absolute-frame-path. Frames must be P6 PPM, max value 255.\n"
 	    << "--fps sets stdin timestamp cadence and the nominal initial frame interval for manifest replays.\n"
-	    << "The replay uses the production dlib HOG detector, face_tracker_manager, dlib correlation trackers, and Rust session policy.\n"
+	    << "The replay uses the selected production dlib detector, face_tracker_manager, dlib correlation trackers, and Rust session policy.\n"
 	    << "Detection scaling uses the production RGB frame-stride path and preserves source-space candidate coordinates.\n"
 	    << "It records numeric candidate and crop traces only; it does not save video frames or face imagery. "
 	       "Speaker selection is never automatic. The optional operator-selection flag simulates one explicit command.\n";
@@ -145,6 +156,15 @@ bool parse_arguments(int argc, char **argv, arguments &args)
 			args.manifest = value;
 		} else if (option == "--trace") {
 			args.trace = value;
+		} else if (option == "--detector-engine") {
+			if (value == "dlib_hog")
+				args.detector_engine = offline_detector_engine::dlib_hog;
+			else if (value == "dlib_cnn")
+				args.detector_engine = offline_detector_engine::dlib_cnn;
+			else {
+				std::cerr << "--detector-engine must be dlib_hog or dlib_cnn\n";
+				return false;
+			}
 		} else if (option == "--fps") {
 			uint64_t parsed = 0;
 			if (!parse_integer(value, parsed) || parsed < 1 || parsed > 120) {
@@ -212,16 +232,25 @@ bool same_file_or_path(const std::filesystem::path &left, const std::filesystem:
 	return !error && left_canonical == right_canonical;
 }
 
-bool validate_model(const std::filesystem::path &path)
+bool validate_model(const std::filesystem::path &path, offline_detector_engine engine)
 {
 	try {
-		dlib::frontal_face_detector detector;
-		dlib::deserialize(path.string()) >> detector;
+		if (engine == offline_detector_engine::dlib_hog) {
+			dlib::frontal_face_detector detector;
+			dlib::deserialize(path.string()) >> detector;
+		} else {
+			// Validate with the CNN backend's exact network type so an invalid
+			// model cannot masquerade as a zero-detection run.
+			std::string error;
+			if (!face_detector_dlib_cnn::validate_model_file(path.string().c_str(), error))
+				throw std::runtime_error(error);
+		}
 		return true;
 	} catch (const std::exception &error) {
-		std::cerr << "Cannot deserialize dlib HOG model: " << error.what() << '\n';
+		std::cerr << "Cannot deserialize " << detector_engine_name(engine) << " model: " << error.what()
+			  << '\n';
 	} catch (...) {
-		std::cerr << "Cannot deserialize dlib HOG model: unknown error\n";
+		std::cerr << "Cannot deserialize " << detector_engine_name(engine) << " model: unknown error\n";
 	}
 	return false;
 }
@@ -479,7 +508,7 @@ int main(int argc, char **argv)
 	}
 	const process_sample process_started = sample_process();
 	const auto process_wall_started_at = steady_clock::now();
-	if (!validate_model(args.model))
+	if (!validate_model(args.model, args.detector_engine))
 		return 2;
 
 	std::vector<frame_spec> frames;
@@ -546,11 +575,11 @@ int main(int argc, char **argv)
 
 	const auto process_frame = [&](rgb_frame &image, uint64_t timestamp_ms) -> bool {
 		if (image.width < 80 || image.height < 80) {
-			error = "dlib HOG requires frames of at least 80x80 pixels";
+			error = "dlib requires frames of at least 80x80 pixels";
 			return false;
 		}
 		if (image.width / args.detection_scale < 80 || image.height / args.detection_scale < 80) {
-			error = "detection scaling reduces the dlib HOG input below 80x80 pixels";
+			error = "detection scaling reduces the dlib input below 80x80 pixels";
 			return false;
 		}
 		if (have_timestamp && timestamp_ms <= last_timestamp_ms) {
@@ -600,13 +629,22 @@ int main(int argc, char **argv)
 			manager->detector_crop_r = 0;
 			manager->detector_crop_t = 0;
 			manager->detector_crop_b = 0;
-			manager->detector_engine = face_tracker_manager::engine_dlib_hog;
-			manager->detector_dlib_hog_model = args.model.string();
-			auto *hog_detector = new face_detector_dlib_hog();
-			hog_detector->set_model(args.model.string().c_str());
-			manager->detect = hog_detector;
+			if (args.detector_engine == offline_detector_engine::dlib_hog) {
+				manager->detector_engine = face_tracker_manager::engine_dlib_hog;
+				manager->detector_dlib_hog_model = args.model.string();
+				auto *detector = new face_detector_dlib_hog();
+				detector->set_model(args.model.string().c_str());
+				manager->detect = detector;
+			} else {
+				manager->detector_engine = face_tracker_manager::engine_dlib_cnn;
+				manager->detector_dlib_cnn_model = args.model.string();
+				auto *detector = new face_detector_dlib_cnn();
+				detector->set_model(args.model.string().c_str());
+				manager->detect = detector;
+			}
 			if (!manager->detect->start()) {
-				error = "Could not start the production dlib HOG detector worker";
+				error = std::string("Could not start the production ") +
+					detector_engine_name(args.detector_engine) + " detector worker";
 				return false;
 			}
 			if (ff_session_snapshot(session.get(), &snapshot) != FF_OK) {
@@ -690,6 +728,7 @@ int main(int argc, char **argv)
 		manager->detect->get_faces(detections);
 		manager->detect->unlock();
 		*trace << "{\"kind\":\"tracker_diagnostics\",\"frame_index\":" << frame_index
+		       << ",\"detector_engine\":\"" << detector_engine_name(args.detector_engine) << "\""
 		       << ",\"at_ms\":" << timestamp_ms << ",\"source_width\":" << image.width
 		       << ",\"source_height\":" << image.height
 		       << ",\"detector_input_width\":" << image.width / args.detection_scale
@@ -884,7 +923,8 @@ int main(int argc, char **argv)
 	const bool resident_growth_valid = process_started.memory_valid && process_finished.memory_valid &&
 					   signed_difference(process_finished.resident_bytes,
 							     process_started.resident_bytes, resident_growth_bytes);
-	*trace << "{\"kind\":\"summary\",\"frames\":" << frame_index << ",\"detection_scale\":" << args.detection_scale
+	*trace << "{\"kind\":\"summary\",\"frames\":" << frame_index << ",\"detector_engine\":\""
+	       << detector_engine_name(args.detector_engine) << "\",\"detection_scale\":" << args.detection_scale
 	       << ",\"scaling_mode\":\"rgb_stride\""
 	       << ",\"candidate_observations\":" << candidate_observations
 	       << ",\"operator_selection_attempts\":" << selection_attempts

@@ -394,6 +394,9 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	set(FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL
 		"${CMAKE_CURRENT_SOURCE_DIR}/data/dlib_hog_model/frontal_face_detector.dat"
 		CACHE FILEPATH "Optional dlib HOG model used for the offline detector smoke test")
+	set(FAITHFULFRAME_DLIB_CNN_SMOKE_MODEL
+		"${CMAKE_CURRENT_SOURCE_DIR}/data/dlib_cnn_model/mmod_human_face_detector.dat"
+		CACHE FILEPATH "Optional dlib CNN model used for the offline detector smoke test")
 	if (EXISTS "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}")
 		add_test(NAME faithfulframe-offline-replay-detector-smoke
 			COMMAND faithfulframe-offline-replay
@@ -437,6 +440,16 @@ if (ENABLE_RUST_CORE_BRIDGE)
 			set_tests_properties(faithfulframe-offline-replay-stream-smoke PROPERTIES TIMEOUT 30)
 		endif()
 	endif()
+	if (EXISTS "${FAITHFULFRAME_DLIB_CNN_SMOKE_MODEL}" AND Python3_Interpreter_FOUND)
+		add_test(NAME faithfulframe-offline-session-replay-cnn-smoke
+			COMMAND ${Python3_EXECUTABLE}
+				${CMAKE_CURRENT_SOURCE_DIR}/tests/test_faithfulframe_offline_detector_backend.py
+				--binary $<TARGET_FILE:faithfulframe-offline-session-replay>
+				--model "${FAITHFULFRAME_DLIB_CNN_SMOKE_MODEL}"
+				--manifest "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/offline-smoke.tsv"
+				--detector-engine dlib_cnn)
+		set_tests_properties(faithfulframe-offline-session-replay-cnn-smoke PROPERTIES TIMEOUT 150)
+	endif()
 	set(FAITHFULFRAME_SESSION_REPLAY_TESTS faithfulframe-offline-session-replay-help)
 	if (EXISTS "${FAITHFULFRAME_DLIB_HOG_SMOKE_MODEL}")
 		list(APPEND FAITHFULFRAME_SESSION_REPLAY_TESTS faithfulframe-offline-session-replay-policy-smoke)
@@ -445,6 +458,9 @@ if (ENABLE_RUST_CORE_BRIDGE)
 				faithfulframe-offline-session-replay-geometry-integration
 				faithfulframe-offline-benchmark-e2e)
 		endif()
+	endif()
+	if (EXISTS "${FAITHFULFRAME_DLIB_CNN_SMOKE_MODEL}" AND Python3_Interpreter_FOUND)
+		list(APPEND FAITHFULFRAME_SESSION_REPLAY_TESTS faithfulframe-offline-session-replay-cnn-smoke)
 	endif()
 	if (APPLE AND FAITHFULFRAME_SESSION_REPLAY_TEST_ENV)
 		set_tests_properties(${FAITHFULFRAME_SESSION_REPLAY_TESTS} PROPERTIES
