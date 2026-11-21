@@ -655,6 +655,57 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         with self.assertRaisesRegex(analyzer.PerformanceLogError, "unsupported OBS obs_color_format"):
             analyzer.load_log(path)
 
+    def test_normalizes_every_supported_obs_profile_enum(self):
+        expected_values = {
+            "obs_color_format": {
+                "i420": 1, "nv12": 2, "yvyu": 3, "yuy2": 4, "uyvy": 5,
+                "rgba": 6, "bgra": 7, "bgrx": 8, "y800": 9, "i444": 10,
+                "bgr3": 11, "i422": 12, "i40a": 13, "i42a": 14, "yuva": 15,
+                "ayuv": 16, "i010": 17, "p010": 18, "i210": 19, "i412": 20,
+                "ya2l": 21, "p216": 22, "p416": 23, "v210": 24, "r10l": 25,
+            },
+            "obs_colorspace": {
+                "default": 0, "601": 1, "709": 2, "srgb": 3,
+                "2100pq": 4, "2100hlg": 5,
+            },
+            "obs_color_range": {"default": 0, "partial": 1, "full": 2},
+            "obs_scale_type": {
+                "disable": 0, "point": 1, "bicubic": 2, "bilinear": 3,
+                "lanczos": 4, "area": 5,
+            },
+        }
+        self.assertEqual(analyzer.OBS_VIDEO_PROFILE_VALUES, expected_values)
+
+        configuration_keys = {
+            "obs_color_format": "output_format",
+            "obs_colorspace": "colorspace",
+            "obs_color_range": "range",
+            "obs_scale_type": "scale_type",
+        }
+        rows = []
+        elapsed_ms = 0
+        for column, values in expected_values.items():
+            for profile_value in values:
+                row = baseline_row(elapsed_ms, 10.0, 2_000_000_000, 1000, 5, 990, 4)
+                row[column] = profile_value
+                rows.append(row)
+                elapsed_ms += 1_000
+
+        path = self.root / "all-profile-enums.csv"
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=analyzer.BASELINE_COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+        report = analyzer.load_log(path)
+        configurations = report["comparison_video_configurations"]
+        for column, values in expected_values.items():
+            with self.subTest(setting=column):
+                observed = {
+                    configuration[configuration_keys[column]]
+                    for configuration in configurations
+                }
+                self.assertEqual(observed, set(values.values()))
+
     def test_rejects_baseline_when_output_mode_changes(self):
         first = baseline_row(0, 10.0, 2_000_000_000, 1000, 5, 990, 4)
         second = baseline_row(60_000, 12.0, 2_100_000_000, 2000, 15, 1980, 14)
