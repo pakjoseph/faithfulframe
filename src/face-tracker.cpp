@@ -372,7 +372,7 @@ static bool schedule_binding_reclamation(std::unique_ptr<faithfulframe_source_bi
 {
 	if (!binding)
 		return true;
-	if (!faithfulframe_teardown_register_cleanup())
+	if (!faithfulframe_teardown_try_register_cleanup())
 		return false;
 	binding->cleanup_reservation.store(true, std::memory_order_release);
 	auto *raw = binding.release();

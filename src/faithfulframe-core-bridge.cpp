@@ -937,6 +937,31 @@ extern "C" int faithfulframe_teardown_register_cleanup()
 	return 1;
 }
 
+extern "C" int faithfulframe_teardown_try_register_cleanup()
+{
+	// Retired bindings can be discovered on OBS's video callback. Never make
+	// that callback wait for module lifecycle bookkeeping; callers keep the
+	// binding and retry if teardown currently owns this short critical section.
+	std::unique_lock<std::mutex> lock(faithfulframe_module_lifecycle_mutex, std::try_to_lock);
+	if (!lock.owns_lock() || faithfulframe_live_instances == 0 ||
+	    faithfulframe_live_instances == std::numeric_limits<size_t>::max())
+		return 0;
+	++faithfulframe_live_instances;
+	return 1;
+}
+
+#ifdef FAITHFULFRAME_TEST_LIFECYCLE_MUTEX_ACCESS
+extern "C" void faithfulframe_test_lock_lifecycle_mutex()
+{
+	faithfulframe_module_lifecycle_mutex.lock();
+}
+
+extern "C" void faithfulframe_test_unlock_lifecycle_mutex()
+{
+	faithfulframe_module_lifecycle_mutex.unlock();
+}
+#endif
+
 #ifdef FAITHFULFRAME_TEST_REAPER_JOIN_HOOK
 extern "C" void faithfulframe_test_set_reaper_join_hook(void (*hook)(void *), void *context)
 {

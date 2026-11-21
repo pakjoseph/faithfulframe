@@ -284,6 +284,9 @@ extern "C" int faithfulframe_teardown_register_instance();
 /// faithfulframe_teardown_instance_destroyed() after the callback's reaper
 /// cleanup completes.
 extern "C" int faithfulframe_teardown_register_cleanup();
+/// Nonblocking cleanup reservation for OBS video/render callbacks. A false
+/// result means the caller must retain ownership and retry from a later callback.
+extern "C" int faithfulframe_teardown_try_register_cleanup();
 extern "C" void faithfulframe_teardown_instance_created();
 extern "C" void faithfulframe_teardown_instance_destroyed();
 extern "C" void faithfulframe_teardown_instance_creation_failed();

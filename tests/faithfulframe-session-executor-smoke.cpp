@@ -14,6 +14,9 @@
 #include <mutex>
 #include <thread>
 
+extern "C" void faithfulframe_test_lock_lifecycle_mutex();
+extern "C" void faithfulframe_test_unlock_lifecycle_mutex();
+
 struct faithfulframe_session_executor_test_access
 {
 	static void shutdown(faithfulframe_session_executor &executor,
@@ -1529,6 +1532,45 @@ bool obs_cleanup_reservation_keeps_reaper_open()
 	return source_destroy_did_not_close_reaper && cleanup_drained && faithfulframe_executor_reaper_start() == 1;
 }
 
+bool video_cleanup_reservation_does_not_wait_for_lifecycle_mutex()
+{
+	trace_session_smoke_checkpoint("video cleanup reservation: setup");
+	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
+		return false;
+	faithfulframe_teardown_instance_created();
+
+	faithfulframe_test_lock_lifecycle_mutex();
+	std::atomic<bool> attempt_finished{false};
+	std::atomic<int> reservation_result{1};
+	std::thread attempt([&] {
+		reservation_result.store(faithfulframe_teardown_try_register_cleanup(), std::memory_order_release);
+		attempt_finished.store(true, std::memory_order_release);
+	});
+	const auto attempt_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+	while (!attempt_finished.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < attempt_deadline)
+		std::this_thread::yield();
+	const bool returned_while_locked = attempt_finished.load(std::memory_order_acquire);
+	faithfulframe_test_unlock_lifecycle_mutex();
+	attempt.join();
+
+	const int contended_result = reservation_result.load(std::memory_order_acquire);
+	const bool rejected_contended_reservation = contended_result == 0;
+	const bool reservation_succeeds_after_unlock = faithfulframe_teardown_try_register_cleanup() == 1;
+	faithfulframe_teardown_begin_module_unload();
+	faithfulframe_teardown_instance_destroyed();
+	if (reservation_succeeds_after_unlock)
+		faithfulframe_teardown_instance_destroyed();
+	if (contended_result == 1)
+		faithfulframe_teardown_instance_destroyed();
+	const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (faithfulframe_test_reaper_shutdown_pending() && std::chrono::steady_clock::now() < drain_deadline)
+		std::this_thread::yield();
+	const bool reaper_drained = !faithfulframe_test_reaper_shutdown_pending();
+	const bool reaper_restarted = faithfulframe_executor_reaper_start() == 1;
+	return returned_while_locked && rejected_contended_reservation && reservation_succeeds_after_unlock &&
+	       reaper_drained && reaper_restarted;
+}
+
 void trace_session_smoke_checkpoint(const char *name)
 {
 	std::fprintf(stderr, "session executor smoke checkpoint: %s\n", name);
@@ -2581,6 +2623,9 @@ int run_smoke()
 	trace_session_smoke_checkpoint("deferred OBS cleanup reservation test");
 	if (!obs_cleanup_reservation_keeps_reaper_open())
 		return 129;
+	trace_session_smoke_checkpoint("nonblocking video cleanup reservation test");
+	if (!video_cleanup_reservation_does_not_wait_for_lifecycle_mutex())
+		return 130;
 	return 0;
 }
 
