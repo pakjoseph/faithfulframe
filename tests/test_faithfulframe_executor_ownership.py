@@ -81,6 +81,27 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
         self.assertIn("binding->callback_executor.load(std::memory_order_acquire)", publish_and_settle)
         self.assertIn("binding->callback_executor.load(std::memory_order_acquire)", steady_state)
 
+    def test_fixed_target_size_proc_only_writes_declared_outputs(self):
+        source = (ROOT / "src/face-tracker.cpp").read_text(encoding="utf-8")
+        signature = re.search(
+            r'proc_handler_add\(ph,\s*"([^"]+)"\s*,\s*cb_get_target_size\b', source
+        )
+        self.assertIsNotNone(signature)
+        declared_outputs = set(re.findall(r"\bout\s+\w+\s+(\w+)", signature.group(1)))
+        self.assertTrue(declared_outputs)
+
+        callback_start = source.index("static void cb_get_target_size(void *data, calldata_t *cd)\n{")
+        callback_end = source.index("\nstatic void cb_get_state(", callback_start)
+        callback = source[callback_start:callback_end]
+        written_fields = set(re.findall(r'calldata_set_\w+\(cd,\s*"([^"]+)"', callback))
+
+        self.assertTrue(written_fields)
+        self.assertLessEqual(
+            written_fields,
+            declared_outputs,
+            "a fixed OBS proc callback must not write undeclared calldata outputs",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
