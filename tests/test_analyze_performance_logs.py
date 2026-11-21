@@ -1,6 +1,9 @@
 import csv
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 import importlib.util
+import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -295,6 +298,93 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         self.assertFalse(results[0]["both_meet_recommendation"])
         self.assertTrue(results[1]["both_meet_minimum"])
         self.assertTrue(results[1]["both_meet_recommendation"])
+
+    def test_duration_does_not_imply_continuous_sample_coverage(self):
+        reference_path = self.write_log(
+            "sparse-reference.csv",
+            [
+                fixture_row(0, 10.0, 1_000_000, 1000, 5, "upstream"),
+                fixture_row(7_200_000, 12.0, 1_100_000, 2000, 15, "upstream"),
+            ],
+        )
+        candidate_path = self.write_log(
+            "sparse-candidate.csv",
+            [
+                fixture_row(0, 12.0, 1_050_000, 1000, 5, "faithfulframe"),
+                fixture_row(7_200_000, 14.0, 1_200_000, 2000, 25, "faithfulframe"),
+            ],
+        )
+
+        comparison = analyzer.compare_logs(
+            analyzer.load_log(reference_path),
+            analyzer.load_log(candidate_path),
+            maximum_sample_gap_ms=5_000,
+        )
+
+        self.assertTrue(comparison["rehearsal_duration_gate"]["both_meet_minimum"])
+        sample_gap = comparison["sample_gap_evidence"]
+        self.assertEqual(sample_gap["reference"]["observed_max_gap_ms"], 7_200_000)
+        self.assertEqual(sample_gap["candidate"]["observed_max_gap_ms"], 7_200_000)
+        self.assertFalse(sample_gap["both_meet_gap_limit"])
+        self.assertFalse(sample_gap["both_meet_duration_and_gap_limits"])
+        self.assertFalse(sample_gap["continuous_obs_output_proven"])
+
+    def test_sample_gap_gate_remains_unevaluated_without_caller_limit(self):
+        reference_path = self.write_log(
+            "reference.csv",
+            [
+                fixture_row(0, 10.0, 1_000_000, 1000, 5, "upstream"),
+                fixture_row(1000, 12.0, 1_100_000, 2000, 15, "upstream"),
+            ],
+        )
+        candidate_path = self.write_log(
+            "candidate.csv",
+            [
+                fixture_row(0, 12.0, 1_050_000, 1000, 5, "faithfulframe"),
+                fixture_row(1000, 14.0, 1_200_000, 2000, 25, "faithfulframe"),
+            ],
+        )
+
+        sample_gap = analyzer.compare_logs(
+            analyzer.load_log(reference_path), analyzer.load_log(candidate_path)
+        )["sample_gap_evidence"]
+
+        self.assertFalse(sample_gap["reference"]["evaluated"])
+        self.assertIsNone(sample_gap["reference"]["meets_gap_limit"])
+        self.assertIsNone(sample_gap["both_meet_gap_limit"])
+        self.assertIsNone(sample_gap["both_meet_duration_and_gap_limits"])
+
+    def test_rejects_non_positive_sample_gap_limit(self):
+        path = self.write_log(
+            "run.csv",
+            [
+                fixture_row(0, 10.0, 1_000_000, 1000, 5, "upstream"),
+                fixture_row(1000, 12.0, 1_100_000, 2000, 15, "upstream"),
+            ],
+        )
+        report = analyzer.load_log(path)
+
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "positive number"):
+            analyzer.compare_logs(report, report, maximum_sample_gap_ms=0)
+
+    def test_cli_emits_sample_gap_gate_when_requested(self):
+        path = self.write_log(
+            "cli-run.csv",
+            [
+                fixture_row(0, 10.0, 1_000_000, 1000, 5, "upstream"),
+                fixture_row(2000, 12.0, 1_100_000, 2000, 15, "upstream"),
+            ],
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            result = analyzer.main([str(path), "--max-sample-gap-ms", "1000"])
+
+        self.assertEqual(result, 0)
+        evidence = json.loads(output.getvalue())["sample_gap_evidence"]
+        self.assertTrue(evidence["evaluated"])
+        self.assertEqual(evidence["observed_max_gap_ms"], 2000)
+        self.assertFalse(evidence["meets_gap_limit"])
 
     def test_rejects_mismatched_workload_notes(self):
         first = fixture_row(0, 10.0, 1_000_000, 1000, 5, "upstream")

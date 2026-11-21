@@ -470,6 +470,58 @@ def _counter_delta(samples: list[dict], column: str) -> int | None:
     return values[-1] - values[0]
 
 
+def _sample_gap_evidence(log: dict, maximum_gap_ms: int | None) -> dict:
+    """Report whether recorded samples satisfy an explicitly supplied gap limit.
+
+    Duration alone cannot establish that a run was observed continuously. The
+    accepted gap is deliberately supplied by the caller so this analyzer does
+    not invent a performance or telemetry threshold.
+    """
+    intervals = log["sample_interval_milliseconds"]
+    has_intervals = intervals["count"] > 0
+    observed_max = intervals["max"]
+    evaluated = maximum_gap_ms is not None
+    meets_limit = (
+        has_intervals and observed_max is not None and observed_max <= maximum_gap_ms
+        if evaluated
+        else None
+    )
+    return {
+        "sample_count": log["sample_count"],
+        "observed_max_gap_ms": observed_max,
+        "has_interval_evidence": has_intervals,
+        "maximum_allowed_gap_ms": maximum_gap_ms,
+        "evaluated": evaluated,
+        "meets_gap_limit": meets_limit,
+    }
+
+
+def _comparison_sample_gap_evidence(
+    reference: dict, candidate: dict, maximum_gap_ms: int | None
+) -> dict:
+    reference_evidence = _sample_gap_evidence(reference, maximum_gap_ms)
+    candidate_evidence = _sample_gap_evidence(candidate, maximum_gap_ms)
+    if maximum_gap_ms is None:
+        both_meet_gap_limit = None
+        both_meet_duration_and_gap_limits = None
+    else:
+        both_meet_gap_limit = (
+            reference_evidence["meets_gap_limit"] and candidate_evidence["meets_gap_limit"]
+        )
+        both_meet_duration_and_gap_limits = (
+            reference["duration_hours"] >= MINIMUM_REHEARSAL_DURATION_HOURS
+            and candidate["duration_hours"] >= MINIMUM_REHEARSAL_DURATION_HOURS
+            and both_meet_gap_limit
+        )
+    return {
+        "reference": reference_evidence,
+        "candidate": candidate_evidence,
+        "both_meet_gap_limit": both_meet_gap_limit,
+        "both_meet_duration_and_gap_limits": both_meet_duration_and_gap_limits,
+        "continuous_obs_output_proven": False,
+    }
+
+
 def load_log(path: str | Path) -> dict:
     path = Path(path)
     try:
@@ -815,7 +867,11 @@ def load_log(path: str | Path) -> dict:
     }
 
 
-def compare_logs(reference: dict, candidate: dict) -> dict:
+def compare_logs(
+    reference: dict, candidate: dict, maximum_sample_gap_ms: int | None = None
+) -> dict:
+    if maximum_sample_gap_ms is not None and maximum_sample_gap_ms <= 0:
+        raise PerformanceLogError("maximum sample gap must be a positive number of milliseconds")
     reference_resolution = reference["resolutions"]
     candidate_resolution = candidate["resolutions"]
     if reference.get("output_mode") is None or candidate.get("output_mode") is None:
@@ -953,6 +1009,9 @@ def compare_logs(reference: dict, candidate: dict) -> dict:
                 and candidate["duration_hours"] >= RECOMMENDED_REHEARSAL_DURATION_HOURS
             ),
         },
+        "sample_gap_evidence": _comparison_sample_gap_evidence(
+            reference, candidate, maximum_sample_gap_ms
+        ),
         "measurements": comparisons,
         "not_compared_metrics": sorted(set(not_compared)),
         "not_compared_video_settings": not_compared_video_settings,
@@ -964,14 +1023,30 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("reference", type=Path, help="reference/baseline recording CSV")
     parser.add_argument("candidate", type=Path, nargs="?", help="candidate FaithfulFrame recording CSV")
+    parser.add_argument(
+        "--max-sample-gap-ms",
+        type=int,
+        help=(
+            "optional maximum allowed interval between telemetry samples; choose this from the "
+            "rehearsal protocol rather than treating elapsed duration alone as continuous evidence"
+        ),
+    )
     args = parser.parse_args(argv)
     try:
+        if args.max_sample_gap_ms is not None and args.max_sample_gap_ms <= 0:
+            raise PerformanceLogError("--max-sample-gap-ms must be a positive number of milliseconds")
         reference = load_log(args.reference)
         result = {"reference": reference, "thresholds_applied": False}
         if args.candidate:
             candidate = load_log(args.candidate)
             result["candidate"] = candidate
-            result["comparison"] = compare_logs(reference, candidate)
+            result["comparison"] = compare_logs(
+                reference, candidate, maximum_sample_gap_ms=args.max_sample_gap_ms
+            )
+        elif args.max_sample_gap_ms is not None:
+            result["sample_gap_evidence"] = _sample_gap_evidence(
+                reference, args.max_sample_gap_ms
+            )
         print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
     except PerformanceLogError as error:
         print(f"performance log analysis failed: {error}", file=sys.stderr)
