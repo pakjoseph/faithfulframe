@@ -115,7 +115,10 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
     def test_paired_reports_require_identical_host_and_workload(self):
         shared = {
             "host": {"cpu_architecture": "x86_64"},
-            "benchmark_tool_source_revision": {"commit": "abc123", "working_tree_dirty": False},
+            "benchmark_tool_source_revision": {
+                "commit": "abc123",
+                "tracked_working_tree_dirty": False,
+            },
             "replay_binary": {
                 "filename": "replay",
                 "sha256": "same",
@@ -147,6 +150,7 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
         self.assertEqual(paired["schema_version"], comparison.SCHEMA_VERSION)
         self.assertFalse(paired["production_acceptance_eligible"])
         self.assertEqual(paired["input_artifacts"], inputs)
+        self.assertIn("input_artifacts", paired["manifest"]["hash_scope"])
         self.assertEqual(
             [scale["detection_scale"] for scale in paired["results"]["dlib_hog"]], [2, 4]
         )

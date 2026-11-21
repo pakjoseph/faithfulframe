@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -69,6 +70,39 @@ class OfflineBenchmarkTests(unittest.TestCase):
         self.assertEqual(supplied["build_source_revision"], "abc123")
         self.assertEqual(supplied["build_source_revision_status"], "operator_supplied_unverified")
         self.assertEqual(unknown["sha256"], supplied["sha256"])
+
+    def test_source_provenance_ignores_untracked_build_artifacts_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+
+            def git(*args):
+                subprocess.run(
+                    ["git", "-C", str(repository), *args],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+            git("init", "--quiet")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.invalid")
+            tracked = repository / "tool.py"
+            tracked.write_text("print('baseline')\n", encoding="utf-8")
+            git("add", "tool.py")
+            git("commit", "--quiet", "-m", "baseline")
+
+            clean = benchmark._source_revision(repository)
+            self.assertFalse(clean["tracked_working_tree_dirty"])
+
+            build_output = repository / "build" / "generated.txt"
+            build_output.parent.mkdir()
+            build_output.write_text("generated", encoding="utf-8")
+            untracked_build = benchmark._source_revision(repository)
+            self.assertFalse(untracked_build["tracked_working_tree_dirty"])
+
+            tracked.write_text("print('changed')\n", encoding="utf-8")
+            modified_source = benchmark._source_revision(repository)
+            self.assertTrue(modified_source["tracked_working_tree_dirty"])
 
     def test_benchmark_selects_existing_dlib_backend_explicitly(self):
         parser = benchmark._build_parser()

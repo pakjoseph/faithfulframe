@@ -26,7 +26,7 @@ import time
 from typing import Any
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 MAX_DETECTION_SCALE = 16
 DETECTOR_ENGINES = ("dlib_hog", "dlib_cnn")
 
@@ -325,17 +325,17 @@ def _source_revision(repository_root: Path) -> dict[str, Any]:
             check=False,
         )
         status = subprocess.run(
-            ["git", "-C", str(repository_root), "status", "--porcelain"],
+            ["git", "-C", str(repository_root), "status", "--porcelain", "--untracked-files=no"],
             capture_output=True,
             text=True,
             timeout=2,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return {"commit": None, "working_tree_dirty": None}
+        return {"commit": None, "tracked_working_tree_dirty": None}
     return {
         "commit": commit.stdout.strip() if commit.returncode == 0 else None,
-        "working_tree_dirty": bool(status.stdout.strip()) if status.returncode == 0 else None,
+        "tracked_working_tree_dirty": bool(status.stdout.strip()) if status.returncode == 0 else None,
     }
 
 

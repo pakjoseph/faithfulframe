@@ -65,7 +65,7 @@ def main() -> int:
             print(f"offline benchmark did not produce valid JSON: {error}", file=sys.stderr)
             return 1
 
-        if report.get("schema_version") != 4:
+        if report.get("schema_version") != 5:
             print("offline benchmark did not emit the current report schema", file=sys.stderr)
             return 1
         if report.get("detector_engine") != "dlib_hog":

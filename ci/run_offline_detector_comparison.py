@@ -209,6 +209,10 @@ def _paired_summary(
     ] != expected_scales:
         raise ComparisonError("backend reports do not use the same detector scale")
 
+    manifest = dict(hog["manifest"])
+    manifest["hash_scope"] = (
+        "manifest file bytes; referenced frame content hashes are listed separately in input_artifacts"
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -219,7 +223,7 @@ def _paired_summary(
         "benchmark_tool_source_revision": hog["benchmark_tool_source_revision"],
         "replay_binary": hog["replay_binary"],
         "input_artifacts": input_artifacts,
-        "manifest": hog["manifest"],
+        "manifest": manifest,
         "workload": hog["workload"],
         "models": {"dlib_hog": hog["model"], "dlib_cnn": cnn["model"]},
         "results": {"dlib_hog": hog_scales, "dlib_cnn": cnn_scales},
