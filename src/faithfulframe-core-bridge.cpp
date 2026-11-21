@@ -277,6 +277,9 @@ faithfulframe_session_executor::faithfulframe_session_executor(const ff_session_
 
 faithfulframe_session_executor::~faithfulframe_session_executor()
 {
+	// Shared production instances use create(); if a worker is still running
+	// when their final owner is released, its deleter transfers destruction to
+	// the module reaper before this blocking cleanup can run.
 	shutdown();
 	if (reaper_worker_reserved.exchange(false, std::memory_order_acq_rel)) {
 		faithfulframe_release_reaper_worker(reaper);
@@ -605,12 +608,26 @@ public:
 									 std::memory_order_acquire))
 			return;
 		executor->retirement_keepalive = executor;
-		auto *head = retirement_head.load(std::memory_order_relaxed);
-		do {
-			executor->retirement_next = head;
-		} while (!retirement_head.compare_exchange_weak(head, executor.get(), std::memory_order_release,
-								std::memory_order_relaxed));
-		condition.notify_one();
+		publish_retirement(executor.get());
+	}
+
+	/// Takes raw ownership from the shared-pointer final-release deleter. The
+	/// executor remains alive in its control block's deleter until this queue
+	/// joins the worker and destroys it on the reaper thread.
+	void enqueue_for_final_release(faithfulframe_session_executor *executor)
+	{
+		if (!executor)
+			return;
+#ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
+		faithfulframe_test_run_reaper_enqueue_hook();
+#endif
+		executor->request_shutdown();
+		bool expected = false;
+		if (!executor->retirement_queued.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+									 std::memory_order_acquire))
+			return;
+		executor->destroy_after_retirement.store(true, std::memory_order_release);
+		publish_retirement(executor);
 	}
 
 	bool enqueue_cleanup(faithfulframe_reap_task *task, void (*callback)(void *), void *context,
@@ -672,6 +689,16 @@ public:
 	}
 
 private:
+	void publish_retirement(faithfulframe_session_executor *executor)
+	{
+		auto *head = retirement_head.load(std::memory_order_relaxed);
+		do {
+			executor->retirement_next = head;
+		} while (!retirement_head.compare_exchange_weak(head, executor, std::memory_order_release,
+								std::memory_order_relaxed));
+		condition.notify_one();
+	}
+
 	void run()
 	{
 		for (;;) {
@@ -750,6 +777,14 @@ private:
 private:
 	static void join_executor(faithfulframe_session_executor *executor)
 	{
+		if (executor->destroy_after_retirement.exchange(false, std::memory_order_acq_rel)) {
+#ifdef FAITHFULFRAME_TEST_REAPER_JOIN_HOOK
+			faithfulframe_test_run_reaper_join_hook();
+#endif
+			executor->join();
+			delete executor;
+			return;
+		}
 		// Keep the executor alive until its worker has been joined.
 		auto keepalive = std::move(executor->retirement_keepalive);
 		if (keepalive) {
@@ -792,6 +827,23 @@ private:
 	std::atomic<bool> worker_stopped{true};
 	std::thread worker;
 };
+
+std::shared_ptr<faithfulframe_session_executor>
+faithfulframe_session_executor::create(const ff_session_config &config, const ff_identity &identity,
+				       const ff_generations &generations)
+{
+	return std::shared_ptr<faithfulframe_session_executor>(
+		new faithfulframe_session_executor(config, identity, generations),
+		[](faithfulframe_session_executor *executor) noexcept {
+			if (!executor)
+				return;
+			if (!executor->reaper_worker_reserved.load(std::memory_order_acquire)) {
+				delete executor;
+				return;
+			}
+			executor->reaper->enqueue_for_final_release(executor);
+		});
+}
 
 static bool faithfulframe_reserve_reaper_worker(const std::shared_ptr<faithfulframe_executor_reaper> &reaper)
 {

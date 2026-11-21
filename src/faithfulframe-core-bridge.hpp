@@ -135,6 +135,11 @@ public:
 	~faithfulframe_session_executor();
 	faithfulframe_session_executor(const faithfulframe_session_executor &) = delete;
 	faithfulframe_session_executor &operator=(const faithfulframe_session_executor &) = delete;
+	/// Create a shared production executor whose final owner release transfers
+	/// any worker join to the module reaper instead of joining on the releasing
+	/// OBS or Qt thread.
+	static std::shared_ptr<faithfulframe_session_executor> create(const ff_session_config &, const ff_identity &,
+								      const ff_generations &);
 
 	bool enqueue_tick(uint64_t monotonic_ms);
 	bool enqueue_candidates(uint64_t monotonic_ms, const ff_candidate *candidates, size_t count);
@@ -245,6 +250,7 @@ private:
 	std::shared_ptr<faithfulframe_session_executor> retirement_keepalive;
 	faithfulframe_session_executor *retirement_next = nullptr;
 	std::atomic<bool> retirement_queued{false};
+	std::atomic<bool> destroy_after_retirement{false};
 };
 
 static_assert(std::atomic<faithfulframe_session_executor *>::is_always_lock_free,

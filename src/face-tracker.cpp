@@ -1831,7 +1831,7 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 	// session through this local binding on the OBS video tick.
 	binding->generations = initial;
 	try {
-		auto executor = std::make_shared<faithfulframe_session_executor>(config, binding->identity, initial);
+		auto executor = faithfulframe_session_executor::create(config, binding->identity, initial);
 		auto *callback_executor = executor.get();
 		faithfulframe::atomic_shared_ptr_store(&binding->executor, std::move(executor),
 						       std::memory_order_release);
