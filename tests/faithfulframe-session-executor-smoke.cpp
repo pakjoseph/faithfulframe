@@ -14,6 +14,22 @@
 #include <mutex>
 #include <thread>
 
+struct faithfulframe_session_executor_test_access
+{
+	static void shutdown(faithfulframe_session_executor &executor,
+			     uint32_t lifecycle_kind = FF_LIFECYCLE_ADAPTER_DESTROYED)
+	{
+		executor.shutdown(lifecycle_kind);
+	}
+
+	static void shutdown(std::shared_ptr<faithfulframe_session_executor> &executor,
+			     uint32_t lifecycle_kind = FF_LIFECYCLE_ADAPTER_DESTROYED)
+	{
+		if (executor)
+			executor->shutdown(lifecycle_kind);
+	}
+};
+
 namespace {
 void trace_session_smoke_checkpoint(const char *name);
 
@@ -604,7 +620,7 @@ bool snapshot_publication_is_consistent(const ff_session_config &config, const f
 				finished.store(true, std::memory_order_release);
 				for (auto &reader : readers)
 					reader.join();
-				executor.shutdown();
+				faithfulframe_session_executor_test_access::shutdown(executor);
 				return false;
 			}
 		}
@@ -612,7 +628,7 @@ bool snapshot_publication_is_consistent(const ff_session_config &config, const f
 	finished.store(true, std::memory_order_release);
 	for (auto &reader : readers)
 		reader.join();
-	executor.shutdown();
+	faithfulframe_session_executor_test_access::shutdown(executor);
 	const bool was_inconsistent = inconsistent.load(std::memory_order_acquire);
 	const uint64_t read_count = successful_reads.load(std::memory_order_relaxed);
 	const bool passed = !was_inconsistent && read_count > reader_count;
@@ -652,7 +668,7 @@ bool session_worker_survives_idle_wait_timeout(const ff_session_config &config, 
 	// shutdown requests durable. An idle timeout is not a shutdown request.
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	if (!executor.worker_available()) {
-		executor.shutdown();
+		faithfulframe_session_executor_test_access::shutdown(executor);
 		return false;
 	}
 	const ff_command freeze{FF_COMMAND_FREEZE, snapshot.identity, snapshot.status_version, generations, 0, 0};
@@ -663,10 +679,10 @@ bool session_worker_survives_idle_wait_timeout(const ff_session_config &config, 
 									   value.command_result == FF_COMMAND_APPLIED;
 							    },
 							    snapshot)) {
-		executor.shutdown();
+		faithfulframe_session_executor_test_access::shutdown(executor);
 		return false;
 	}
-	executor.shutdown();
+	faithfulframe_session_executor_test_access::shutdown(executor);
 	return true;
 }
 
@@ -1168,7 +1184,7 @@ bool control_work_is_admitted_during_detector_backlog(const ff_session_config &c
 		}
 		gate.condition.notify_all();
 		faithfulframe_test_set_session_work_hook(nullptr, nullptr);
-		executor.shutdown();
+		faithfulframe_session_executor_test_access::shutdown(executor);
 		return false;
 	}
 
@@ -1227,7 +1243,7 @@ bool control_work_is_admitted_during_detector_backlog(const ff_session_config &c
 		},
 		final_snapshot);
 	const ff_executor_diagnostics completed_diagnostics = executor.diagnostics();
-	executor.shutdown();
+	faithfulframe_session_executor_test_access::shutdown(executor);
 	const bool passed = background_queued && excess_background_rejected && lifecycle_admitted && freeze_admitted &&
 			    second_extra_control_admitted && third_extra_control_admitted && excess_control_rejected &&
 			    queued_diagnostics.queue_depth == faithfulframe_session_executor::max_queued_work &&
@@ -1329,7 +1345,7 @@ bool reaper_shutdown_does_not_wait_for_unretired_workers(const ff_session_config
 		    *executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, snapshot)) {
 		executor->request_shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
 		if (!faithfulframe_retire_session_executor(executor) && executor)
-			executor->shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+			faithfulframe_session_executor_test_access::shutdown(executor, FF_LIFECYCLE_ADAPTER_DESTROYED);
 		executor.reset();
 		faithfulframe_teardown_begin_module_unload();
 		faithfulframe_teardown_instance_destroyed();
@@ -1355,7 +1371,7 @@ bool reaper_shutdown_does_not_wait_for_unretired_workers(const ff_session_config
 	const bool retirement_accepted = retire_executor_when_available(executor);
 	if (executor) {
 		// Keep the smoke process clean if a regression closes the reaper early.
-		executor->shutdown(FF_LIFECYCLE_ADAPTER_DESTROYED);
+		faithfulframe_session_executor_test_access::shutdown(executor, FF_LIFECYCLE_ADAPTER_DESTROYED);
 		executor.reset();
 	}
 	const auto reaped_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -1672,7 +1688,7 @@ int run_smoke()
 	    snapshot.crop.width != locked.crop.width || snapshot.crop.height != locked.crop.height)
 		return 7;
 
-	executor.shutdown();
+	faithfulframe_session_executor_test_access::shutdown(executor);
 	if (!executor.try_snapshot(snapshot) || !snapshot.closed || snapshot.state != FF_STATE_MANUAL ||
 	    snapshot.has_selected)
 		return 8;
@@ -1695,7 +1711,7 @@ int run_smoke()
 	    failed_worker.enqueue_command(1, command_after_worker_failure) ||
 	    failed_worker.diagnostics().queue_depth != 0)
 		return 16;
-	failed_worker.shutdown();
+	faithfulframe_session_executor_test_access::shutdown(failed_worker);
 
 	// Cross-thread ingress can acquire the queue mutex in a different order
 	// from timestamp sampling. Event time and snapshot publication must remain
@@ -1740,7 +1756,7 @@ int run_smoke()
 	uint64_t second_published_at = 0;
 	if (!ordered.try_snapshot(ordered_snapshot, &second_published_at) || second_published_at != first_published_at)
 		return 24;
-	ordered.shutdown();
+	faithfulframe_session_executor_test_access::shutdown(ordered);
 
 	// Equal monotonic timestamps follow the queue's mutex-linearized FIFO
 	// insertion order. Freeze then Resume returns to Manual; reversing the
@@ -1781,7 +1797,7 @@ int run_smoke()
 			     static_cast<unsigned long long>(equal_snapshot.status_version));
 		return 34;
 	}
-	equal_time.shutdown();
+	faithfulframe_session_executor_test_access::shutdown(equal_time);
 
 	// One candidate batch can contain tracker results with different capture
 	// timestamps. Arrival-time ordering is shared, but each fresh face remains
@@ -1831,7 +1847,7 @@ int run_smoke()
 		    },
 		    multi_snapshot))
 		return 42;
-	multi_face.shutdown();
+	faithfulframe_session_executor_test_access::shutdown(multi_face);
 
 	// Teardown drops queued detector and operator work, then publishes only the
 	// worker-owned destruction transition.
@@ -1869,7 +1885,7 @@ int run_smoke()
 		queued_work_gate.release_work = true;
 	}
 	queued_work_gate.condition.notify_all();
-	queued.shutdown();
+	faithfulframe_session_executor_test_access::shutdown(queued);
 	faithfulframe_test_set_session_work_hook(nullptr, nullptr);
 	if (!queued_enable_accepted || !worker_paused_before_command || !candidate_accepted ||
 	    !stale_command_accepted || !rejected_after_shutdown)
@@ -2004,7 +2020,7 @@ int run_smoke()
 		    deadline_snapshot) ||
 	    deadline_snapshot.has_selected || deadline_snapshot.crop_action != FF_CROP_HOLD)
 		return 29;
-	deadline_executor.shutdown();
+	faithfulframe_session_executor_test_access::shutdown(deadline_executor);
 
 	// Exercise every C++ lifecycle translation against the Rust policy. A
 	// generation-table drift would otherwise leave an adapter transition
@@ -2077,7 +2093,7 @@ int run_smoke()
 				static_cast<unsigned long long>(lifecycle_snapshot.generations.tracker));
 			return 32;
 		}
-		lifecycle_executor.shutdown();
+		faithfulframe_session_executor_test_access::shutdown(lifecycle_executor);
 	}
 
 	// Scene deactivation must invalidate a previously locked target. A click
@@ -2178,7 +2194,7 @@ int run_smoke()
 		    },
 		    scene_snapshot))
 		return 81;
-	scene_executor.shutdown();
+	faithfulframe_session_executor_test_access::shutdown(scene_executor);
 
 	auto retired_executor =
 		std::make_shared<faithfulframe_session_executor>(config, ff_identity{105, 205}, generations);

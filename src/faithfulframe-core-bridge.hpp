@@ -146,6 +146,11 @@ public:
 	/// Safe for OBS callbacks, including render/tick paths.
 	void request_shutdown(uint32_t terminal_lifecycle_kind = FF_LIFECYCLE_ADAPTER_DESTROYED,
 			      uint32_t source_width = 0, uint32_t source_height = 0);
+
+private:
+	// Blocking teardown is reserved for the destructor and module reaper. Keep
+	// it out of the public surface so OBS/Qt callbacks cannot accidentally join
+	// the policy worker on a time-sensitive thread.
 	/// Blocking: call only from a controlled teardown owner after adapter
 	/// callbacks are quiesced; never join from render, tick, or Qt UI callbacks.
 	void shutdown(uint32_t terminal_lifecycle_kind = FF_LIFECYCLE_ADAPTER_DESTROYED, uint32_t source_width = 0,
@@ -154,9 +159,11 @@ public:
 	/// lifecycle event has been queued. Never call on OBS render/tick or Qt UI.
 	void join();
 
-private:
 	friend class faithfulframe_executor_reaper;
 	friend bool faithfulframe_retire_session_executor(std::shared_ptr<faithfulframe_session_executor> &executor);
+#ifdef FAITHFULFRAME_TEST_SESSION_EXECUTOR_ACCESS
+	friend struct faithfulframe_session_executor_test_access;
+#endif
 
 	enum class work_kind : uint8_t { tick, candidates, command, lifecycle, stop };
 	struct work_item
