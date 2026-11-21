@@ -708,7 +708,6 @@ if(OS_LINUX)
 		-Wextra
 		-Wunused-function
 		-Werror
-		-Wno-error=deprecated-declarations # TODO: Replace obs_frontend_add_dock with the new API.
 	)
 	target_link_options(${PROJECT_NAME} PRIVATE -Wl,-z,defs)
 
