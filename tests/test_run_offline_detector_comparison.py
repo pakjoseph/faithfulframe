@@ -196,6 +196,7 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                         "summary": {
                             "repeats": 3,
                             "detector_work_samples_count": 9,
+                            "simulated_duration_ms_per_run": 9960,
                             "detector_work_median_us": 100,
                             "detector_work_p95_us": 120,
                             "max_face_detections": 3,
@@ -246,6 +247,9 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertFalse(index["production_acceptance_eligible"])
+        self.assertEqual(
+            index["latency_sample_contract"]["minimum_detector_work_samples_per_run"], 3
+        )
         self.assertEqual([item["layout"] for item in index["workloads"]], [
             "single_face_center",
             "three_face_stage",
@@ -254,6 +258,11 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
             self.assertTrue(report_exists)
             self.assertEqual(item["input_artifacts"]["generation"]["layout"], item["layout"])
             self.assertEqual(len(item["results"]["dlib_hog"]), 2)
+            for engine_results in item["results"].values():
+                for scale_result in engine_results:
+                    self.assertEqual(scale_result["detector_work_samples_count"], 9)
+                    self.assertEqual(scale_result["detector_work_samples_per_run"], [3, 3, 3])
+                    self.assertEqual(scale_result["simulated_duration_ms_per_run"], 9960)
 
     def test_paired_reports_require_identical_host_and_workload(self):
         shared = {

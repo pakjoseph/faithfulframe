@@ -33,11 +33,11 @@ FPS = 25
 WORKLOADS = (
     (
         "single_face_center",
-        "Synthetic 4K centered cartoon face; stride-2 and stride-4 detector inputs",
+        "10-second synthetic 4K centered cartoon face; stride-2 and stride-4 detector inputs",
     ),
     (
         "three_face_stage",
-        "Synthetic 4K three cartoon faces spread across stage width; stride-2 and stride-4 detector inputs",
+        "10-second synthetic 4K three cartoon faces spread across stage width; stride-2 and stride-4 detector inputs",
     ),
 )
 
@@ -322,6 +322,8 @@ def _workload_index_entry(
     layout: str, workload_label: str, paired: dict[str, Any]
 ) -> dict[str, Any]:
     result_fields = (
+        "detector_work_samples_count",
+        "simulated_duration_ms_per_run",
         "detector_work_median_us",
         "detector_work_p95_us",
         "max_face_detections",
@@ -334,6 +336,10 @@ def _workload_index_entry(
         results[engine] = [
             {
                 "detection_scale": scale["detection_scale"],
+                "detector_work_samples_per_run": [
+                    len(run["detector_work_samples_us"])
+                    for run in scale["summary"]["runs"]
+                ],
                 **{
                     field: scale.get("summary", {}).get(field)
                     for field in result_fields
@@ -411,6 +417,11 @@ def _comparison_index(workloads: list[dict[str, Any]]) -> dict[str, Any]:
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "evidence_scope": "offline_development_measurement",
         "production_acceptance_eligible": False,
+        "latency_sample_contract": {
+            "minimum_detector_work_samples_per_run": MIN_DETECTOR_WORK_SAMPLES_PER_RUN,
+            "percentile_method": "nearest-rank",
+            "note": "A sample-count gate improves trace coverage; it does not establish production performance thresholds.",
+        },
         "comparison": "existing dlib HOG and CNN backends on paired synthetic workloads and the same host",
         "workloads": workloads,
         "not_measured": [
