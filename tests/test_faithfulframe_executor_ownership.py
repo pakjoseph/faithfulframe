@@ -132,6 +132,26 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
             "a fixed OBS proc callback must not write undeclared calldata outputs",
         )
 
+    def test_safe_capture_maps_previous_staging_slot_before_current_stage(self):
+        source = (ROOT / "src/face-tracker.cpp").read_text(encoding="utf-8")
+        start = source.rindex(
+            "static std::shared_ptr<texture_object> capture_safe_staging_pair("
+        )
+        end = source.index("\n}\n#endif", start)
+        callback = source[start:end]
+        previous_map = callback.index("surface_to_cvtex(")
+        current_stage = callback.index("stage_to_surface(")
+
+        self.assertLess(
+            previous_map,
+            current_stage,
+            "safe mode must map the prior frame before staging the current frame",
+        )
+        self.assertIn("safe_stagesurfaces[plan.previous_slot]", callback)
+        self.assertIn("safe_stagesurfaces[plan.stage_slot]", callback)
+        self.assertIn("safe_candidate_max_age_ms", callback)
+        self.assertIn("plan.reset_surfaces", callback)
+
 
 if __name__ == "__main__":
     unittest.main()
