@@ -19,9 +19,10 @@ import tempfile
 from typing import Any
 
 
-SCHEMA_VERSION = 3
-FRAME_COUNT = 75
+SCHEMA_VERSION = 4
+FRAME_COUNT = 250
 FRAME_STEP_MS = 40
+MIN_DETECTOR_WORK_SAMPLES_PER_RUN = 3
 SOURCE_WIDTH = 3840
 SOURCE_HEIGHT = 2160
 OUTPUT_WIDTH = 1920
@@ -155,6 +156,7 @@ def _input_artifacts(
             "face_top_left_pixels": [list(position) for position in face_positions],
             "frames": FRAME_COUNT,
             "frame_interval_ms": FRAME_STEP_MS,
+            "minimum_detector_work_samples_per_run": MIN_DETECTOR_WORK_SAMPLES_PER_RUN,
         },
     }
 
@@ -254,6 +256,36 @@ def _paired_summary(
     ] != expected_scales:
         raise ComparisonError("backend reports do not use the same detector scale")
 
+    for engine, scales in (("dlib_hog", hog_scales), ("dlib_cnn", cnn_scales)):
+        for scale in scales:
+            scale_label = f"{engine} scale {scale.get('detection_scale')}"
+            summary = scale.get("summary")
+            runs = summary.get("runs") if isinstance(summary, dict) else None
+            repeats = summary.get("repeats") if isinstance(summary, dict) else None
+            if (
+                not isinstance(runs, list)
+                or not runs
+                or isinstance(repeats, bool)
+                or not isinstance(repeats, int)
+                or repeats != len(runs)
+            ):
+                raise ComparisonError(f"{scale_label} report has inconsistent run samples")
+            sample_counts: list[int] = []
+            for run in runs:
+                samples = run.get("detector_work_samples_us") if isinstance(run, dict) else None
+                if not isinstance(samples, list):
+                    raise ComparisonError(f"{scale_label} report has invalid detector work samples")
+                sample_counts.append(len(samples))
+            if any(count < MIN_DETECTOR_WORK_SAMPLES_PER_RUN for count in sample_counts):
+                raise ComparisonError(
+                    f"{scale_label} report has fewer than "
+                    f"{MIN_DETECTOR_WORK_SAMPLES_PER_RUN} detector work samples in a run"
+                )
+            if summary.get("detector_work_samples_count") != sum(sample_counts):
+                raise ComparisonError(
+                    f"{scale_label} aggregate sample count is inconsistent"
+                )
+
     manifest = dict(hog["manifest"])
     manifest["hash_scope"] = (
         "manifest file bytes; referenced frame content hashes are listed separately in input_artifacts"
@@ -264,6 +296,11 @@ def _paired_summary(
         "evidence_scope": "offline_development_measurement",
         "production_acceptance_eligible": False,
         "comparison": "existing dlib HOG and CNN backends on the same synthetic workload and host",
+        "latency_sample_contract": {
+            "minimum_detector_work_samples_per_run": MIN_DETECTOR_WORK_SAMPLES_PER_RUN,
+            "percentile_method": "nearest-rank",
+            "note": "A sample-count gate improves trace coverage; it does not establish production performance thresholds.",
+        },
         "host": hog["host"],
         "benchmark_tool_source_revision": hog["benchmark_tool_source_revision"],
         "replay_binary": hog["replay_binary"],

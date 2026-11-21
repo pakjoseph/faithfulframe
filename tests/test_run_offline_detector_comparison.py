@@ -85,6 +85,8 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
         self.assertEqual(timestamps[-1], (comparison.FRAME_COUNT - 1) * comparison.FRAME_STEP_MS)
         self.assertTrue(all(right > left for left, right in zip(timestamps, timestamps[1:])))
         self.assertTrue(all(row.split("\t", 1)[1] == scene.name for row in rows[1:]))
+        self.assertEqual(timestamps[-1], 9960)
+        self.assertEqual(comparison.MIN_DETECTOR_WORK_SAMPLES_PER_RUN, 3)
 
     def test_manifest_hash_is_stable_across_temporary_directories(self):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
@@ -120,6 +122,11 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
         self.assertEqual(artifacts["generated_source_frame"]["size_bytes"], len(b"generated scene"))
         self.assertEqual(artifacts["generation"]["layout"], "single_face_center")
         self.assertEqual(artifacts["generation"]["face_top_left_pixels"], [[1600, 720]])
+        self.assertEqual(artifacts["generation"]["frames"], comparison.FRAME_COUNT)
+        self.assertEqual(
+            artifacts["generation"]["minimum_detector_work_samples_per_run"],
+            comparison.MIN_DETECTOR_WORK_SAMPLES_PER_RUN,
+        )
 
     def test_replay_source_revision_is_forwarded_to_benchmark(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -187,12 +194,18 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                     {
                         "detection_scale": scale,
                         "summary": {
+                            "repeats": 3,
+                            "detector_work_samples_count": 9,
                             "detector_work_median_us": 100,
                             "detector_work_p95_us": 120,
                             "max_face_detections": 3,
                             "max_tracking_candidates": 3,
                             "process_cpu_percent_median": 50.0,
                             "peak_resident_bytes_max": 1000000,
+                            "runs": [
+                                {"detector_work_samples_us": [100, 110, 120]}
+                                for _ in range(3)
+                            ],
                         },
                     }
                     for scale in comparison.DETECTION_SCALES
@@ -270,8 +283,19 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                 "production_acceptance_eligible": False,
                 "model": {"sha256": engine},
                 "scales": [
-                    {"detection_scale": 2, "summary": {"detector_work_median_us": 1}},
-                    {"detection_scale": 4, "summary": {"detector_work_median_us": 1}},
+                    {
+                        "detection_scale": scale,
+                        "summary": {
+                            "repeats": 3,
+                            "detector_work_samples_count": 9,
+                            "detector_work_median_us": 1,
+                            "runs": [
+                                {"detector_work_samples_us": [1, 2, 3]}
+                                for _ in range(3)
+                            ],
+                        },
+                    }
+                    for scale in (2, 4)
                 ],
             }
 
@@ -285,6 +309,20 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
             [scale["detection_scale"] for scale in paired["results"]["dlib_hog"]], [2, 4]
         )
         self.assertIn("unmodified upstream", paired["not_measured"][-1])
+        self.assertEqual(
+            paired["latency_sample_contract"]["minimum_detector_work_samples_per_run"], 3
+        )
+
+        insufficient = report("dlib_hog")
+        insufficient["scales"][0]["summary"]["runs"][1]["detector_work_samples_us"] = [1]
+        insufficient["scales"][0]["summary"]["detector_work_samples_count"] = 7
+        with self.assertRaisesRegex(comparison.ComparisonError, "fewer than 3 detector work samples"):
+            comparison._paired_summary(insufficient, report("dlib_cnn"), {})
+
+        inconsistent = report("dlib_hog")
+        inconsistent["scales"][0]["summary"]["detector_work_samples_count"] = 8
+        with self.assertRaisesRegex(comparison.ComparisonError, "aggregate sample count is inconsistent"):
+            comparison._paired_summary(inconsistent, report("dlib_cnn"), {})
 
         mismatched = report("dlib_cnn")
         mismatched["host"] = {"cpu_architecture": "arm64"}
