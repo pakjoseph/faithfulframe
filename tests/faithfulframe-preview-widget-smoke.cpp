@@ -1,8 +1,11 @@
 #include <QApplication>
+#include <QKeyEvent>
 #include <QMouseEvent>
+#include <QPushButton>
 
 #include <cstdio>
 
+#include "faithfulframe-no-wheel-combo-box.hpp"
 #include "face-tracker-dock-internal.hpp"
 #include "face-tracker-widget.hpp"
 
@@ -96,6 +99,43 @@ int main(int argc, char **argv)
 	if (!contended_click.isAccepted() || click_count != 2 || clicked_stamp.valid) {
 		std::fprintf(stderr, "preview click blocked or reused a stamp while render data was contended\n");
 		return 4;
+	}
+
+	QWidget keyboard_host;
+	FaithfulFrameNoWheelComboBox candidate_selector(&keyboard_host);
+	QPushButton select_candidate(&keyboard_host);
+	candidate_selector.addItem("Choose a detected face", QVariant{});
+	candidate_selector.addItem("Visible face 1", QVariant::fromValue<qulonglong>(42));
+	candidate_selector.setGeometry(0, 0, 180, 32);
+	select_candidate.setGeometry(0, 40, 180, 32);
+	candidate_selector.setCurrentIndex(0);
+	keyboard_host.show();
+	candidate_selector.setFocus(Qt::TabFocusReason);
+	application.processEvents();
+	QKeyEvent next_candidate(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+	QApplication::sendEvent(&candidate_selector, &next_candidate);
+	QKeyEvent next_candidate_release(QEvent::KeyRelease, Qt::Key_Down, Qt::NoModifier);
+	QApplication::sendEvent(&candidate_selector, &next_candidate_release);
+	if (!candidate_selector.hasFocus() || !next_candidate.isAccepted() || candidate_selector.currentIndex() != 1 ||
+	    candidate_selector.currentData().toULongLong() != 42) {
+		std::fprintf(stderr, "arrow-key navigation did not select the highlighted face candidate\n");
+		return 5;
+	}
+
+	QKeyEvent tab_to_select(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+	QApplication::sendEvent(&candidate_selector, &tab_to_select);
+	QKeyEvent tab_to_select_release(QEvent::KeyRelease, Qt::Key_Tab, Qt::NoModifier);
+	QApplication::sendEvent(&candidate_selector, &tab_to_select_release);
+	int keyboard_selection_count = 0;
+	QObject::connect(&select_candidate, &QPushButton::clicked,
+			 [&keyboard_selection_count] { ++keyboard_selection_count; });
+	QKeyEvent confirm_selection(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier);
+	QApplication::sendEvent(&select_candidate, &confirm_selection);
+	QKeyEvent confirm_selection_release(QEvent::KeyRelease, Qt::Key_Space, Qt::NoModifier);
+	QApplication::sendEvent(&select_candidate, &confirm_selection_release);
+	if (!tab_to_select.isAccepted() || !select_candidate.hasFocus() || keyboard_selection_count != 1) {
+		std::fprintf(stderr, "Space did not activate the highlighted-candidate selection control\n");
+		return 6;
 	}
 
 	return 0;
