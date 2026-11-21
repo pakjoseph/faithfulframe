@@ -444,8 +444,8 @@ bool retirement_queue_handles_concurrent_handoffs(const ff_session_config &confi
 	std::array<std::weak_ptr<faithfulframe_session_executor>, executor_count> weak_executors{};
 	std::atomic<bool> failed{false};
 	for (size_t i = 0; i < executor_count; ++i) {
-		executors[i] = std::make_shared<faithfulframe_session_executor>(config, ff_identity{120 + i, 220 + i},
-										generations);
+		executors[i] =
+			faithfulframe_session_executor::create(config, ff_identity{120 + i, 220 + i}, generations);
 		weak_executors[i] = executors[i];
 		if (!executors[i]->worker_available())
 			return false;
@@ -484,8 +484,7 @@ bool retirement_queue_handles_concurrent_handoffs(const ff_session_config &confi
 		std::this_thread::yield();
 	}
 
-	auto duplicate_retirement =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{140, 240}, generations);
+	auto duplicate_retirement = faithfulframe_session_executor::create(config, ff_identity{140, 240}, generations);
 	if (!duplicate_retirement->worker_available())
 		return false;
 	std::weak_ptr<faithfulframe_session_executor> duplicate_weak = duplicate_retirement;
@@ -691,10 +690,8 @@ bool session_worker_survives_idle_wait_timeout(const ff_session_config &config, 
 
 bool retirement_handoffs_are_concurrent(const ff_session_config &config, const ff_generations &generations)
 {
-	auto paused_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{150, 250}, generations);
-	auto contended_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{151, 251}, generations);
+	auto paused_executor = faithfulframe_session_executor::create(config, ff_identity{150, 250}, generations);
+	auto contended_executor = faithfulframe_session_executor::create(config, ff_identity{151, 251}, generations);
 	ff_snapshot paused_snapshot{};
 	ff_snapshot contended_snapshot{};
 	if (!await_snapshot(
@@ -785,8 +782,8 @@ bool retirement_queue_reaps_many_sessions_concurrently(const ff_session_config &
 	std::array<std::weak_ptr<faithfulframe_session_executor>, session_count> weak_executors{};
 	std::array<std::atomic<bool>, session_count> accepted{};
 	for (size_t i = 0; i < session_count; ++i) {
-		executors[i] = std::make_shared<faithfulframe_session_executor>(config, ff_identity{1000 + i, 2000 + i},
-										generations);
+		executors[i] =
+			faithfulframe_session_executor::create(config, ff_identity{1000 + i, 2000 + i}, generations);
 		ff_snapshot snapshot{};
 		if (!await_snapshot(
 			    *executors[i], [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
@@ -831,12 +828,9 @@ bool retirement_queue_reaps_many_sessions_concurrently(const ff_session_config &
 
 bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config, const ff_generations &generations)
 {
-	auto paused_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{153, 253}, generations);
-	auto contended_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{154, 254}, generations);
-	auto teardown_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{155, 255}, generations);
+	auto paused_executor = faithfulframe_session_executor::create(config, ff_identity{153, 253}, generations);
+	auto contended_executor = faithfulframe_session_executor::create(config, ff_identity{154, 254}, generations);
+	auto teardown_executor = faithfulframe_session_executor::create(config, ff_identity{155, 255}, generations);
 	ff_snapshot paused_snapshot{};
 	ff_snapshot contended_snapshot{};
 	ff_snapshot teardown_snapshot{};
@@ -1000,7 +994,7 @@ bool reaper_handoff_does_not_wait_for_queue_lock(const ff_session_config &config
 
 bool duplicate_retirement_requests_enqueue_once(const ff_session_config &config, const ff_generations &generations)
 {
-	auto executor = std::make_shared<faithfulframe_session_executor>(config, ff_identity{152, 252}, generations);
+	auto executor = faithfulframe_session_executor::create(config, ff_identity{152, 252}, generations);
 	ff_snapshot snapshot{};
 	if (!await_snapshot(
 		    *executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, snapshot))
@@ -1067,7 +1061,7 @@ bool duplicate_retirement_requests_enqueue_once(const ff_session_config &config,
 bool executor_worker_is_joined_off_the_retirement_caller(const ff_session_config &config,
 							 const ff_generations &generations)
 {
-	auto executor = std::make_shared<faithfulframe_session_executor>(config, ff_identity{157, 257}, generations);
+	auto executor = faithfulframe_session_executor::create(config, ff_identity{157, 257}, generations);
 	ff_snapshot snapshot{};
 	if (!await_snapshot(
 		    *executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, snapshot))
@@ -1095,6 +1089,94 @@ bool executor_worker_is_joined_off_the_retirement_caller(const ff_session_config
 			     static_cast<unsigned long long>(join_context.join_count.load(std::memory_order_relaxed)),
 			     join_context.joined_off_caller.load(std::memory_order_relaxed));
 	return passed;
+}
+
+bool final_executor_owner_release_is_nonblocking(const ff_session_config &config, const ff_generations &generations)
+{
+	auto executor = faithfulframe_session_executor::create(config, ff_identity{159, 259}, generations);
+	ff_snapshot initial{};
+	if (!executor || !executor->worker_available() ||
+	    !await_snapshot(*executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, initial))
+		return false;
+
+	session_work_test_gate work_gate;
+	faithfulframe_test_set_session_work_hook(pause_session_work, &work_gate);
+	auto release_test_worker = [&] {
+		{
+			std::lock_guard<std::mutex> lock(work_gate.mutex);
+			work_gate.release_work = true;
+		}
+		work_gate.condition.notify_all();
+		faithfulframe_test_set_session_work_hook(nullptr, nullptr);
+		const auto lifetime = std::weak_ptr<faithfulframe_session_executor>(executor);
+		executor->request_shutdown();
+		return retire_executor_when_available(executor) && !executor && await_expired(lifetime);
+	};
+	if (!executor->enqueue_tick(1)) {
+		release_test_worker();
+		return false;
+	}
+	bool worker_paused = false;
+	{
+		std::unique_lock<std::mutex> lock(work_gate.mutex);
+		worker_paused = work_gate.condition.wait_for(lock, std::chrono::seconds(2),
+							     [&work_gate] { return work_gate.work_paused; });
+	}
+	if (!worker_paused) {
+		release_test_worker();
+		return false;
+	}
+
+	auto &join_context = reaper_join_thread_context;
+	join_context.join_count.store(0, std::memory_order_relaxed);
+	join_context.joined_off_caller.store(true, std::memory_order_release);
+	faithfulframe_test_set_reaper_join_hook(record_reaper_join_thread, &join_context);
+	std::weak_ptr<faithfulframe_session_executor> weak = executor;
+	std::mutex release_mutex;
+	std::condition_variable release_condition;
+	std::atomic<bool> release_returned{false};
+	std::thread release_thread([&] {
+		{
+			std::lock_guard<std::mutex> lock(join_context.mutex);
+			join_context.caller_thread = std::this_thread::get_id();
+		}
+		auto last_owner = std::move(executor);
+		last_owner.reset();
+		{
+			std::lock_guard<std::mutex> lock(release_mutex);
+			release_returned.store(true, std::memory_order_release);
+		}
+		release_condition.notify_all();
+	});
+	bool released_while_worker_paused = false;
+	{
+		std::unique_lock<std::mutex> lock(release_mutex);
+		released_while_worker_paused =
+			release_condition.wait_for(lock, std::chrono::milliseconds(250), [&release_returned] {
+				return release_returned.load(std::memory_order_acquire);
+			});
+	}
+
+	auto barrier = std::make_shared<shared_reaper_cleanup_test_context>();
+	barrier->caller_thread = std::this_thread::get_id();
+	const bool barrier_accepted = defer_shared_reaper_cleanup(barrier);
+	{
+		std::lock_guard<std::mutex> lock(work_gate.mutex);
+		work_gate.release_work = true;
+	}
+	work_gate.condition.notify_all();
+	faithfulframe_test_set_session_work_hook(nullptr, nullptr);
+	release_thread.join();
+	const auto barrier_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (barrier_accepted && !barrier->completed.load(std::memory_order_acquire) &&
+	       std::chrono::steady_clock::now() < barrier_deadline)
+		std::this_thread::yield();
+	faithfulframe_test_set_reaper_join_hook(nullptr, nullptr);
+	return released_while_worker_paused && release_returned.load(std::memory_order_acquire) && weak.expired() &&
+	       barrier_accepted && barrier->completed.load(std::memory_order_acquire) &&
+	       barrier->ran_off_caller.load(std::memory_order_acquire) &&
+	       join_context.join_count.load(std::memory_order_acquire) >= 1 &&
+	       join_context.joined_off_caller.load(std::memory_order_acquire);
 }
 
 bool rejected_command_notice_expires_without_policy_change(const ff_session_config &config,
@@ -1272,7 +1354,7 @@ bool control_work_is_admitted_during_detector_backlog(const ff_session_config &c
 bool shutdown_request_is_nonblocking_when_session_queue_is_locked(const ff_session_config &config,
 								  const ff_generations &generations)
 {
-	auto executor = std::make_shared<faithfulframe_session_executor>(config, ff_identity{158, 258}, generations);
+	auto executor = faithfulframe_session_executor::create(config, ff_identity{158, 258}, generations);
 	ff_snapshot snapshot{};
 	if (!await_snapshot(
 		    *executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, snapshot))
@@ -1341,7 +1423,7 @@ bool reaper_shutdown_does_not_wait_for_unretired_workers(const ff_session_config
 	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
 		return false;
 	faithfulframe_teardown_instance_created();
-	auto executor = std::make_shared<faithfulframe_session_executor>(config, ff_identity{153, 253}, generations);
+	auto executor = faithfulframe_session_executor::create(config, ff_identity{153, 253}, generations);
 	ff_snapshot snapshot{};
 	if (!executor->worker_available() ||
 	    !await_snapshot(
@@ -1591,6 +1673,9 @@ int run_smoke()
 		return 115;
 	const ff_session_config config{5000, 500,  8,     3840,  2160,  1920,  1080, 0.45f,
 				       1.0f, 4.0f, 0.25f, 0.08f, 0.08f, 0.05f, 0.25f};
+	trace_session_smoke_checkpoint("final executor owner release is nonblocking");
+	if (!final_executor_owner_release_is_nonblocking(config, ff_generations{1, 1, 1, 1, 1}))
+		return 131;
 	trace_session_smoke_checkpoint("concurrent retirement handoffs");
 	if (!retirement_handoffs_are_concurrent(config, ff_generations{1, 1, 1, 1, 1}))
 		return 110;
@@ -1625,8 +1710,8 @@ int run_smoke()
 		return 121;
 	faithfulframe_teardown_begin_module_unload();
 	faithfulframe_executor_reaper_shutdown();
-	auto last_source_executor = std::make_shared<faithfulframe_session_executor>(config, ff_identity{109, 209},
-										     ff_generations{1, 1, 1, 1, 1});
+	auto last_source_executor =
+		faithfulframe_session_executor::create(config, ff_identity{109, 209}, ff_generations{1, 1, 1, 1, 1});
 	if (!last_source_executor->worker_available())
 		return 120;
 	ff_snapshot last_source_snapshot{};
@@ -1953,10 +2038,10 @@ int run_smoke()
 	// destroyed executor, and the closed executor must reject that command.
 	trace_session_smoke_checkpoint("callback versus teardown race");
 	for (int attempt = 0; attempt < 10; ++attempt) {
-		auto owned = std::make_shared<faithfulframe_session_executor>(
-			config,
-			ff_identity{200u + static_cast<uint64_t>(attempt), 300u + static_cast<uint64_t>(attempt)},
-			generations);
+		auto owned = faithfulframe_session_executor::create(config,
+								    ff_identity{200u + static_cast<uint64_t>(attempt),
+										300u + static_cast<uint64_t>(attempt)},
+								    generations);
 		ff_snapshot initial{};
 		if (!await_snapshot(
 			    *owned, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; }, initial))
@@ -2238,8 +2323,7 @@ int run_smoke()
 		return 81;
 	faithfulframe_session_executor_test_access::shutdown(scene_executor);
 
-	auto retired_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{105, 205}, generations);
+	auto retired_executor = faithfulframe_session_executor::create(config, ff_identity{105, 205}, generations);
 	ff_snapshot retired_snapshot{};
 	if (!await_snapshot(
 		    *retired_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
@@ -2257,8 +2341,7 @@ int run_smoke()
 	if (!retired_weak.expired())
 		return 60;
 
-	auto unload_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{106, 206}, generations);
+	auto unload_executor = faithfulframe_session_executor::create(config, ff_identity{106, 206}, generations);
 	ff_snapshot unload_snapshot{};
 	if (!await_snapshot(
 		    *unload_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
@@ -2269,8 +2352,7 @@ int run_smoke()
 	if (!retire_executor_when_available(unload_executor) || unload_executor)
 		return 62;
 
-	auto terminal_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{107, 207}, generations);
+	auto terminal_executor = faithfulframe_session_executor::create(config, ff_identity{107, 207}, generations);
 	ff_snapshot terminal_initial{};
 	if (!await_snapshot(
 		    *terminal_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
@@ -2317,8 +2399,7 @@ int run_smoke()
 	faithfulframe_teardown_begin_module_unload();
 	if (faithfulframe_teardown_register_instance() != 0)
 		return 88;
-	auto post_unload_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{111, 211}, generations);
+	auto post_unload_executor = faithfulframe_session_executor::create(config, ff_identity{111, 211}, generations);
 	ff_snapshot post_unload_snapshot{};
 	if (!await_snapshot(
 		    *post_unload_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
@@ -2457,7 +2538,7 @@ int run_smoke()
 	// source. The last callback drains and closes the reaper.
 	faithfulframe_teardown_instance_destroyed();
 	auto final_pending_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{112, 212}, generations);
+		faithfulframe_session_executor::create(config, ff_identity{112, 212}, generations);
 	ff_snapshot final_pending_snapshot{};
 	if (!await_snapshot(
 		    *final_pending_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
@@ -2470,8 +2551,7 @@ int run_smoke()
 	faithfulframe_teardown_instance_destroyed();
 	if (!await_expired(final_pending_weak))
 		return 72;
-	auto late_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{108, 208}, generations);
+	auto late_executor = faithfulframe_session_executor::create(config, ff_identity{108, 208}, generations);
 	if (late_executor->worker_available())
 		return 74;
 	// Session construction fails closed after module unload instead of creating
@@ -2491,8 +2571,7 @@ int run_smoke()
 		return 101;
 	faithfulframe_teardown_begin_module_unload();
 	faithfulframe_teardown_instance_created();
-	auto in_flight_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{113, 213}, generations);
+	auto in_flight_executor = faithfulframe_session_executor::create(config, ff_identity{113, 213}, generations);
 	ff_snapshot in_flight_snapshot{};
 	if (!await_snapshot(
 		    *in_flight_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },
@@ -2545,8 +2624,7 @@ int run_smoke()
 	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1)
 		return 105;
 	faithfulframe_teardown_instance_created();
-	auto destroy_executor =
-		std::make_shared<faithfulframe_session_executor>(config, ff_identity{114, 214}, generations);
+	auto destroy_executor = faithfulframe_session_executor::create(config, ff_identity{114, 214}, generations);
 	ff_snapshot destroy_snapshot{};
 	if (!await_snapshot(
 		    *destroy_executor, [](const ff_snapshot &value) { return value.state == FF_STATE_MANUAL; },

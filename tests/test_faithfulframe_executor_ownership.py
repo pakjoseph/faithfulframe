@@ -35,6 +35,12 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
         bridge = (ROOT / SERIALIZED_BRIDGE).read_text(encoding="utf-8")
         self.assertRegex(bridge, SESSION_FFI_CALL)
 
+    def test_production_executor_shared_ownership_uses_reaper_aware_factory(self):
+        sources = production_sources()
+        production = "\n".join(sources.values())
+        self.assertIn("faithfulframe_session_executor::create(", production)
+        self.assertNotRegex(production, r"std::make_shared\s*<\s*faithfulframe_session_executor\s*>")
+
     def test_direct_session_call_outside_the_bridge_is_detected(self):
         sources = {
             SERIALIZED_BRIDGE: "ff_session_tick(session, at, &snapshot);",
