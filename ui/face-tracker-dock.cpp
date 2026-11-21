@@ -2169,6 +2169,8 @@ void FTDock::handlePreviewClick(const QPointF &position, const faithfulframe_pre
 	if (click_result != ff_preview_click_result::selected) {
 		if (click_result == ff_preview_click_result::stale_preview)
 			showOperatorNotice("The preview changed. Wait for it to refresh, then click the face again.");
+		else if (click_result == ff_preview_click_result::outside_image)
+			showOperatorNotice("Click inside the camera image to select a speaker.");
 		else if (click_result == ff_preview_click_result::too_many_candidates)
 			showOperatorNotice("Candidate list changed. Refresh the preview before selecting a speaker.");
 		else if (click_result == ff_preview_click_result::invalid_geometry)
