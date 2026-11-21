@@ -352,13 +352,15 @@ class OfflineSessionReplayTests(unittest.TestCase):
             )
 
             rows = ["monotonic_ms\tframe_path\n"]
-            for frame_index in range(210):
-                if frame_index < 100 or frame_index >= 160:
+            for frame_index in range(230):
+                if frame_index < 100 or frame_index >= 180:
                     frame = both
                 elif frame_index < 140:
                     frame = low_light
-                else:
+                elif frame_index < 180:
                     frame = right_only
+                else:
+                    frame = both
                 rows.append(f"{frame_index * 40}\t{frame}\n")
             manifest.write_text("".join(rows), encoding="utf-8")
 
@@ -430,6 +432,9 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 "the first explicit selection should lock the left cartoon speaker",
             )
             selected_continuity = selected_candidate["continuity_token"]
+            selected_center_x = (
+                selected_candidate["rect"][0] + selected_candidate["rect"][2] / 2
+            )
             selected_track = [
                 event
                 for event in candidates
@@ -441,14 +446,15 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     + event["candidate"]["rect"][2] / 2
                 )
                 self.assertLess(
-                    center_x,
-                    0.5,
-                    "the selected left-speaker continuity must not drift onto the right speaker",
+                    abs(center_x - selected_center_x),
+                    0.12,
+                    f"selected speaker continuity drifted from its initial position at frame "
+                    f"{event['frame_index']}: {center_x:.3f} vs {selected_center_x:.3f}",
                 )
             detector_misses = [
                 event
                 for event in selected_track
-                if 100 <= event["frame_index"] < 160
+                if 100 <= event["frame_index"] < 180
                 if event["candidate"]["detector_confirmed_at_ms"] == 0
             ]
             projected_face_candidates = [
@@ -461,7 +467,7 @@ class OfflineSessionReplayTests(unittest.TestCase):
             band_member_candidates = [
                 event
                 for event in candidates
-                if 140 <= event["frame_index"] < 160
+                if 140 <= event["frame_index"] < 180
                 and event["candidate"]["detector_confirmed_at_ms"] != 0
                 and 0.35
                 < event["candidate"]["rect"][0] + event["candidate"]["rect"][2] / 2
@@ -489,20 +495,33 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 stale_holds = [
                     event
                     for event in events
-                    if 100 <= event.get("frame_index", -1) < 160
+                    if 100 <= event.get("frame_index", -1) < 180
                     and event.get("kind") in ("tick", "candidate")
                     and event["snapshot"]["state"] == "searching"
                     and event["snapshot"]["reason"] == "target_evidence_stale"
                     and event["snapshot"]["crop_action"] == "hold"
                 ]
-                self.assertTrue(
-                    stale_holds,
-                    "a retired selected tracker must age into SEARCHING and hold framing during occlusion",
-                )
+                if not stale_holds:
+                    tick_timeline = [
+                        (
+                            event["frame_index"],
+                            event["snapshot"]["state"],
+                            event["snapshot"]["reason"],
+                            event["snapshot"]["crop_action"],
+                            event["snapshot"]["selected_handle"],
+                        )
+                        for event in events
+                        if 100 <= event.get("frame_index", -1) < 180
+                        and event.get("kind") == "tick"
+                    ]
+                    self.fail(
+                        "a retired selected tracker must age into SEARCHING and hold framing during "
+                        f"occlusion; state timeline: {tick_timeline!r}"
+                    )
                 first_hold = stale_holds[0]
 
             self.assertGreaterEqual(first_hold["frame_index"], 100)
-            self.assertLess(first_hold["frame_index"], 160)
+            self.assertLess(first_hold["frame_index"], 180)
             self.assertEqual(first_hold["snapshot"]["state"], "searching")
             self.assertEqual(first_hold["snapshot"]["crop_action"], "hold")
             handle_continuity = {
