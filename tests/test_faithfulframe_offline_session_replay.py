@@ -168,8 +168,10 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 write_single_speaker_scene(frame, portrait, scale)
                 manifest.write_text(
                     "monotonic_ms\tframe_path\n"
+                    # The first tick uses --fps as its nominal elapsed interval;
+                    # subsequent manifest timestamps advance by 500 ms.
                     + "".join(
-                        f"{100 + frame_index * 500}\t{frame.name}\n" for frame_index in range(7)
+                        f"{100 + frame_index * 500}\t{frame.name}\n" for frame_index in range(4)
                     ),
                     encoding="utf-8",
                 )
@@ -187,10 +189,12 @@ class OfflineSessionReplayTests(unittest.TestCase):
                         "1920",
                         "--output-height",
                         "1080",
+                        "--fps",
+                        "1",
                         "--detection-scale",
                         str(scale),
                         "--operator-select-first-candidate-at-ms",
-                        "3100",
+                        "1600",
                     ],
                     capture_output=True,
                     text=True,
