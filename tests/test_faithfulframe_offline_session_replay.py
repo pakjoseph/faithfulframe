@@ -168,10 +168,11 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 write_single_speaker_scene(frame, portrait, scale)
                 manifest.write_text(
                     "monotonic_ms\tframe_path\n"
-                    # The first tick uses --fps as its nominal elapsed interval;
-                    # subsequent manifest timestamps advance by 500 ms.
+                    # Seed the detector scan quickly, then retain a 25 fps
+                    # update cadence so the correlation tracker can publish
+                    # fresh candidates before operator selection.
                     + "".join(
-                        f"{100 + frame_index * 500}\t{frame.name}\n" for frame_index in range(4)
+                        f"{100 + frame_index * 40}\t{frame.name}\n" for frame_index in range(8)
                     ),
                     encoding="utf-8",
                 )
@@ -194,7 +195,7 @@ class OfflineSessionReplayTests(unittest.TestCase):
                         "--detection-scale",
                         str(scale),
                         "--operator-select-first-candidate-at-ms",
-                        "1600",
+                        "380",
                     ],
                     capture_output=True,
                     text=True,
