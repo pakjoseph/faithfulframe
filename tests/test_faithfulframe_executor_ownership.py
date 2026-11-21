@@ -110,6 +110,19 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
         self.assertIn("binding->callback_executor.load(std::memory_order_acquire)", publish_and_settle)
         self.assertIn("binding->callback_executor.load(std::memory_order_acquire)", steady_state)
 
+    def test_video_tick_does_not_wait_for_pending_detector_settings(self):
+        source = (ROOT / "src/face-tracker.cpp").read_text(encoding="utf-8")
+        tick_start = source.index("static void fts_tick(void *data, float second)\n{")
+        configuration_start = source.index(
+            "\t\tapply_safe_source_configuration(s, s->safe_runtime);", tick_start
+        )
+        tick_settings = source[tick_start:configuration_start]
+
+        self.assertIn("pending_settings_available.load(std::memory_order_acquire)", tick_settings)
+        self.assertRegex(tick_settings, r"pending_settings_mutex,\s*std::try_to_lock")
+        self.assertNotRegex(tick_settings, r"std::lock_guard<std::mutex>[^;]*pending_settings_mutex")
+        self.assertLess(tick_settings.index("try_idle()"), tick_settings.index("pending_settings_mutex"))
+
     def test_fixed_target_size_proc_only_writes_declared_outputs(self):
         source = (ROOT / "src/face-tracker.cpp").read_text(encoding="utf-8")
         signature = re.search(

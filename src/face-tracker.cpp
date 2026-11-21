@@ -2524,41 +2524,32 @@ static void fts_tick(void *data, float second)
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	if (s->safe_runtime) {
 		obs_data_t *settings = nullptr;
-		{
-			std::lock_guard<std::mutex> lock(s->safe_runtime->pending_settings_mutex);
-			settings = s->safe_runtime->pending_settings;
-			s->safe_runtime->pending_settings = nullptr;
-			s->safe_runtime->pending_settings_available.store(false, std::memory_order_release);
-		}
-		if (settings) {
-			// Updating the detector engine stops and joins its worker. Only apply
-			// deferred settings while that worker is idle so a slow CNN frame can
-			// never stall OBS's graphics tick while teardown waits for it. The
-			// idle check is only a snapshot: libobs serializes source video_tick and
-			// video_render callbacks on its graphics thread, and post_render is the
-			// only producer of detector work. Keep this check and replacement on
-			// that thread; another executor would need an explicit submission gate.
+		// Updating the detector engine stops and joins its worker. Leave settings
+		// in the handoff slot until the worker is idle, then try to take them
+		// without waiting on an OBS callback that may currently be publishing a
+		// newer settings snapshot. The idle check is only a snapshot: libobs
+		// serializes source video_tick and video_render callbacks on its graphics
+		// thread, and post_render is the only producer of detector work. Keep this
+		// check and replacement on that thread; another executor would need an
+		// explicit submission gate.
+		if (s->safe_runtime->pending_settings_available.load(std::memory_order_acquire)) {
 			bool detector_idle = true;
 			if (s->ftm->detect)
 				detector_idle = s->ftm->detect->try_idle();
 			if (detector_idle) {
-				apply_ftf_update(s, settings);
-				obs_data_release(settings);
-			} else {
-				obs_data_t *superseded = nullptr;
-				{
-					std::lock_guard<std::mutex> lock(s->safe_runtime->pending_settings_mutex);
-					if (!s->safe_runtime->pending_settings) {
-						s->safe_runtime->pending_settings = settings;
-						s->safe_runtime->pending_settings_available.store(
-							true, std::memory_order_release);
-					} else {
-						superseded = settings;
-					}
+				std::unique_lock<std::mutex> lock(s->safe_runtime->pending_settings_mutex,
+								  std::try_to_lock);
+				if (lock.owns_lock()) {
+					settings = s->safe_runtime->pending_settings;
+					s->safe_runtime->pending_settings = nullptr;
+					s->safe_runtime->pending_settings_available.store(false,
+											  std::memory_order_release);
 				}
-				if (superseded)
-					obs_data_release(superseded);
 			}
+		}
+		if (settings) {
+			apply_ftf_update(s, settings);
+			obs_data_release(settings);
 		}
 		apply_safe_source_configuration(s, s->safe_runtime);
 		// Retired bindings can remain after a transiently refused reaper handoff.
