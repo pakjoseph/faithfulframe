@@ -160,9 +160,9 @@ struct faithfulframe_source_binding
 	// Set only after a successful reaper handoff, so a tick-side destructor
 	// never makes a second lock attempt and falls back to a blocking join.
 	std::atomic<bool> executor_handed_to_reaper{false};
-	// Non-owning render view. The runtime's active-slot lease pins this binding
-	// for every callback that reads the pointer.
-	std::atomic<faithfulframe_session_executor *> render_executor{nullptr};
+	// Non-owning OBS callback view. Every read is covered by the runtime's
+	// active-slot lease, which pins this binding and its owning shared_ptr.
+	std::atomic<faithfulframe_session_executor *> callback_executor{nullptr};
 	ff_identity identity{};
 	// Lifecycle producers include OBS activation callbacks and the video tick.
 	// Serialize generation changes and effective-active transitions together.
@@ -287,7 +287,7 @@ struct faithfulframe_source_binding
 						  faithfulframe_bound_source_filter_added, this);
 			target_update_handler = nullptr;
 		}
-		render_executor.store(nullptr, std::memory_order_release);
+		callback_executor.store(nullptr, std::memory_order_release);
 		if (target) {
 			obs_weak_source_release(target);
 			target = nullptr;
@@ -299,7 +299,7 @@ struct faithfulframe_source_binding
 	~faithfulframe_source_binding()
 	{
 		closed.store(true, std::memory_order_release);
-		render_executor.store(nullptr, std::memory_order_release);
+		callback_executor.store(nullptr, std::memory_order_release);
 		auto session = faithfulframe::atomic_shared_ptr_exchange(
 			&executor, std::shared_ptr<faithfulframe_session_executor>{}, std::memory_order_acq_rel);
 		if (session && !executor_handed_to_reaper.load(std::memory_order_acquire)) {
@@ -469,7 +469,7 @@ struct faithfulframe_source_runtime
 				binding->set_active_child(false);
 				binding->transition_pending.store(true, std::memory_order_release);
 				binding->closed.store(true, std::memory_order_release);
-				binding->render_executor.store(nullptr, std::memory_order_release);
+				binding->callback_executor.store(nullptr, std::memory_order_release);
 				auto executor = faithfulframe::atomic_shared_ptr_load(&binding->executor,
 										      std::memory_order_acquire);
 				if (executor)
@@ -1832,10 +1832,10 @@ static bool initialize_source_session(face_tracker_filter *s, faithfulframe_sour
 	binding->generations = initial;
 	try {
 		auto executor = std::make_shared<faithfulframe_session_executor>(config, binding->identity, initial);
-		auto *render_executor = executor.get();
+		auto *callback_executor = executor.get();
 		faithfulframe::atomic_shared_ptr_store(&binding->executor, std::move(executor),
 						       std::memory_order_release);
-		binding->render_executor.store(render_executor, std::memory_order_release);
+		binding->callback_executor.store(callback_executor, std::memory_order_release);
 	} catch (...) {
 		return false;
 	}
@@ -1870,7 +1870,7 @@ static void apply_safe_source_configuration(face_tracker_filter *s, faithfulfram
 		if (previous) {
 			previous->transition_pending.store(true, std::memory_order_release);
 			const bool was_closed = previous->closed.exchange(true, std::memory_order_acq_rel);
-			previous->render_executor.store(nullptr, std::memory_order_release);
+			previous->callback_executor.store(nullptr, std::memory_order_release);
 			previous->set_active_child(false);
 			auto executor =
 				faithfulframe::atomic_shared_ptr_load(&previous->executor, std::memory_order_acquire);
@@ -2086,7 +2086,7 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 	    !binding->signal_connected.load(std::memory_order_acquire) ||
 	    !binding->effective_active.load(std::memory_order_acquire))
 		return;
-	auto executor = faithfulframe::atomic_shared_ptr_load(&binding->executor, std::memory_order_acquire);
+	auto *executor = binding->callback_executor.load(std::memory_order_acquire);
 	if (!executor)
 		return;
 	const uint32_t source_width = binding->source_width.load(std::memory_order_acquire);
@@ -2255,7 +2255,7 @@ static void settle_source_transition(faithfulframe_source_binding *binding)
 		return;
 	if (binding->source_settings_updated.load(std::memory_order_acquire))
 		return;
-	auto executor = faithfulframe::atomic_shared_ptr_load(&binding->executor, std::memory_order_acquire);
+	auto *executor = binding->callback_executor.load(std::memory_order_acquire);
 	if (!executor)
 		return;
 	// A transition is only cleared after its matching snapshot is published.
@@ -2337,7 +2337,7 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 	const bool connected = width > 0 && height > 0;
 	const bool active = obs_source_active(target);
 	const uint64_t now = source_monotonic_millis();
-	auto executor = faithfulframe::atomic_shared_ptr_load(&binding->executor, std::memory_order_acquire);
+	auto *executor = binding->callback_executor.load(std::memory_order_acquire);
 	if (binding->policy_faulted.load(std::memory_order_acquire)) {
 		binding->source_width.store(width, std::memory_order_release);
 		binding->source_height.store(height, std::memory_order_release);
@@ -2389,7 +2389,7 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 		const bool adapter_active = binding->adapter_active.load(std::memory_order_acquire);
 		binding->source_active.store(active, std::memory_order_release);
 		binding->effective_active.store(adapter_active && active, std::memory_order_release);
-		executor = faithfulframe::atomic_shared_ptr_load(&binding->executor, std::memory_order_acquire);
+		executor = binding->callback_executor.load(std::memory_order_acquire);
 		s->ftm->reset_requested = true;
 		if (!adapter_active || !active)
 			enqueue_source_lifecycle(binding, FF_LIFECYCLE_SCENE_INACTIVE, now);
@@ -2848,7 +2848,7 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 	    !binding->closed.load(std::memory_order_acquire) &&
 	    !binding->transition_pending.load(std::memory_order_acquire) &&
 	    !binding->source_settings_updated.load(std::memory_order_acquire)) {
-		auto *executor = binding->render_executor.load(std::memory_order_acquire);
+		auto *executor = binding->callback_executor.load(std::memory_order_acquire);
 		const uint64_t now = source_monotonic_millis();
 		if (executor && executor->try_snapshot(displayed_snapshot, &displayed_snapshot_at) &&
 		    displayed_snapshot_at <= now && now - displayed_snapshot_at <= safe_preview_max_snapshot_age_ms &&
