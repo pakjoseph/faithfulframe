@@ -488,23 +488,23 @@ jobs:
           path: package/*
 
       - name: Prepare isolated macOS OBS profile
-        if: ${{ matrix.obs == 33 }}
+        if: ${{ matrix.obs == 33 && matrix.arch == 'arm64' }}
         env:
-          HOME: ${{ runner.temp }}/faithfulframe-obs-home-${{ matrix.arch }}
-          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home-${{ matrix.arch }}
+          HOME: ${{ runner.temp }}/faithfulframe-obs-home
+          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home
         run: mkdir -p "$HOME/Library/Logs/DiagnosticReports"
 
       - name: 'Setup with onsdriver'
-        if: ${{ matrix.obs == 33 }}
+        if: ${{ matrix.obs == 33 && matrix.arch == 'arm64' }}
         timeout-minutes: 15
         uses: noris-plugins-for-obs/onsdriver@63e771126ada7a685538e146b87dcfae220384de # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOME: ${{ runner.temp }}/faithfulframe-obs-home-${{ matrix.arch }}
+          HOME: ${{ runner.temp }}/faithfulframe-obs-home
           # OBS resolves its macOS Application Support path through Foundation,
           # which does not follow HOME alone when the account home is available.
           # Keep OBS and onsdriver on the same isolated per-job profile.
-          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home-${{ matrix.arch }}
+          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home
         with:
           obs-plugins: package/*.zip
           obs-architecture: ${{ matrix.arch }}
@@ -512,15 +512,15 @@ jobs:
           first-time-log: ./logs/
 
       - name: 'Test with onsdriver'
-        if: ${{ matrix.obs == 33 }}
+        if: ${{ matrix.obs == 33 && matrix.arch == 'arm64' }}
         timeout-minutes: 5
         env:
-          HOME: ${{ runner.temp }}/faithfulframe-obs-home-${{ matrix.arch }}
-          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home-${{ matrix.arch }}
+          HOME: ${{ runner.temp }}/faithfulframe-obs-home
+          CFFIXED_USER_HOME: ${{ runner.temp }}/faithfulframe-obs-home
         run: python -m unittest discover test-onsdriver/
 
-      - name: 'Upload macOS OBS smoke logs'
-        if: ${{ always() && matrix.obs == 33 }}
+      - name: 'Upload Apple Silicon OBS smoke logs'
+        if: ${{ always() && matrix.obs == 33 && matrix.arch == 'arm64' }}
         timeout-minutes: 3
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
