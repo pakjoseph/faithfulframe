@@ -71,12 +71,17 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                 "detector_engine": engine,
                 "production_acceptance_eligible": False,
                 "model": {"sha256": engine},
-                "scales": [{"detection_scale": 2, "summary": {"detector_work_median_us": 1}}],
+                "scales": [
+                    {"detection_scale": 2, "summary": {"detector_work_median_us": 1}},
+                    {"detection_scale": 4, "summary": {"detector_work_median_us": 1}},
+                ],
             }
 
         paired = comparison._paired_summary(report("dlib_hog"), report("dlib_cnn"))
         self.assertFalse(paired["production_acceptance_eligible"])
-        self.assertEqual(paired["results"]["dlib_hog"][0]["detection_scale"], 2)
+        self.assertEqual(
+            [scale["detection_scale"] for scale in paired["results"]["dlib_hog"]], [2, 4]
+        )
         self.assertIn("unmodified upstream", paired["not_measured"][-1])
 
         mismatched = report("dlib_cnn")
@@ -87,6 +92,11 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
         mismatched = report("dlib_cnn")
         mismatched["manifest"] = {"sha256": "different"}
         with self.assertRaisesRegex(comparison.ComparisonError, "shared manifest"):
+            comparison._paired_summary(report("dlib_hog"), mismatched)
+
+        mismatched = report("dlib_cnn")
+        mismatched["scales"].reverse()
+        with self.assertRaisesRegex(comparison.ComparisonError, "same detector scale"):
             comparison._paired_summary(report("dlib_hog"), mismatched)
 
 

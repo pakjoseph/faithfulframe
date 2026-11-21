@@ -26,6 +26,7 @@ SOURCE_HEIGHT = 2160
 OUTPUT_WIDTH = 1920
 OUTPUT_HEIGHT = 1080
 DETECTION_SCALE = 2
+DETECTION_SCALES = (2, 4)
 FPS = 25
 
 
@@ -113,7 +114,7 @@ def _run_backend(
         "--output",
         str(report_path),
         "--scales",
-        str(DETECTION_SCALE),
+        ",".join(str(scale) for scale in DETECTION_SCALES),
         "--repeats",
         str(repeats),
         "--fps",
@@ -121,7 +122,7 @@ def _run_backend(
         "--output-resolution",
         f"{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}",
         "--workload-label",
-        "Synthetic 4K central cartoon face; stride-2 detector input",
+        "Synthetic 4K central cartoon face; stride-2 and stride-4 detector inputs",
         "--timeout-seconds",
         str(timeout_seconds),
         "--trace-directory",
@@ -166,11 +167,14 @@ def _paired_summary(hog: dict[str, Any], cnn: dict[str, Any]) -> dict[str, Any]:
         raise ComparisonError("benchmark workload is not the defined synthetic 4K source")
     if hog.get("workload", {}).get("output_resolution") != [OUTPUT_WIDTH, OUTPUT_HEIGHT]:
         raise ComparisonError("benchmark workload does not use the defined 1080p output")
-    if len(hog.get("scales", [])) != 1 or len(cnn.get("scales", [])) != 1:
-        raise ComparisonError("backend reports must contain exactly one matched detector scale")
-    if hog["scales"][0].get("detection_scale") != DETECTION_SCALE or cnn["scales"][0].get(
-        "detection_scale"
-    ) != DETECTION_SCALE:
+    hog_scales = hog.get("scales", [])
+    cnn_scales = cnn.get("scales", [])
+    expected_scales = list(DETECTION_SCALES)
+    if not isinstance(hog_scales, list) or not isinstance(cnn_scales, list):
+        raise ComparisonError("backend scale summaries must be arrays")
+    if [scale.get("detection_scale") for scale in hog_scales] != expected_scales or [
+        scale.get("detection_scale") for scale in cnn_scales
+    ] != expected_scales:
         raise ComparisonError("backend reports do not use the same detector scale")
 
     return {
@@ -185,7 +189,7 @@ def _paired_summary(hog: dict[str, Any], cnn: dict[str, Any]) -> dict[str, Any]:
         "manifest": hog["manifest"],
         "workload": hog["workload"],
         "models": {"dlib_hog": hog["model"], "dlib_cnn": cnn["model"]},
-        "results": {"dlib_hog": hog["scales"], "dlib_cnn": cnn["scales"]},
+        "results": {"dlib_hog": hog_scales, "dlib_cnn": cnn_scales},
         "not_measured": [
             "real-camera detection or tracking quality",
             "live OBS capture, rendering, or encoding",
