@@ -705,14 +705,19 @@ class PluginLoadTest(obstest.OBSTest):
                 'sceneName': tracked_scene,
                 'inputName': adapter_name,
                 'inputKind': 'face_tracker_source',
-                'inputSettings': {
-                    'target_name': camera_name,
-                    'target_uuid': camera_uuid,
-                    'safe_tracking_enabled': True,
-                },
+                # Simulate a legacy profile, which knows the camera by name
+                # but has no safe-mode source UUID yet.
+                'inputSettings': {'target_name': camera_name},
             })
             created_inputs.append(adapter_name)
-            self._wait_for_screenshot(client, adapter_name, bool)
+            settings = client.send('GetInputSettings', {'inputName': adapter_name})
+            self.assertFalse(settings.input_settings.get('safe_tracking_enabled', False))
+            self.assertFalse(settings.input_settings.get('target_uuid'))
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'safe_tracking_enabled': True},
+                'overlay': True,
+            })
 
             menu_tree = ui.menu_list().get('menu', [])
             dock_menu_path = self._find_menu_path(menu_tree, 'New FaithfulFrame Dock')
@@ -725,10 +730,30 @@ class PluginLoadTest(obstest.OBSTest):
             self.assertIn('arrow keys', source_selector.get('accessibleDescription', '').lower())
             self.assertIn('scrolling over', source_selector.get('accessibleDescription', '').lower())
             self._invoke_ui_widget(ui, 'accessibleName', source_selector_name, 'setCurrentIndex', arg1=1)
+            self._wait_for_ui_status(
+                ui, "Choose a camera in the filter's Safe tracking settings, then wait for its video signal"
+            )
+
+            # A legacy source name must not bind safe mode. The volunteer must
+            # explicitly select this camera's current OBS UUID.
+            settings = client.send('GetInputSettings', {'inputName': adapter_name})
+            self.assertTrue(settings.input_settings.get('safe_tracking_enabled'))
+            self.assertFalse(settings.input_settings.get('target_uuid'))
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'target_uuid': camera_uuid},
+                'overlay': True,
+            })
             self._wait_for_ui_status(ui, f'Tracking source: {camera_name}')
             status_icon = self._wait_for_ui_widget(ui, 'Tracking state: Manual')
             self.assertIn('adjacent status text', status_icon.get('accessibleDescription', '').lower())
             self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
+            camera_image = self._wait_for_screenshot(client, camera_name, bool)
+            self._wait_for_screenshot(
+                client,
+                adapter_name,
+                lambda image: screenshots_match_with_render_tolerance(camera_image, image),
+            )
 
             # The face list and selection control remain keyboard-addressable
             # when no face is present; selection stays disabled until evidence
