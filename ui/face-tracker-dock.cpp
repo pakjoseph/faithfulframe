@@ -2109,6 +2109,12 @@ void FTDock::handlePreviewClick(const QPointF &position, const faithfulframe_pre
 	current_stamp.geometry_generation = preview.geometry_generation;
 	current_stamp.tracker_generation = preview.tracker_generation;
 	current_stamp.candidate_preview_revision = preview.candidate_preview_revision;
+	for (const QVariantMap &candidate : preview.candidates) {
+		const uint64_t expires = candidate.value("expires").toULongLong();
+		if (expires && (!current_stamp.candidate_earliest_expiry_ms ||
+				expires < current_stamp.candidate_earliest_expiry_ms))
+			current_stamp.candidate_earliest_expiry_ms = expires;
+	}
 	current_stamp.display_width = static_cast<uint32_t>(std::max(0, display_size.width()));
 	current_stamp.display_height = static_cast<uint32_t>(std::max(0, display_size.height()));
 	current_stamp.output_width = preview.output_width;

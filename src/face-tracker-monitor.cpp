@@ -438,6 +438,7 @@ static void ftmon_video_render(void *data, gs_effect_t *)
 	calldata_set_int(&cd, "render_stamp_geometry_generation", 0);
 	calldata_set_int(&cd, "render_stamp_tracker_generation", 0);
 	calldata_set_int(&cd, "render_stamp_candidate_preview_revision", 0);
+	calldata_set_int(&cd, "render_stamp_candidate_earliest_expiry_ms", 0);
 
 	if (!s->nosource.load(std::memory_order_acquire)) {
 		if (!proc_handler_call(ph, "render_frame", &cd)) {
@@ -475,7 +476,9 @@ static void ftmon_video_render(void *data, gs_effect_t *)
 			     !read_version("render_stamp_geometry_generation", render_stamp.geometry_generation) ||
 			     !read_version("render_stamp_tracker_generation", render_stamp.tracker_generation) ||
 			     !read_version("render_stamp_candidate_preview_revision",
-					   render_stamp.candidate_preview_revision)))
+					   render_stamp.candidate_preview_revision) ||
+			     !read_version("render_stamp_candidate_earliest_expiry_ms",
+					   render_stamp.candidate_earliest_expiry_ms)))
 				render_stamp.valid = false;
 		}
 	}

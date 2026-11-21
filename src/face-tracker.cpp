@@ -911,7 +911,8 @@ static void *ftf_create_internal(obs_data_t *settings, obs_source_t *context, bo
 			 "out int render_stamp_observation_version, out int render_stamp_source_generation, "
 			 "out int render_stamp_session_generation, out int render_stamp_stream_generation, "
 			 "out int render_stamp_geometry_generation, out int render_stamp_tracker_generation, "
-			 "out int render_stamp_candidate_preview_revision)",
+			 "out int render_stamp_candidate_preview_revision, "
+			 "out int render_stamp_candidate_earliest_expiry_ms)",
 			 cb_render_frame, s);
 	proc_handler_add(ph, "void render_info(bool notrack)", cb_render_info, s);
 	proc_handler_add(ph, "void get_target_size(out int width, out int height)", cb_get_target_size, s);
@@ -2778,7 +2779,7 @@ static ff_rect full_source_viewport(uint32_t source_width, uint32_t source_heigh
 static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, const ff_snapshot &snapshot,
 				       uint64_t snapshot_at, const ff_rect &crop, const ff_rect &viewport,
 				       uint32_t output_width, uint32_t output_height,
-				       uint64_t *candidate_preview_revision);
+				       uint64_t *candidate_preview_revision, uint64_t *candidate_earliest_expiry_ms);
 
 static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_binding *binding,
 				   faithfulframe_source_runtime *runtime = nullptr, bool force_black = false,
@@ -2893,9 +2894,11 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 	}
 	gs_blend_state_pop();
 	uint64_t candidate_preview_revision = 0;
+	uint64_t candidate_earliest_expiry_ms = 0;
 	if (draw_candidates && source_available && texture && has_displayed_snapshot)
 		draw_safe_candidate_bounds(binding, displayed_snapshot, displayed_snapshot_at, crop, viewport,
-					   output_width, output_height, &candidate_preview_revision);
+					   output_width, output_height, &candidate_preview_revision,
+					   &candidate_earliest_expiry_ms);
 	if (render_stamp && source_available && texture && has_displayed_snapshot) {
 		render_stamp->valid = true;
 		render_stamp->source_id = displayed_snapshot.identity.source;
@@ -2908,6 +2911,7 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 		render_stamp->geometry_generation = displayed_snapshot.generations.geometry;
 		render_stamp->tracker_generation = displayed_snapshot.generations.tracker;
 		render_stamp->candidate_preview_revision = candidate_preview_revision;
+		render_stamp->candidate_earliest_expiry_ms = candidate_earliest_expiry_ms;
 		render_stamp->output_width = output_width;
 		render_stamp->output_height = output_height;
 		render_stamp->crop = {crop.x, crop.y, crop.width, crop.height};
@@ -2920,10 +2924,12 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, const ff_snapshot &snapshot,
 				       uint64_t snapshot_at, const ff_rect &crop, const ff_rect &viewport,
 				       uint32_t output_width, uint32_t output_height,
-				       uint64_t *candidate_preview_revision)
+				       uint64_t *candidate_preview_revision, uint64_t *candidate_earliest_expiry_ms)
 {
 	if (candidate_preview_revision)
 		*candidate_preview_revision = 0;
+	if (candidate_earliest_expiry_ms)
+		*candidate_earliest_expiry_ms = 0;
 	if (!binding || has_conflicting_legacy_filter(binding) || binding->closed.load(std::memory_order_acquire) ||
 	    binding->transition_pending.load(std::memory_order_acquire))
 		return;
@@ -2965,6 +2971,7 @@ static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, co
 		return;
 
 	gs_blend_state_push();
+	uint64_t earliest_expiry_ms = 0;
 	while (gs_effect_loop(effect, "Solid")) {
 		auto draw_bounds = [&](const ff_rect &rect, uint32_t rgba) {
 			ff_preview_rect_d mapped{};
@@ -2995,6 +3002,7 @@ static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, co
 			const ff_candidate &candidate = preview.candidates[i];
 			if (candidate.detector_confirmed_at_ms &&
 			    candidate.detector_confirmed_at_ms <= candidate.observed_at_ms &&
+			    ff_preview_observation_is_fresh(candidate.observed_at_ms, now, safe_candidate_max_age_ms) &&
 			    candidate.expires_at_ms >= now && candidate.observed_at_ms <= now &&
 			    candidate.observation_version == preview.observation_version &&
 			    candidate.identity.source == preview.identity.source &&
@@ -3004,14 +3012,19 @@ static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, co
 			    candidate.generations.stream == preview.generations.stream &&
 			    candidate.generations.geometry == preview.generations.geometry &&
 			    candidate.generations.tracker == preview.generations.tracker &&
-			    faithfulframe_valid_normalized_rect(candidate.rect))
+			    faithfulframe_valid_normalized_rect(candidate.rect)) {
+				if (!earliest_expiry_ms || candidate.expires_at_ms < earliest_expiry_ms)
+					earliest_expiry_ms = candidate.expires_at_ms;
 				draw_bounds(candidate.rect,
 					    candidate.handle == snapshot.selected_handle ? 0x3CFF72FF : 0x00D4FFFF);
+			}
 		}
 	}
 	gs_blend_state_pop();
 	if (candidate_preview_revision)
 		*candidate_preview_revision = preview.revision;
+	if (candidate_earliest_expiry_ms)
+		*candidate_earliest_expiry_ms = earliest_expiry_ms;
 }
 #endif
 
@@ -3272,6 +3285,7 @@ static void cb_render_frame(void *data, calldata_t *cd)
 	calldata_set_int(cd, "render_stamp_geometry_generation", 0);
 	calldata_set_int(cd, "render_stamp_tracker_generation", 0);
 	calldata_set_int(cd, "render_stamp_candidate_preview_revision", 0);
+	calldata_set_int(cd, "render_stamp_candidate_earliest_expiry_ms", 0);
 #endif
 
 	bool debug_notrack = false;
@@ -3296,6 +3310,8 @@ static void cb_render_frame(void *data, calldata_t *cd)
 		calldata_set_int(cd, "render_stamp_tracker_generation", ffi_integer(render_stamp.tracker_generation));
 		calldata_set_int(cd, "render_stamp_candidate_preview_revision",
 				 ffi_integer(render_stamp.candidate_preview_revision));
+		calldata_set_int(cd, "render_stamp_candidate_earliest_expiry_ms",
+				 ffi_integer(render_stamp.candidate_earliest_expiry_ms));
 		return;
 	}
 #endif

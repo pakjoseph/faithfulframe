@@ -32,6 +32,7 @@ struct faithfulframe_preview_render_stamp
 	uint64_t geometry_generation = 0;
 	uint64_t tracker_generation = 0;
 	uint64_t candidate_preview_revision = 0;
+	uint64_t candidate_earliest_expiry_ms = 0;
 	uint32_t display_width = 0;
 	uint32_t display_height = 0;
 	uint32_t output_width = 0;
@@ -71,6 +72,7 @@ inline bool faithfulframe_preview_render_stamp_matches(const faithfulframe_previ
 	       rendered.geometry_generation == current.geometry_generation &&
 	       rendered.tracker_generation == current.tracker_generation &&
 	       rendered.candidate_preview_revision == current.candidate_preview_revision &&
+	       rendered.candidate_earliest_expiry_ms == current.candidate_earliest_expiry_ms &&
 	       rendered.display_width == current.display_width && rendered.display_height == current.display_height &&
 	       rendered.output_width == current.output_width && rendered.output_height == current.output_height &&
 	       rendered.crop.x == current.crop.x && rendered.crop.y == current.crop.y &&

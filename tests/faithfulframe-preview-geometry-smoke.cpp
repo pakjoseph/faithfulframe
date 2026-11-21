@@ -55,6 +55,7 @@ int main()
 	rendered_stamp.geometry_generation = 8;
 	rendered_stamp.tracker_generation = 9;
 	rendered_stamp.candidate_preview_revision = 10;
+	rendered_stamp.candidate_earliest_expiry_ms = 1600;
 	rendered_stamp.display_width = 1920;
 	rendered_stamp.display_height = 1080;
 	rendered_stamp.output_width = 1280;
@@ -88,6 +89,9 @@ int main()
 	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
 	current_stamp = rendered_stamp;
 	current_stamp.candidate_preview_revision++;
+	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	current_stamp.candidate_earliest_expiry_ms++;
 	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
 	current_stamp = rendered_stamp;
 	current_stamp.source_id++;
@@ -131,6 +135,12 @@ int main()
 	check(selected_candidate == 1); // Rejections never publish an index.
 	faithfulframe_preview_render_stamp stale_click_stamp = current_stamp;
 	stale_click_stamp.status_version++;
+	check(ff_preview_select_candidate(rendered_stamp, stale_click_stamp, 128.0, 72.0, 256.0, 144.0,
+					  click_candidates, 2,
+					  selected_candidate) == ff_preview_click_result::stale_preview);
+	check(selected_candidate == 1);
+	stale_click_stamp = current_stamp;
+	stale_click_stamp.candidate_earliest_expiry_ms++;
 	check(ff_preview_select_candidate(rendered_stamp, stale_click_stamp, 128.0, 72.0, 256.0, 144.0,
 					  click_candidates, 2,
 					  selected_candidate) == ff_preview_click_result::stale_preview);
