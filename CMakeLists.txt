@@ -214,6 +214,8 @@ if (ENABLE_RUST_CORE_BRIDGE)
 	endif()
 	add_executable(faithfulframe-rust-bridge-smoke
 		tests/faithfulframe-core-bridge-smoke.cpp src/faithfulframe-core-bridge.cpp)
+	target_compile_definitions(faithfulframe-rust-bridge-smoke PRIVATE
+		FAITHFULFRAME_TEST_CORE_BRIDGE_ACCESS=1)
 	add_executable(faithfulframe-source-registration-smoke
 		tests/faithfulframe-source-registration-smoke.c)
 	target_include_directories(faithfulframe-source-registration-smoke PRIVATE src)

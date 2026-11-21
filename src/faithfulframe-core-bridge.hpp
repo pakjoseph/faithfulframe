@@ -49,15 +49,23 @@ faithfulframe_snapshot_words(const ff_snapshot &snapshot) noexcept
 }
 
 class faithfulframe_executor_reaper;
+class faithfulframe_session_executor;
 
 class faithfulframe_core_bridge {
+	// The direct bridge is visible to one smoke-test target only. Production
+	// code must reach Rust session state through the serialized executor.
+#ifdef FAITHFULFRAME_TEST_CORE_BRIDGE_ACCESS
 public:
+#else
+private:
+#endif
+	// Production access is limited to the serialized adapter executor; its
+	// queue order and snapshot publication must remain the only session pathway.
 	faithfulframe_core_bridge(const ff_session_config &, const ff_identity &, const ff_generations &,
 				  ff_result &result);
 	~faithfulframe_core_bridge();
 	faithfulframe_core_bridge(const faithfulframe_core_bridge &) = delete;
 	faithfulframe_core_bridge &operator=(const faithfulframe_core_bridge &) = delete;
-	// All mutating calls must run on the adapter's serialized session executor.
 	ff_result snapshot(ff_snapshot &output) const;
 	ff_result tick(uint64_t monotonic_ms, ff_snapshot &output);
 	ff_result publish_candidate(uint64_t monotonic_ms, const ff_candidate &candidate, ff_snapshot &output);
@@ -66,7 +74,6 @@ public:
 				   ff_snapshot &output);
 	ff_result apply_command(uint64_t monotonic_ms, const ff_command &command, ff_snapshot &output);
 	ff_result lifecycle(uint64_t monotonic_ms, const ff_lifecycle &event, ff_snapshot &output);
-	const ff_identity &binding_identity() const { return bound_identity; }
 
 private:
 	struct deleter
@@ -75,6 +82,8 @@ private:
 	};
 	const ff_identity bound_identity;
 	std::unique_ptr<ff_session, deleter> session;
+
+	friend class faithfulframe_session_executor;
 };
 
 struct ff_executor_diagnostics
