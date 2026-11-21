@@ -1,5 +1,6 @@
 #include "faithfulframe-core-bridge.hpp"
 #include "faithfulframe-config-guard.hpp"
+#include "faithfulframe-atomic-shared-ptr.hpp"
 
 #include <barrier>
 #include <atomic>
@@ -1912,7 +1913,8 @@ int run_smoke()
 		bool allow_submission = false;
 		bool command_accepted = true;
 		std::thread delayed_callback([&] {
-			auto callback_owner = std::atomic_load_explicit(&published, std::memory_order_acquire);
+			auto callback_owner =
+				faithfulframe::atomic_shared_ptr_load(&published, std::memory_order_acquire);
 			ff_command delayed_command{FF_COMMAND_ENABLE_AUTO_FOLLOW,
 						   initial.identity,
 						   initial.status_version,
@@ -1932,7 +1934,7 @@ int run_smoke()
 			std::unique_lock<std::mutex> lock(gate_mutex);
 			gate_condition.wait(lock, [&] { return command_created; });
 		}
-		auto retiring = std::atomic_exchange_explicit(
+		auto retiring = faithfulframe::atomic_shared_ptr_exchange(
 			&published, std::shared_ptr<faithfulframe_session_executor>{}, std::memory_order_acq_rel);
 		if (!retiring) {
 			{

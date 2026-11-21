@@ -7,6 +7,7 @@
 #include <utility>
 #include "plugin-macros.generated.h"
 #include "faithfulframe-source-ids.h"
+#include "faithfulframe-atomic-shared-ptr.hpp"
 #include "helper.hpp"
 #include "faithfulframe-preview-render-stamp.hpp"
 #include "faithfulframe-source-identity.hpp"
@@ -171,7 +172,7 @@ make_binding(const char *source_uuid, const char *filter_uuid,
 
 static std::shared_ptr<const face_tracker_monitor_binding> load_binding(const face_tracker_monitor *s)
 {
-	return std::atomic_load_explicit(&s->binding, std::memory_order_acquire);
+	return faithfulframe::atomic_shared_ptr_load(&s->binding, std::memory_order_acquire);
 }
 
 static bool get_safe_output_dimensions(const face_tracker_monitor_binding &binding, uint32_t &width, uint32_t &height)
@@ -243,10 +244,10 @@ static void ftmon_update(void *data, obs_data_t *settings)
 				     previous->filter_uuid != requested_filter;
 	try {
 		auto next = make_binding(requested_source.c_str(), requested_filter.c_str(), previous);
-		std::atomic_store_explicit(&s->binding, std::move(next), std::memory_order_release);
+		faithfulframe::atomic_shared_ptr_store(&s->binding, std::move(next), std::memory_order_release);
 	} catch (...) {
-		std::atomic_store_explicit(&s->binding, std::shared_ptr<const face_tracker_monitor_binding>(),
-					   std::memory_order_release);
+		faithfulframe::atomic_shared_ptr_store(
+			&s->binding, std::shared_ptr<const face_tracker_monitor_binding>(), std::memory_order_release);
 		blog(LOG_ERROR, "FaithfulFrame preview monitor could not publish its source binding");
 	}
 	if (binding_changed)
