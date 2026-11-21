@@ -6,6 +6,11 @@
 #include "face-tracker-dock-internal.hpp"
 #include "face-tracker-widget.hpp"
 
+const char *obs_module_text(const char *lookup_string)
+{
+	return lookup_string;
+}
+
 void face_tracker_dock_destroy(face_tracker_dock_s *data)
 {
 	pthread_mutex_destroy(&data->mutex);
