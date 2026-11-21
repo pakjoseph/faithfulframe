@@ -1,9 +1,43 @@
 #include "faithfulframe-crop-selector.hpp"
+#include "faithfulframe-full-source-viewport.hpp"
 
+#include <array>
+#include <cmath>
 #include <limits>
+
+static bool near(float actual, float expected)
+{
+	return std::abs(actual - expected) < 1e-6f;
+}
 
 int main()
 {
+	struct viewport_case
+	{
+		uint32_t source_width;
+		uint32_t source_height;
+		uint32_t output_width;
+		uint32_t output_height;
+		ff_rect expected;
+	};
+	const std::array viewport_cases{
+		viewport_case{3840, 2160, 1920, 1080, {0.0f, 0.0f, 1.0f, 1.0f}},
+		viewport_case{1920, 1080, 1920, 1080, {0.0f, 0.0f, 1.0f, 1.0f}},
+		viewport_case{3840, 2160, 1280, 960, {0.0f, 0.125f, 1.0f, 0.75f}},
+		viewport_case{1280, 960, 1920, 1080, {0.125f, 0.0f, 0.75f, 1.0f}},
+		viewport_case{1080, 1920, 1920, 1080, {0.341796875f, 0.0f, 0.31640625f, 1.0f}},
+		viewport_case{0, 2160, 1920, 1080, {0.0f, 0.0f, 1.0f, 1.0f}},
+		viewport_case{1920, 1080, 0, 1080, {0.0f, 0.0f, 1.0f, 1.0f}},
+	};
+	for (const auto &test : viewport_cases) {
+		const ff_rect viewport = faithfulframe_full_source_viewport(test.source_width, test.source_height,
+									    test.output_width, test.output_height);
+		if (!faithfulframe_valid_normalized_rect(viewport) || !near(viewport.x, test.expected.x) ||
+		    !near(viewport.y, test.expected.y) || !near(viewport.width, test.expected.width) ||
+		    !near(viewport.height, test.expected.height))
+			return 10;
+	}
+
 	if (faithfulframe_select_crop_input(false) != faithfulframe_crop_input::legacy_aggregate)
 		return 1;
 	if (faithfulframe_select_crop_input(true) != faithfulframe_crop_input::safe_session)

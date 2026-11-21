@@ -26,6 +26,7 @@
 #include "source_list.h"
 #include "faithfulframe-preview-render-stamp.hpp"
 #include "faithfulframe-atomic-shared-ptr.hpp"
+#include "faithfulframe-full-source-viewport.hpp"
 #ifdef ENABLE_RUST_CORE_BRIDGE
 #include "faithfulframe-core-bridge.hpp"
 #include "faithfulframe-active-slot.hpp"
@@ -2791,24 +2792,6 @@ static inline void draw_sprite_crop_to_rect(float x0, float y0, float x1, float 
 }
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
-static ff_rect full_source_viewport(uint32_t source_width, uint32_t source_height, uint32_t output_width,
-				    uint32_t output_height)
-{
-	if (!source_width || !source_height || !output_width || !output_height)
-		return ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
-	const float source_aspect = (float)source_width / source_height;
-	const float output_aspect = (float)output_width / output_height;
-	if (source_aspect > output_aspect) {
-		const float height = output_aspect / source_aspect;
-		return ff_rect{0.0f, (1.0f - height) * 0.5f, 1.0f, height};
-	}
-	if (source_aspect < output_aspect) {
-		const float width = source_aspect / output_aspect;
-		return ff_rect{(1.0f - width) * 0.5f, 0.0f, width, 1.0f};
-	}
-	return ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
-}
-
 static void draw_safe_candidate_bounds(faithfulframe_source_binding *binding, const ff_snapshot &snapshot,
 				       uint64_t snapshot_at, const ff_rect &crop, const ff_rect &viewport,
 				       uint32_t output_width, uint32_t output_height,
@@ -2846,7 +2829,7 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 		!force_black && binding && binding->target ? obs_weak_source_get_source(binding->target) : nullptr;
 
 	ff_rect crop{0.0f, 0.0f, 1.0f, 1.0f};
-	ff_rect viewport = full_source_viewport(source_width, source_height, output_width, output_height);
+	ff_rect viewport = faithfulframe_full_source_viewport(source_width, source_height, output_width, output_height);
 	ff_snapshot displayed_snapshot{};
 	uint64_t displayed_snapshot_at = 0;
 	bool has_displayed_snapshot = false;
@@ -2880,7 +2863,7 @@ static void draw_safe_source_frame(face_tracker_filter *s, faithfulframe_source_
 	}
 	if (!faithfulframe_valid_normalized_rect(crop) || !faithfulframe_valid_normalized_rect(viewport)) {
 		crop = ff_rect{0.0f, 0.0f, 1.0f, 1.0f};
-		viewport = full_source_viewport(source_width, source_height, output_width, output_height);
+		viewport = faithfulframe_full_source_viewport(source_width, source_height, output_width, output_height);
 	}
 
 	gs_blend_state_push();
