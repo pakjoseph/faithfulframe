@@ -119,6 +119,10 @@ def baseline_row(elapsed_ms, cpu, memory, render_frames, render_skipped, stream_
         "fps_denominator": "1",
         "base_width": "1920",
         "base_height": "1080",
+        "obs_color_format": "NV12",
+        "obs_colorspace": "709",
+        "obs_color_range": "Default",
+        "obs_scale_type": "Disable",
         "cpu_usage_percent": str(cpu),
         "memory_usage_bytes": str(memory),
         "active_fps": "59.9",
@@ -570,7 +574,83 @@ class PerformanceLogAnalysisTests(unittest.TestCase):
         self.assertIn("virtual_bytes", comparison["not_compared_metrics"])
         self.assertNotIn("stagesurface_map_failure_percent", comparison["measurements"])
         self.assertIn("queue_depth", comparison["not_compared_metrics"])
-        self.assertIn("gpu_conversion", comparison["not_compared_video_settings"])
+        self.assertEqual(
+            comparison["not_compared_video_settings"],
+            ["graphics_module", "gpu_conversion"],
+        )
+
+    def test_rejects_baseline_with_different_obs_color_profile(self):
+        baseline_path = self.root / "upstream-baseline.csv"
+        rows = [
+            baseline_row(0, 10.0, 2_000_000_000, 1000, 5, 990, 4),
+            baseline_row(60_000, 12.0, 2_100_000_000, 2000, 15, 1980, 14),
+        ]
+        for row in rows:
+            row["obs_colorspace"] = "601"
+        with baseline_path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=analyzer.BASELINE_COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        candidate_rows = [
+            fixture_row(0, 10.0, 1_000_000, 1000, 5, "faithfulframe"),
+            fixture_row(60_000, 12.0, 1_100_000, 2000, 15, "faithfulframe"),
+        ]
+        for row in candidate_rows:
+            row["hardware_and_workload_notes"] = rows[0]["hardware_and_workload_notes"]
+        candidate_rows[1]["run_metadata_present"] = "0"
+        for column in analyzer.METADATA_COLUMNS:
+            candidate_rows[1][column] = ""
+        candidate_path = self.write_log("faithfulframe.csv", candidate_rows)
+
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "mismatched context: obs_video_configuration"):
+            analyzer.compare_logs(analyzer.load_log(baseline_path), analyzer.load_log(candidate_path))
+
+    def test_baseline_profile_change_makes_video_configuration_unstable(self):
+        rows = [
+            baseline_row(0, 10.0, 2_000_000_000, 1000, 5, 990, 4),
+            baseline_row(60_000, 12.0, 2_100_000_000, 2000, 15, 1980, 14),
+        ]
+        rows[1]["obs_scale_type"] = "lanczos"
+        path = self.root / "changing-profile-baseline.csv"
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=analyzer.BASELINE_COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        baseline = analyzer.load_log(path)
+
+        self.assertFalse(baseline["comparison_video_configuration_stable"])
+
+    def test_reads_legacy_baseline_but_refuses_incomplete_comparison(self):
+        path = self.root / "legacy-baseline.csv"
+        old_row = baseline_row(0, 10.0, 2_000_000_000, 1000, 5, 990, 4)
+        old_row["baseline_schema_version"] = "1"
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=analyzer.BASELINE_SCHEMA_V1_COLUMNS)
+            writer.writeheader()
+            writer.writerow({column: old_row[column] for column in analyzer.BASELINE_SCHEMA_V1_COLUMNS})
+
+        legacy = analyzer.load_log(path)
+        self.assertEqual(legacy["schema_version"], 1)
+        self.assertFalse(legacy["comparison_video_configuration_complete"])
+        candidate_path = self.write_log(
+            "candidate.csv", [fixture_row(0, 10.0, 1_000_000, 1000, 5, "faithfulframe")]
+        )
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "collect a schema v2 baseline"):
+            analyzer.compare_logs(legacy, analyzer.load_log(candidate_path))
+
+    def test_rejects_unknown_obs_profile_setting(self):
+        row = baseline_row(0, 10.0, 2_000_000_000, 1000, 5, 990, 4)
+        row["obs_color_format"] = "unknown-format"
+        path = self.root / "unknown-format-baseline.csv"
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=analyzer.BASELINE_COLUMNS)
+            writer.writeheader()
+            writer.writerow(row)
+
+        with self.assertRaisesRegex(analyzer.PerformanceLogError, "unsupported OBS obs_color_format"):
+            analyzer.load_log(path)
 
     def test_rejects_baseline_when_output_mode_changes(self):
         first = baseline_row(0, 10.0, 2_000_000_000, 1000, 5, 990, 4)

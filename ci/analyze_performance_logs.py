@@ -99,8 +99,9 @@ SUPPORTED_SCHEMAS = {
     4: SCHEMA_V4_COLUMNS,
     SCHEMA_VERSION: EXPECTED_COLUMNS,
 }
-BASELINE_SCHEMA_VERSION = 1
-BASELINE_COLUMNS = [
+BASELINE_SCHEMA_V1_VERSION = 1
+BASELINE_SCHEMA_VERSION = 2
+BASELINE_SCHEMA_V1_COLUMNS = [
     "baseline_schema_version",
     "run_metadata_present",
     "utc_timestamp",
@@ -128,6 +129,41 @@ BASELINE_COLUMNS = [
     "stream_total_frames",
     "stream_skipped_frames",
 ]
+BASELINE_PROFILE_SETTING_COLUMNS = (
+    "obs_color_format",
+    "obs_colorspace",
+    "obs_color_range",
+    "obs_scale_type",
+)
+BASELINE_INSERTION_INDEX = BASELINE_SCHEMA_V1_COLUMNS.index("cpu_usage_percent")
+BASELINE_COLUMNS = (
+    BASELINE_SCHEMA_V1_COLUMNS[:BASELINE_INSERTION_INDEX]
+    + list(BASELINE_PROFILE_SETTING_COLUMNS)
+    + BASELINE_SCHEMA_V1_COLUMNS[BASELINE_INSERTION_INDEX:]
+)
+SUPPORTED_BASELINE_SCHEMAS = {
+    BASELINE_SCHEMA_V1_VERSION: BASELINE_SCHEMA_V1_COLUMNS,
+    BASELINE_SCHEMA_VERSION: BASELINE_COLUMNS,
+}
+
+OBS_VIDEO_PROFILE_VALUES = {
+    "obs_color_format": {
+        "i420": 1, "nv12": 2, "yvyu": 3, "yuy2": 4, "uyvy": 5,
+        "rgba": 6, "bgra": 7, "bgrx": 8, "y800": 9, "i444": 10,
+        "bgr3": 11, "i422": 12, "i40a": 13, "i42a": 14, "yuva": 15,
+        "ayuv": 16, "i010": 17, "p010": 18, "i210": 19, "i412": 20,
+        "ya2l": 21, "p216": 22, "p416": 23, "v210": 24, "r10l": 25,
+    },
+    "obs_colorspace": {
+        "default": 0, "601": 1, "709": 2, "srgb": 3,
+        "2100pq": 4, "2100hlg": 5,
+    },
+    "obs_color_range": {"default": 0, "partial": 1, "full": 2},
+    "obs_scale_type": {
+        "disable": 0, "point": 1, "bicubic": 2, "bilinear": 3,
+        "lanczos": 4, "area": 5,
+    },
+}
 
 METRIC_COLUMNS = {
     "process_cpu_percent": "percent",
@@ -239,7 +275,7 @@ def _empty_metric_summary() -> dict:
     return {column: {"unit": unit, **_series_summary([])} for column, unit in METRIC_COLUMNS.items()}
 
 
-def _load_baseline_rows(path: Path, raw_rows: list[dict]) -> dict:
+def _load_baseline_rows(path: Path, raw_rows: list[dict], schema_version: int) -> dict:
     if not raw_rows:
         raise PerformanceLogError(f"{path}: recording has no samples")
     metadata = None
@@ -250,7 +286,7 @@ def _load_baseline_rows(path: Path, raw_rows: list[dict]) -> dict:
     for row_number, raw in enumerate(raw_rows, start=2):
         if None in raw or any(value is None for value in raw.values()):
             raise PerformanceLogError(f"{path}: row {row_number} has missing columns")
-        if _number(raw["baseline_schema_version"], "baseline_schema_version", row_number, integer=True) != BASELINE_SCHEMA_VERSION:
+        if _number(raw["baseline_schema_version"], "baseline_schema_version", row_number, integer=True) != schema_version:
             raise PerformanceLogError(f"{path}: row {row_number} has an unsupported baseline schema version")
         metadata_flag = _number(raw["run_metadata_present"], "run_metadata_present", row_number, integer=True)
         if metadata_flag != (1 if row_number == 2 else 0):
@@ -290,6 +326,16 @@ def _load_baseline_rows(path: Path, raw_rows: list[dict]) -> dict:
             if sample[column] is None or sample[column] < 0:
                 raise PerformanceLogError(f"{path}: row {row_number} has an invalid {column}")
 
+        if schema_version >= 2:
+            for column in BASELINE_PROFILE_SETTING_COLUMNS:
+                raw_value = raw[column].strip().casefold()
+                values = OBS_VIDEO_PROFILE_VALUES[column]
+                if raw_value not in values:
+                    raise PerformanceLogError(
+                        f"{path}: row {row_number} has an unsupported OBS {column} value: {raw[column]!r}"
+                    )
+                sample[column] = values[raw_value]
+
         for column in ("stream_active", "record_active"):
             flag = _number(raw[column], column, row_number, integer=True)
             if flag not in (0, 1):
@@ -323,17 +369,25 @@ def _load_baseline_rows(path: Path, raw_rows: list[dict]) -> dict:
         for column in COUNTER_COLUMNS:
             if column not in sample:
                 sample[column] = None
+        comparison_video_configuration = {
+            "fps_num": sample["fps_numerator"],
+            "fps_den": sample["fps_denominator"],
+            "base_width": sample["base_width"],
+            "base_height": sample["base_height"],
+            "output_width": sample["output_width"],
+            "output_height": sample["output_height"],
+        }
+        if schema_version >= 2:
+            comparison_video_configuration.update({
+                "output_format": sample["obs_color_format"],
+                "colorspace": sample["obs_colorspace"],
+                "range": sample["obs_color_range"],
+                "scale_type": sample["obs_scale_type"],
+            })
         sample.update({
             "input_resolution": [sample["input_width"], sample["input_height"]],
             "output_resolution": [sample["output_width"], sample["output_height"]],
-            "comparison_video_configuration": {
-                "fps_num": sample["fps_numerator"],
-                "fps_den": sample["fps_denominator"],
-                "base_width": sample["base_width"],
-                "base_height": sample["base_height"],
-                "output_width": sample["output_width"],
-                "output_height": sample["output_height"],
-            },
+            "comparison_video_configuration": comparison_video_configuration,
         })
         video_configurations.append(sample["comparison_video_configuration"])
         resolution_pairs.add((sample["input_width"], sample["input_height"], sample["output_width"], sample["output_height"]))
@@ -374,13 +428,14 @@ def _load_baseline_rows(path: Path, raw_rows: list[dict]) -> dict:
     return {
         "path": str(path),
         "log_kind": "obs_baseline",
-        "schema_version": BASELINE_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "metadata": metadata,
         "output_mode": {
             "stream_active": samples[0]["stream_active"],
             "record_active": samples[0]["record_active"],
         },
         "obs_video_configuration_complete": False,
+        "comparison_video_configuration_complete": schema_version >= 2,
         "obs_video_configuration_stable": len(unique_video_configurations) == 1,
         "comparison_video_configuration_stable": len(unique_video_configurations) == 1,
         "comparison_resolution_stable": len(resolution_pairs) == 1,
@@ -527,9 +582,17 @@ def load_log(path: str | Path) -> dict:
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as stream:
             reader = csv.DictReader(stream)
-            if reader.fieldnames == BASELINE_COLUMNS:
+            baseline_schema_version = next(
+                (
+                    version
+                    for version, columns in SUPPORTED_BASELINE_SCHEMAS.items()
+                    if reader.fieldnames == columns
+                ),
+                None,
+            )
+            if baseline_schema_version is not None:
                 baseline_rows = list(reader)
-                return _load_baseline_rows(path, baseline_rows)
+                return _load_baseline_rows(path, baseline_rows, baseline_schema_version)
             schema_version = next(
                 (version for version, columns in SUPPORTED_SCHEMAS.items() if reader.fieldnames == columns),
                 None,
@@ -801,6 +864,10 @@ def load_log(path: str | Path) -> dict:
             "base_height": configuration["obs_base_height"],
             "output_width": configuration["obs_canvas_output_width"],
             "output_height": configuration["obs_canvas_output_height"],
+            "output_format": configuration["obs_output_format"],
+            "colorspace": configuration["obs_colorspace"],
+            "range": configuration["obs_range"],
+            "scale_type": configuration["obs_scale_type"],
         }
         if common_configuration not in comparison_video_configurations:
             comparison_video_configurations.append(common_configuration)
@@ -819,6 +886,9 @@ def load_log(path: str | Path) -> dict:
         ),
         "output_mode_stable": output_mode_stable,
         "obs_video_configuration_complete": all(
+            configuration is not None for configuration in obs_video_configurations
+        ),
+        "comparison_video_configuration_complete": all(
             configuration is not None for configuration in obs_video_configurations
         ),
         "obs_video_configuration_stable": obs_video_configuration_stable,
@@ -888,6 +958,12 @@ def compare_logs(
         )
     if not reference["comparison_resolution_stable"] or not candidate["comparison_resolution_stable"]:
         raise PerformanceLogError("runs are not comparable; source and OBS output resolutions must be stable")
+    if not reference.get("comparison_video_configuration_complete") or not candidate.get(
+        "comparison_video_configuration_complete"
+    ):
+        raise PerformanceLogError(
+            "runs are not comparable; common OBS video settings are incomplete; collect a schema v2 baseline"
+        )
     if reference["comparison_video_configurations"] != candidate["comparison_video_configurations"]:
         context_mismatches.append("obs_video_configuration")
     elif (
@@ -974,7 +1050,9 @@ def compare_logs(
     }
     not_compared.extend(known_metrics - shared_metrics)
     not_compared_video_settings = []
-    if not reference["obs_video_configuration_complete"] or not candidate["obs_video_configuration_complete"]:
+    if reference.get("log_kind") == "obs_baseline" or candidate.get("log_kind") == "obs_baseline":
+        not_compared_video_settings = ["graphics_module", "gpu_conversion"]
+    elif not reference["obs_video_configuration_complete"] or not candidate["obs_video_configuration_complete"]:
         not_compared_video_settings = [
             "graphics_module", "output_format", "colorspace", "range",
             "scale_type", "gpu_conversion",

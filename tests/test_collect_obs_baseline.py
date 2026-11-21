@@ -25,7 +25,10 @@ def response_for(request_type, *, stream_active=True, record_active=False, recor
     return {
         "GetVersion": {
             "obsVersion": "33.0.1", "platformDescription": "Windows 11",
-            "availableRequests": ["GetStats", "GetVideoSettings", "GetStreamStatus", "GetRecordStatus"],
+            "availableRequests": [
+                "GetStats", "GetVideoSettings", "GetStreamStatus", "GetRecordStatus",
+                "GetProfileParameter",
+            ],
         },
         "GetVideoSettings": {
             "fpsNumerator": 30, "fpsDenominator": 1,
@@ -61,6 +64,12 @@ class FakeSocket:
         self.stream_active = True
         self.record_active = False
         self.record_paused = False
+        self.profile_settings = {
+            "ColorFormat": "NV12",
+            "ColorSpace": "709",
+            "ColorRange": "Partial",
+            "ScaleType": "bicubic",
+        }
 
     def send(self, raw):
         message = json.loads(raw)
@@ -69,19 +78,28 @@ class FakeSocket:
             self.incoming.append({"op": 2, "d": {"negotiatedRpcVersion": 1}})
         elif message["op"] == 6:
             data = message["d"]
+            request_type = data["requestType"]
+            request_data = data.get("requestData", {})
+            if request_type == "GetProfileParameter":
+                response = {
+                    "parameterValue": self.profile_settings.get(request_data.get("parameterName")),
+                    "defaultParameterValue": "Default",
+                }
+            else:
+                response = response_for(
+                    request_type,
+                    stream_active=self.stream_active,
+                    record_active=self.record_active,
+                    record_paused=self.record_paused,
+                )
             self.incoming.append(
                 {
                     "op": 7,
                     "d": {
-                        "requestType": data["requestType"],
+                        "requestType": request_type,
                         "requestId": data["requestId"],
                         "requestStatus": {"result": True, "code": 100},
-                        "responseData": response_for(
-                            data["requestType"],
-                            stream_active=self.stream_active,
-                            record_active=self.record_active,
-                            record_paused=self.record_paused,
-                        ),
+                        "responseData": response,
                     },
                 }
             )
@@ -123,17 +141,48 @@ class BaselineCollectorTests(unittest.TestCase):
         request_types = [message["d"]["requestType"] for message in self.socket.sent if message["op"] == 6]
         self.assertEqual(
             request_types,
-            ["GetVersion", "GetVideoSettings", "GetStats", "GetStreamStatus", "GetRecordStatus"],
+            ["GetVersion", "GetVideoSettings", "GetStats", "GetStreamStatus", "GetRecordStatus"]
+            + ["GetProfileParameter"] * 4,
+        )
+        profile_requests = [
+            message["d"]["requestData"]
+            for message in self.socket.sent
+            if message["op"] == 6 and message["d"]["requestType"] == "GetProfileParameter"
+        ]
+        self.assertEqual(
+            profile_requests,
+            [
+                {"parameterCategory": "Video", "parameterName": name}
+                for name in ("ColorFormat", "ColorSpace", "ColorRange", "ScaleType")
+            ],
         )
         self.assertEqual(snapshot["input_width"], 3840)
         self.assertEqual(snapshot["memory_usage_bytes"], 2 * 1024 * 1024 * 1024)
         self.assertEqual(snapshot["render_total_frames"], 10000)
         self.assertEqual(snapshot["stream_skipped_frames"], 5)
+        self.assertEqual(snapshot["obs_color_format"], "NV12")
+        self.assertEqual(snapshot["obs_colorspace"], "709")
+        self.assertEqual(snapshot["obs_color_range"], "Partial")
+        self.assertEqual(snapshot["obs_scale_type"], "bicubic")
         self.assertTrue(snapshot["stream_active"])
         self.assertFalse(snapshot["record_active"])
-        collector.collect_snapshot(client, (3840, 2160))
+        self.socket.profile_settings["ColorSpace"] = "601"
+        updated_snapshot = collector.collect_snapshot(client, (3840, 2160))
+        self.assertEqual(updated_snapshot["obs_colorspace"], "601")
         repeated_types = [message["d"]["requestType"] for message in self.socket.sent if message["op"] == 6]
         self.assertEqual(repeated_types.count("GetVersion"), 1)
+        self.assertEqual(repeated_types.count("GetProfileParameter"), 8)
+
+    def test_rejects_obs_without_profile_parameter_support(self):
+        client = self.make_client()
+        client.connect()
+        client._version_info = {
+            "obsVersion": "33.0.1",
+            "platformDescription": "Windows 11",
+            "availableRequests": ["GetStats", "GetVideoSettings", "GetStreamStatus", "GetRecordStatus"],
+        }
+        with self.assertRaisesRegex(collector.BaselineCollectionError, "does not support read-only profile video settings"):
+            collector.collect_snapshot(client, (3840, 2160))
 
     def test_rejects_inactive_outputs(self):
         client = self.make_client()

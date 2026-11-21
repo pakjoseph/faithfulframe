@@ -9,6 +9,9 @@ Install the pinned optional dependency with:
 
 The operator is responsible for verifying the unmodified plugin build and
 entering the same run metadata used by the FaithfulFrame performance recorder.
+The collector records the read-only OBS video profile settings that the
+FaithfulFrame recorder observes at runtime, while deliberately avoiding output
+and stream-service settings that can contain credentials.
 Start OBS recording or streaming yourself before running the tool. Example:
 
     python3 ci/collect_obs_baseline.py upstream.csv \\
@@ -40,7 +43,7 @@ import time
 from typing import Callable
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CSV_COLUMNS = (
     "baseline_schema_version",
     "run_metadata_present",
@@ -61,6 +64,10 @@ CSV_COLUMNS = (
     "fps_denominator",
     "base_width",
     "base_height",
+    "obs_color_format",
+    "obs_colorspace",
+    "obs_color_range",
+    "obs_scale_type",
     "cpu_usage_percent",
     "memory_usage_bytes",
     "active_fps",
@@ -203,7 +210,7 @@ class ObsWebSocketClient:
             raise BaselineCollectionError("OBS sent an invalid WebSocket message")
         return message
 
-    def request(self, request_type: str) -> dict:
+    def request(self, request_type: str, request_data: dict | None = None) -> dict:
         request_id = f"faithfulframe-baseline-{self._next_request_id}"
         self._next_request_id += 1
         try:
@@ -213,7 +220,7 @@ class ObsWebSocketClient:
                     "d": {
                         "requestType": request_type,
                         "requestId": request_id,
-                        "requestData": {},
+                        "requestData": request_data or {},
                     },
                 }
             )
@@ -246,6 +253,36 @@ class ObsWebSocketClient:
             finally:
                 self._socket = None
 
+    def get_video_profile_settings(self) -> dict[str, str]:
+        """Read allowlisted video settings without exposing profile secrets."""
+        if self._version_info is None or "GetProfileParameter" not in self._version_info.get(
+            "availableRequests", []
+        ):
+            raise BaselineCollectionError(
+                "OBS WebSocket does not support read-only profile video settings"
+            )
+        keys = {
+            "obs_color_format": "ColorFormat",
+            "obs_colorspace": "ColorSpace",
+            "obs_color_range": "ColorRange",
+            "obs_scale_type": "ScaleType",
+        }
+        values = {}
+        for field, name in keys.items():
+            response = self.request(
+                "GetProfileParameter",
+                {"parameterCategory": "Video", "parameterName": name},
+            )
+            value = response.get("parameterValue")
+            if value is None:
+                value = response.get("defaultParameterValue")
+            if not isinstance(value, str) or not value.strip():
+                raise BaselineCollectionError(
+                    f"OBS profile is missing the video setting {name}"
+                )
+            values[field] = value.strip()
+        return values
+
 
 def parse_resolution(value: str) -> tuple[int, int]:
     try:
@@ -273,6 +310,7 @@ def collect_snapshot(client: ObsWebSocketClient, input_resolution: tuple[int, in
     stats = client.request("GetStats")
     stream = client.request("GetStreamStatus")
     record = client.request("GetRecordStatus")
+    profile_video = client.get_video_profile_settings()
     stream_active = _boolean(stream, "outputActive")
     record_output_active = _boolean(record, "outputActive")
     record_active = record_output_active and not _boolean(record, "outputPaused")
@@ -282,10 +320,15 @@ def collect_snapshot(client: ObsWebSocketClient, input_resolution: tuple[int, in
         "fps_denominator": _number(settings, "fpsDenominator", integer=True),
         "base_width": _number(settings, "baseWidth", integer=True),
         "base_height": _number(settings, "baseHeight", integer=True),
+        **profile_video,
         "output_width": _number(settings, "outputWidth", integer=True),
         "output_height": _number(settings, "outputHeight", integer=True),
     }
-    if any(video[field] <= 0 for field in video):
+    numeric_video_fields = (
+        "fps_numerator", "fps_denominator", "base_width", "base_height",
+        "output_width", "output_height",
+    )
+    if any(video[field] <= 0 for field in numeric_video_fields):
         raise BaselineCollectionError("OBS returned zero-valued video settings")
     if not version.get("obsVersion"):
         raise BaselineCollectionError("OBS response is missing obsVersion")
