@@ -334,6 +334,8 @@ jobs:
 
       - name: Download obs-studio development environment
         id: obsdeps
+        # Bound stalls in the external OBS SDK download action on macOS runners.
+        timeout-minutes: 15
         uses: norihiro/obs-studio-devel-action@02a425c434e39ae068e0bb830bc21bf68273fda3 # v3
         with:
           arch: ${{ matrix.arch }}
