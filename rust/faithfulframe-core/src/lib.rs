@@ -638,8 +638,25 @@ impl TrackingSession {
             .or_insert(candidate.continuity);
         self.latest.insert(candidate.handle, candidate);
         while self.latest.len() > self.config.max_candidates {
-            if let Some(oldest) = self.latest.keys().next().copied() {
+            let oldest_unselected = self
+                .latest
+                .iter()
+                .filter(|(handle, _)| {
+                    !(self.state == State::Locked
+                        && self
+                            .selected
+                            .is_some_and(|selected| selected.handle == **handle))
+                })
+                .min_by_key(|(handle, candidate)| {
+                    (candidate.observed_at, candidate.expires_at, **handle)
+                })
+                .map(|(handle, _)| *handle);
+            if let Some(oldest) = oldest_unselected {
                 self.latest.remove(&oldest);
+            } else {
+                // A selected target is the only protected entry, and a valid
+                // session always has capacity for at least one candidate.
+                break;
             }
         }
         if candidate.observation_version > self.observation_version {
@@ -2238,6 +2255,55 @@ mod tests {
         assert_eq!(lower.observation_version, 2);
         assert_eq!(session.latest.get(&10).unwrap().continuity, 100);
         assert_eq!(session.seen_candidate_handles.len(), 2);
+    }
+
+    #[test]
+    fn candidate_cache_evicts_oldest_unselected_and_retains_locked_target() {
+        let mut session = TrackingSession::new(
+            Config {
+                loss_grace_ms: 100,
+                max_evidence_age_ms: 10,
+                max_candidates: 2,
+                ..Config::default()
+            },
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 1, 2), 2);
+        send(
+            &mut session,
+            3,
+            Command::SelectCandidate {
+                handle: 10,
+                observation_version: 1,
+            },
+        );
+        observe(&mut session, candidate(20, 200, 2, 4), 4);
+        observe(&mut session, candidate(30, 300, 3, 5), 5);
+
+        assert_eq!(session.latest.len(), 2);
+        assert!(session.latest.contains_key(&10));
+        assert!(session.latest.contains_key(&30));
+        assert!(!session.latest.contains_key(&20));
+
+        // Refresh the selected handle in the current preview version, then
+        // prove it remains selectable after the operator enters Manual mode.
+        observe(&mut session, candidate(10, 100, 3, 6), 6);
+        send(&mut session, 7, Command::ManualOverride);
+        let selected = send(
+            &mut session,
+            8,
+            Command::SelectCandidate {
+                handle: 10,
+                observation_version: 3,
+            },
+        );
+
+        assert_eq!(selected.command_result, CommandResult::Applied);
+        assert_eq!(selected.state, State::Locked);
+        assert_eq!(selected.selected, Some(10));
     }
 
     #[test]
