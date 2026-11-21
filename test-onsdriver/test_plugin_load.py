@@ -712,6 +712,11 @@ class PluginLoadTest(obstest.OBSTest):
             created_inputs.append(adapter_name)
             settings = client.send('GetInputSettings', {'inputName': adapter_name})
             self.assertFalse(settings.input_settings.get('safe_tracking_enabled', False))
+            self.assertEqual(
+                settings.input_settings.get('detector_engine'),
+                0,
+                'new adapters must default to dlib HOG instead of the slower CNN detector',
+            )
             self.assertFalse(settings.input_settings.get('target_uuid'))
             client.send('SetInputSettings', {
                 'inputName': adapter_name,
