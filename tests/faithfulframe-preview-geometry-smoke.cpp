@@ -1,6 +1,8 @@
 #include "faithfulframe-preview-geometry.hpp"
 #include "faithfulframe-preview-render-stamp.hpp"
+#include "faithfulframe-preview-selection.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -111,6 +113,49 @@ int main()
 	current_stamp = rendered_stamp;
 	current_stamp.output_width++;
 	check(!faithfulframe_preview_render_stamp_matches(rendered_stamp, current_stamp));
+	current_stamp = rendered_stamp;
+	ff_rect click_candidates[] = {
+		{0.0f, 0.0f, 0.1f, 0.1f}, // Outside the current source crop.
+		{0.5f, 0.375f, 0.25f, 0.25f},
+	};
+	std::size_t selected_candidate = 73;
+	check(ff_preview_select_candidate(rendered_stamp, current_stamp, 128.0, 72.0, 256.0, 144.0, click_candidates, 2,
+					  selected_candidate) == ff_preview_click_result::selected);
+	check(selected_candidate == 1); // Returned index addresses the original candidate array.
+	selected_candidate = 73;
+	check(ff_preview_select_candidate(rendered_stamp, current_stamp, 256.0, 144.0, 512.0, 288.0, click_candidates,
+					  2, selected_candidate) == ff_preview_click_result::selected);
+	check(selected_candidate == 1); // Logical/HiDPI sizes preserve the click location.
+	check(ff_preview_select_candidate(rendered_stamp, current_stamp, 4.0, 72.0, 400.0, 144.0, click_candidates, 2,
+					  selected_candidate) == ff_preview_click_result::outside_image);
+	check(selected_candidate == 1); // Rejections never publish an index.
+	faithfulframe_preview_render_stamp stale_click_stamp = current_stamp;
+	stale_click_stamp.status_version++;
+	check(ff_preview_select_candidate(rendered_stamp, stale_click_stamp, 128.0, 72.0, 256.0, 144.0,
+					  click_candidates, 2,
+					  selected_candidate) == ff_preview_click_result::stale_preview);
+	check(selected_candidate == 1);
+	ff_rect overlapping_click_candidates[] = {
+		{0.5f, 0.375f, 0.25f, 0.25f},
+		{0.5f, 0.375f, 0.25f, 0.25f},
+	};
+	check(ff_preview_select_candidate(rendered_stamp, current_stamp, 128.0, 72.0, 256.0, 144.0,
+					  overlapping_click_candidates, 2,
+					  selected_candidate) == ff_preview_click_result::ambiguous);
+	check(selected_candidate == 1);
+	ff_rect invalid_click_candidates[] = {
+		{NAN, 0.375f, 0.25f, 0.25f},
+		{0.5f, 0.375f, 0.25f, 0.25f},
+	};
+	check(ff_preview_select_candidate(rendered_stamp, current_stamp, 128.0, 72.0, 256.0, 144.0,
+					  invalid_click_candidates, 2,
+					  selected_candidate) == ff_preview_click_result::invalid_geometry);
+	check(selected_candidate == 1);
+	std::array<ff_rect, faithfulframe_max_candidates + 1> excess_click_candidates{};
+	check(ff_preview_select_candidate(rendered_stamp, current_stamp, 128.0, 72.0, 256.0, 144.0,
+					  excess_click_candidates.data(), excess_click_candidates.size(),
+					  selected_candidate) == ff_preview_click_result::too_many_candidates);
+	check(selected_candidate == 1);
 	check(!faithfulframe_preview_render_stamp_matches(faithfulframe_preview_render_stamp{}, rendered_stamp));
 
 	check(ff_preview_observation_is_fresh(1000, 1500, 500));

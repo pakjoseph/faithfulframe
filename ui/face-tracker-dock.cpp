@@ -41,6 +41,7 @@
 #include "faithfulframe-candidate-selection.hpp"
 #include "faithfulframe-adapter-lease.hpp"
 #include "faithfulframe-preview-geometry.hpp"
+#include "faithfulframe-preview-selection.hpp"
 #include "faithfulframe_ffi.h"
 #endif
 
@@ -2116,43 +2117,36 @@ void FTDock::handlePreviewClick(const QPointF &position, const faithfulframe_pre
 	current_stamp.viewport = {preview.viewport.x, preview.viewport.y, preview.viewport.width,
 				  preview.viewport.height};
 	current_stamp.full_source = notrackButton->isChecked();
-	if (!faithfulframe_preview_render_stamp_matches(renderStamp, current_stamp)) {
-		showOperatorNotice("The preview changed. Wait for it to refresh, then click the face again.");
-		return;
+	// Resolve the rendered-version check, logical-pixel/HiDPI letterbox mapping,
+	// crop/viewport transform, and unique hit in one production helper. The Rust
+	// session still validates the echoed identity and versions atomically.
+	std::array<ff_rect, faithfulframe_max_candidates> source_rectangles{};
+	const qsizetype copied_candidate_count =
+		std::min(preview.candidates.size(), static_cast<qsizetype>(source_rectangles.size()));
+	for (qsizetype i = 0; i < copied_candidate_count; ++i) {
+		const QVariantMap &candidate = preview.candidates.at(i);
+		source_rectangles[static_cast<std::size_t>(i)] =
+			ff_rect{candidate.value("x").toFloat(), candidate.value("y").toFloat(),
+				candidate.value("width").toFloat(), candidate.value("height").toFloat()};
 	}
-	// FTWidget and Qt mouse events use logical pixels. The monitor's rendered
-	// preview uses the same aspect-fit transform, so normalizing inside the
-	// letterboxed image accounts for both HiDPI scaling and padding.
-	double x = 0.0, y = 0.0;
-	if (!ff_preview_widget_point(position.x(), position.y(), ftWidget->width(), ftWidget->height(),
-				     preview.output_width, preview.output_height, x, y))
-		return;
-
-	std::array<ff_preview_rect_d, 8> visible_rectangles{};
-	std::array<const QVariantMap *, 8> visible_candidates{};
-	std::size_t visible_count = 0;
-	for (const QVariantMap &candidate : preview.candidates) {
-		QRectF visible;
-		if (!candidate_output_rect(preview, candidate, visible))
-			continue;
-		if (visible_count == visible_rectangles.size()) {
+	std::size_t selected_index = 0;
+	const ff_preview_click_result click_result = ff_preview_select_candidate(
+		renderStamp, current_stamp, position.x(), position.y(), ftWidget->width(), ftWidget->height(),
+		source_rectangles.data(), static_cast<std::size_t>(preview.candidates.size()), selected_index);
+	if (click_result != ff_preview_click_result::selected) {
+		if (click_result == ff_preview_click_result::stale_preview)
+			showOperatorNotice("The preview changed. Wait for it to refresh, then click the face again.");
+		else if (click_result == ff_preview_click_result::too_many_candidates)
 			showOperatorNotice("Candidate list changed. Refresh the preview before selecting a speaker.");
-			return;
-		}
-		visible_rectangles[visible_count] =
-			ff_preview_rect_d{visible.x(), visible.y(), visible.width(), visible.height()};
-		visible_candidates[visible_count++] = &candidate;
-	}
-	std::size_t hit_index = 0;
-	const ff_preview_hit_result hit_result =
-		ff_preview_unique_hit(visible_rectangles.data(), visible_count, x, y, hit_index);
-	if (hit_result != ff_preview_hit_result::unique_hit) {
-		showOperatorNotice(hit_result == ff_preview_hit_result::ambiguous
-					   ? "Overlapping faces are ambiguous; choose one from the candidate list"
-					   : "Click inside one visible face to select its speaker");
+		else if (click_result == ff_preview_click_result::invalid_geometry)
+			showOperatorNotice("Candidate geometry is invalid. Wait for the preview to refresh.");
+		else if (click_result == ff_preview_click_result::ambiguous)
+			showOperatorNotice("Overlapping faces are ambiguous; choose one from the candidate list");
+		else if (click_result == ff_preview_click_result::no_hit)
+			showOperatorNotice("Click inside one visible face to select its speaker");
 		return;
 	}
-	const QVariantMap hit = *visible_candidates[hit_index];
+	const QVariantMap hit = preview.candidates.at(static_cast<qsizetype>(selected_index));
 	QString failure;
 	if (!enqueue_safe_command(target, preview, FF_COMMAND_SELECT_CANDIDATE, &hit, &failure))
 		showOperatorNotice(failure);
