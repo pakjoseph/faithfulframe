@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -37,6 +38,36 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
         self.assertEqual(len(pixels), 3840 * 2160 * 3)
         self.assertEqual(pixels[:3], bytes((32, 38, 42)))
         self.assertGreater(len(set(pixels)), 3)
+
+    def test_three_face_scene_spans_the_frame_and_is_deterministic(self):
+        portrait = (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "offline-synthetic-person-320x360.ppm"
+        )
+        positions = comparison._face_positions(portrait, "three_face_stage")
+        self.assertEqual(
+            positions,
+            ((0, 720), (1600, 720), (3200, 720)),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            first = Path(temporary) / "first.ppm"
+            second = Path(temporary) / "second.ppm"
+            comparison._write_4k_scene(portrait, first, positions)
+            comparison._write_4k_scene(portrait, second, positions)
+            first_bytes = first.read_bytes()
+            second_bytes = second.read_bytes()
+
+        self.assertEqual(first_bytes, second_bytes)
+        header, pixels = first_bytes.split(b"255\n", 1)
+        self.assertTrue(header.endswith(b"3840 2160\n"))
+        portrait_width, portrait_height, portrait_pixels = comparison._read_portrait(portrait)
+        center_source = ((portrait_height // 2) * portrait_width + portrait_width // 2) * 3
+        expected = portrait_pixels[center_source : center_source + 3]
+        for left, top in positions:
+            center_pixel = ((top + portrait_height) * comparison.SOURCE_WIDTH + left + portrait_width) * 3
+            self.assertEqual(pixels[center_pixel : center_pixel + 3], expected)
 
     def test_manifest_repeats_one_4k_frame_with_monotonic_timestamps(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -74,7 +105,9 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
             portrait.write_bytes(b"synthetic portrait")
             scene = directory / "scene.ppm"
             scene.write_bytes(b"generated scene")
-            artifacts = comparison._input_artifacts(portrait, scene)
+            artifacts = comparison._input_artifacts(
+                portrait, scene, "single_face_center", ((1600, 720),)
+            )
 
         self.assertEqual(
             artifacts["synthetic_portrait_fixture"]["sha256"],
@@ -85,6 +118,8 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
             hashlib.sha256(b"generated scene").hexdigest(),
         )
         self.assertEqual(artifacts["generated_source_frame"]["size_bytes"], len(b"generated scene"))
+        self.assertEqual(artifacts["generation"]["layout"], "single_face_center")
+        self.assertEqual(artifacts["generation"]["face_top_left_pixels"], [[1600, 720]])
 
     def test_replay_source_revision_is_forwarded_to_benchmark(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -108,9 +143,104 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                     1,
                     2.0,
                     "commit-123",
+                    "synthetic workload",
                 )
 
         self.assertEqual(report, {})
+
+    def test_main_indexes_both_synthetic_workloads(self):
+        portrait_fixture = Path(__file__).resolve().parent / "fixtures" / "offline-synthetic-person-320x360.ppm"
+
+        def fake_backend(
+            _benchmark,
+            _binary,
+            model,
+            engine,
+            manifest,
+            _output_dir,
+            _repeats,
+            _timeout,
+            revision,
+            workload_label,
+        ):
+            digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            return {
+                "host": {"cpu_architecture": "x86_64"},
+                "benchmark_tool_source_revision": {"commit": "abc123", "tracked_working_tree_dirty": False},
+                "replay_binary": {
+                    "filename": "replay",
+                    "sha256": "binary-sha",
+                    "build_source_revision": revision,
+                    "build_source_revision_status": "operator_supplied_unverified",
+                },
+                "manifest": {"sha256": digest},
+                "workload": {
+                    "source_resolution": [3840, 2160],
+                    "output_resolution": [1920, 1080],
+                    "fps": 25,
+                    "label": workload_label,
+                },
+                "detector_engine": engine,
+                "production_acceptance_eligible": False,
+                "model": {"filename": model.name, "sha256": engine},
+                "scales": [
+                    {
+                        "detection_scale": scale,
+                        "summary": {
+                            "detector_work_median_us": 100,
+                            "detector_work_p95_us": 120,
+                            "max_face_detections": 3,
+                            "max_tracking_candidates": 3,
+                            "process_cpu_percent_median": 50.0,
+                            "peak_resident_bytes_max": 1000000,
+                        },
+                    }
+                    for scale in comparison.DETECTION_SCALES
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            binary = directory / "replay"
+            hog_model = directory / "hog.dat"
+            cnn_model = directory / "cnn.dat"
+            for path in (binary, hog_model, cnn_model):
+                path.write_bytes(b"placeholder")
+            output = directory / "results"
+            with patch.object(comparison, "_run_backend", side_effect=fake_backend):
+                exit_code = comparison.main(
+                    [
+                        "--binary",
+                        str(binary),
+                        "--hog-model",
+                        str(hog_model),
+                        "--cnn-model",
+                        str(cnn_model),
+                        "--portrait",
+                        str(portrait_fixture),
+                        "--output-dir",
+                        str(output),
+                        "--repeats",
+                        "1",
+                        "--binary-source-revision",
+                        "abc123",
+                    ]
+                )
+            index = json.loads((output / "comparison.json").read_text(encoding="utf-8"))
+            reports_exist = [
+                (output / item["report"]).is_file() for item in index["workloads"]
+            ]
+
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(index["production_acceptance_eligible"])
+        self.assertEqual([item["layout"] for item in index["workloads"]], [
+            "single_face_center",
+            "three_face_stage",
+        ])
+        for item, report_exists in zip(index["workloads"], reports_exist):
+            self.assertTrue(report_exists)
+            self.assertEqual(item["input_artifacts"]["generation"]["layout"], item["layout"])
+            self.assertEqual(len(item["results"]["dlib_hog"]), 2)
 
     def test_paired_reports_require_identical_host_and_workload(self):
         shared = {
