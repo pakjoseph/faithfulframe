@@ -185,10 +185,11 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 manifest.write_text(
                     "monotonic_ms\tframe_path\n"
                     # Seed the detector scan quickly, then retain a 25 fps
-                    # update cadence so the correlation tracker can publish
-                    # fresh candidates before operator selection.
+                    # update cadence. Leave enough frames for the asynchronous
+                    # detector and correlation tracker to publish a selectable
+                    # candidate even on slower or heavily loaded CI runners.
                     + "".join(
-                        f"{100 + frame_index * 40}\t{frame.name}\n" for frame_index in range(8)
+                        f"{100 + frame_index * 40}\t{frame.name}\n" for frame_index in range(16)
                     ),
                     encoding="utf-8",
                 )
