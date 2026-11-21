@@ -34,17 +34,38 @@
 #include "faithfulframe-crop-selector.hpp"
 #include "faithfulframe-full-source-viewport.hpp"
 #include "faithfulframe-preview-geometry.hpp"
+#include "faithfulframe-staging-pair.hpp"
 #include "faithfulframe-source-identity.hpp"
 #endif
 
 static inline void scale_texture(struct face_tracker_filter *s, float scale);
-static inline int stage_to_surface(struct face_tracker_filter *s, float scale);
-static inline std::shared_ptr<texture_object> surface_to_cvtex(struct face_tracker_filter *s, float scale);
+static inline int stage_to_surface(struct face_tracker_filter *s, float scale, gs_stagesurf_t **surface);
+static inline std::shared_ptr<texture_object> surface_to_cvtex(struct face_tracker_filter *s, float scale,
+							       gs_stagesurf_t *surface, uint64_t captured_at_ms,
+							       uint64_t detection_epoch);
+#ifdef ENABLE_RUST_CORE_BRIDGE
+static bool safe_staging_capture_enabled(const face_tracker_filter *s);
+static std::shared_ptr<texture_object> capture_safe_staging_pair(face_tracker_filter *s, float scale,
+								 faithfulframe_staging_pair &pair);
+#endif
 
 class ft_manager_for_ftf : public face_tracker_manager {
 public:
 	struct face_tracker_filter *ctx;
 #ifdef ENABLE_RUST_CORE_BRIDGE
+	faithfulframe_staging_pair safe_staging{};
+	bool safe_staging_enabled = false;
+
+	void set_safe_staging_enabled(bool enabled) noexcept
+	{
+		if (safe_staging_enabled != enabled) {
+			safe_staging.reset();
+			safe_staging_enabled = enabled;
+		}
+	}
+
+	void reset_safe_staging() noexcept { safe_staging.reset(); }
+
 	// Safe-source adapters hand potentially blocking dlib worker joins to the
 	// module reaper after OBS callbacks have drained. This node is owned by this
 	// manager and remains alive until the reaper callback deletes the manager.
@@ -62,12 +83,27 @@ public:
 	{
 		if (!ctx)
 			return nullptr;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+		if (safe_staging_capture_enabled(ctx)) {
+			float image_scale = scale.load(std::memory_order_relaxed);
+			if (!std::isfinite(image_scale) || image_scale < 1.0f)
+				image_scale = 1.0f;
+			if (image_scale > 16.0f)
+				image_scale = 16.0f;
+			if (!ctx->known_width || !ctx->known_height)
+				return nullptr;
+			scale_texture(ctx, image_scale);
+			return capture_safe_staging_pair(ctx, image_scale, safe_staging);
+		}
+		safe_staging.reset();
+#endif
 		if (scale < 1.0f)
 			scale = 1.0f;
 		scale_texture(ctx, scale);
-		if (stage_to_surface(ctx, scale))
+		if (stage_to_surface(ctx, scale, &ctx->stagesurface))
 			return NULL;
-		return surface_to_cvtex(ctx, scale);
+		return surface_to_cvtex(ctx, scale, ctx->stagesurface, os_gettime_ns() / 1000000ULL,
+					detection_epoch.load(std::memory_order_acquire));
 	};
 
 #ifdef ENABLE_RUST_CORE_BRIDGE
@@ -1035,6 +1071,14 @@ static void ftf_destroy(void *data)
 	s->texrender_scaled = NULL;
 	gs_stagesurface_destroy(s->stagesurface);
 	s->stagesurface = NULL;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	for (auto &surface : s->safe_stagesurfaces) {
+		if (surface) {
+			gs_stagesurface_destroy(surface);
+			surface = nullptr;
+		}
+	}
+#endif
 	obs_leave_graphics();
 
 	face_tracker_manager *tracker_manager = s->ftm;
@@ -2703,8 +2747,10 @@ static inline void scale_texture(struct face_tracker_filter *s, float scale)
 	gs_blend_state_pop();
 }
 
-static inline int stage_to_surface(struct face_tracker_filter *s, float scale)
+static inline int stage_to_surface(struct face_tracker_filter *s, float scale, gs_stagesurf_t **surface)
 {
+	if (!surface)
+		return 1;
 	uint32_t width = s->known_width / scale;
 	uint32_t height = s->known_height / scale;
 	if (width <= 0 || height <= 0)
@@ -2714,23 +2760,30 @@ static inline int stage_to_surface(struct face_tracker_filter *s, float scale)
 	if (!tex)
 		return 2;
 
-	if (!s->stagesurface || width != gs_stagesurface_get_width(s->stagesurface) ||
-	    height != gs_stagesurface_get_height(s->stagesurface)) {
-		gs_stagesurface_destroy(s->stagesurface);
-		s->stagesurface = gs_stagesurface_create(width, height, GS_BGRA);
+	if (!*surface || width != gs_stagesurface_get_width(*surface) ||
+	    height != gs_stagesurface_get_height(*surface)) {
+		if (*surface)
+			gs_stagesurface_destroy(*surface);
+		*surface = gs_stagesurface_create(width, height, GS_BGRA);
 	}
+	if (!*surface)
+		return 3;
 
-	gs_stage_texture(s->stagesurface, tex);
+	gs_stage_texture(*surface, tex);
 
 	return 0;
 }
 
-static inline std::shared_ptr<texture_object> surface_to_cvtex(struct face_tracker_filter *s, float scale)
+static inline std::shared_ptr<texture_object> surface_to_cvtex(struct face_tracker_filter *s, float scale,
+							       gs_stagesurf_t *surface, uint64_t captured_at_ms,
+							       uint64_t detection_epoch)
 {
+	if (!surface)
+		return nullptr;
 	uint8_t *video_data = NULL;
 	uint32_t video_linesize;
 	const uint64_t map_started_at_ns = os_gettime_ns();
-	const bool map_succeeded = gs_stagesurface_map(s->stagesurface, &video_data, &video_linesize);
+	const bool map_succeeded = gs_stagesurface_map(surface, &video_data, &video_linesize);
 	const uint64_t map_finished_at_ns = os_gettime_ns();
 	const uint64_t map_duration_us =
 		map_finished_at_ns >= map_started_at_ns ? (map_finished_at_ns - map_started_at_ns) / 1000ULL : 0;
@@ -2739,14 +2792,14 @@ static inline std::shared_ptr<texture_object> surface_to_cvtex(struct face_track
 	if (!map_succeeded)
 		return NULL;
 
-	uint32_t width = gs_stagesurface_get_width(s->stagesurface);
-	uint32_t height = gs_stagesurface_get_height(s->stagesurface);
+	uint32_t width = gs_stagesurface_get_width(surface);
+	uint32_t height = gs_stagesurface_get_height(surface);
 
 	std::shared_ptr<texture_object> cvtex(new texture_object);
 	cvtex->scale = scale;
 	cvtex->tick = s->ftm->tick_cnt;
-	cvtex->captured_at_ms = os_gettime_ns() / 1000000ULL;
-	cvtex->detection_epoch = s->ftm->detector_input_epoch.load(std::memory_order_acquire);
+	cvtex->captured_at_ms = captured_at_ms;
+	cvtex->detection_epoch = detection_epoch;
 
 	struct obs_source_frame frame;
 	memset(&frame, 0, sizeof(frame));
@@ -2757,10 +2810,50 @@ static inline std::shared_ptr<texture_object> surface_to_cvtex(struct face_track
 	frame.format = VIDEO_FORMAT_BGRA;
 	cvtex->set_texture_obsframe(&frame, 1);
 
-	gs_stagesurface_unmap(s->stagesurface);
+	gs_stagesurface_unmap(surface);
 
 	return cvtex;
 }
+
+#ifdef ENABLE_RUST_CORE_BRIDGE
+static bool safe_staging_capture_enabled(const face_tracker_filter *s)
+{
+	return s && s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire);
+}
+
+static std::shared_ptr<texture_object> capture_safe_staging_pair(face_tracker_filter *s, float scale,
+								 faithfulframe_staging_pair &pair)
+{
+	if (!s || !s->ftm)
+		return nullptr;
+	const uint64_t now_ms = os_gettime_ns() / 1000000ULL;
+	const uint64_t detection_epoch = s->ftm->detector_input_epoch.load(std::memory_order_acquire);
+	faithfulframe_staging_pair_plan plan{};
+	if (!pair.prepare(s->known_width, s->known_height, scale, now_ms, detection_epoch, now_ms,
+			  safe_candidate_max_age_ms, plan))
+		return nullptr;
+
+	if (plan.reset_surfaces) {
+		for (auto &surface : s->safe_stagesurfaces) {
+			if (surface) {
+				gs_stagesurface_destroy(surface);
+				surface = nullptr;
+			}
+		}
+	}
+
+	std::shared_ptr<texture_object> frame;
+	if (plan.has_previous) {
+		frame = surface_to_cvtex(s, plan.previous.scale, s->safe_stagesurfaces[plan.previous_slot],
+					 plan.previous.captured_at_ms, plan.previous.detection_epoch);
+		pair.finish_mapping(plan.previous_slot);
+	}
+
+	if (stage_to_surface(s, scale, &s->safe_stagesurfaces[plan.stage_slot]))
+		pair.abandon_stage(plan.stage_slot);
+	return frame;
+}
+#endif
 
 static inline void draw_sprite_crop(float width, float height, float x0, float y0, float x1, float y1)
 {
@@ -3201,10 +3294,13 @@ static void fts_render(void *data, gs_effect_t *)
 	// that selects the crop input. Publish before post_render can advance a face
 	// tracker, including when safe tracking was just toggled on or off.
 	s->ftm->safety_policy_enabled.store(safety_policy_enabled, std::memory_order_release);
+	auto *safe_manager = static_cast<ft_manager_for_ftf *>(s->ftm);
+	safe_manager->set_safe_staging_enabled(safety_policy_enabled);
 	if (faithfulframe_select_crop_input(safety_policy_enabled) == faithfulframe_crop_input::safe_session) {
 		auto binding_lease = s->safe_runtime->active.read();
 		faithfulframe_source_binding *binding = binding_lease.get();
 		if (s->safe_runtime->reconfiguration_pending.load(std::memory_order_acquire)) {
+			safe_manager->reset_safe_staging();
 			draw_safe_source_frame(s, binding, s->safe_runtime, true);
 			return;
 		}

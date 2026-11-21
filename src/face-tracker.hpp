@@ -15,6 +15,9 @@ struct face_tracker_filter
 	gs_texrender_t *texrender;
 	gs_texrender_t *texrender_scaled;
 	gs_stagesurf_t *stagesurface;
+#ifdef ENABLE_RUST_CORE_BRIDGE
+	gs_stagesurf_t *safe_stagesurfaces[2];
+#endif
 	uint32_t known_width;
 	uint32_t known_height;
 	uint32_t width_with_aspect;
