@@ -3,11 +3,15 @@
 #include <QMouseEvent>
 #include <QPushButton>
 
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 
 #include "faithfulframe-no-wheel-combo-box.hpp"
 #include "face-tracker-dock-internal.hpp"
 #include "face-tracker-widget.hpp"
+#include "faithfulframe-preview-selection.hpp"
 
 const char *obs_module_text(const char *lookup_string)
 {
@@ -64,14 +68,30 @@ int main(int argc, char **argv)
 	const auto expected_stamp = make_stamp();
 	data->preview_render_stamp = expected_stamp;
 	FTWidget widget(data, nullptr);
+	widget.resize(640, 360);
 	int click_count = 0;
 	QPointF clicked_position;
 	faithfulframe_preview_render_stamp clicked_stamp{};
+	const std::array<ff_rect, 2> candidates = {
+		ff_rect{0.0f, 0.0f, 0.1f, 0.1f}, // Outside the source crop.
+		ff_rect{0.43f, 0.45f, 0.04f, 0.1f},
+	};
+	std::array<std::uint64_t, 2> candidate_handles{41, 42};
+	std::size_t selected_index = 73;
+	ff_preview_click_result selection_result = ff_preview_click_result::no_hit;
+	bool current_preview_is_stale = false;
 	QObject::connect(&widget, &FTWidget::previewClicked,
 			 [&](const QPointF &position, const faithfulframe_preview_render_stamp &stamp) {
 				 ++click_count;
 				 clicked_position = position;
 				 clicked_stamp = stamp;
+				 faithfulframe_preview_render_stamp current_stamp = expected_stamp;
+				 if (current_preview_is_stale)
+					 ++current_stamp.status_version;
+				 selection_result = ff_preview_select_candidate(stamp, current_stamp, position.x(),
+										position.y(), widget.width(),
+										widget.height(), candidates.data(),
+										candidates.size(), selected_index);
 			 });
 
 	QMouseEvent left_click(QEvent::MouseButtonPress, QPointF(17.25, 23.5), Qt::LeftButton, Qt::LeftButton,
@@ -99,6 +119,29 @@ int main(int argc, char **argv)
 	if (!contended_click.isAccepted() || click_count != 2 || clicked_stamp.valid) {
 		std::fprintf(stderr, "preview click blocked or reused a stamp while render data was contended\n");
 		return 4;
+	}
+	if (selection_result != ff_preview_click_result::stale_preview || selected_index != 73) {
+		std::fprintf(stderr, "a click without a rendered snapshot changed the selected candidate\n");
+		return 7;
+	}
+
+	QMouseEvent select_face(QEvent::MouseButtonPress, QPointF(320.0, 180.0), Qt::LeftButton, Qt::LeftButton,
+				Qt::NoModifier);
+	QApplication::sendEvent(&widget, &select_face);
+	if (selection_result != ff_preview_click_result::selected || selected_index != 1 ||
+	    candidate_handles[selected_index] != 42) {
+		std::fprintf(stderr, "a preview click did not resolve to the intended visible candidate handle\n");
+		return 8;
+	}
+
+	selected_index = 73;
+	current_preview_is_stale = true;
+	QMouseEvent stale_face_click(QEvent::MouseButtonPress, QPointF(320.0, 180.0), Qt::LeftButton, Qt::LeftButton,
+				     Qt::NoModifier);
+	QApplication::sendEvent(&widget, &stale_face_click);
+	if (selection_result != ff_preview_click_result::stale_preview || selected_index != 73) {
+		std::fprintf(stderr, "a stale preview click changed the selected candidate\n");
+		return 9;
 	}
 
 	QWidget keyboard_host;
