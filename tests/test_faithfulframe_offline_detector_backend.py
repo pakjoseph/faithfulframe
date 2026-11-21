@@ -9,6 +9,29 @@ import sys
 import tempfile
 
 
+def write_detector_cadence_manifest(source: Path, destination: Path) -> None:
+    """Repeat the first fixture frame long enough to reach production scan cadence."""
+    rows = [line for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if rows and rows[0].split("\t") == ["monotonic_ms", "frame_path"]:
+        rows = rows[1:]
+    if not rows:
+        raise ValueError(f"manifest contains no frames: {source}")
+    fields = rows[0].split("\t", 1)
+    if len(fields) != 2:
+        raise ValueError(f"manifest row must contain timestamp and frame path: {rows[0]!r}")
+    frame_path = Path(fields[1])
+    if not frame_path.is_absolute():
+        frame_path = (source.parent / frame_path).resolve()
+
+    # The production face_tracker_manager scans every two seconds. Three seconds
+    # at 25 fps gives deterministic room for its first scheduled detector pass.
+    destination.write_text(
+        "monotonic_ms\tframe_path\n"
+        + "".join(f"{frame_index * 40}\t{frame_path}\n" for frame_index in range(75)),
+        encoding="utf-8",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True, type=Path)
@@ -18,13 +41,22 @@ def main() -> int:
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory(prefix="faithfulframe-detector-backend-") as temporary:
-        trace = Path(temporary) / "trace.jsonl"
+        temporary_path = Path(temporary)
+        trace = temporary_path / "trace.jsonl"
+        manifest = temporary_path / "cadence.tsv"
+        try:
+            write_detector_cadence_manifest(args.manifest, manifest)
+        except (OSError, ValueError) as error:
+            print(f"could not prepare detector cadence manifest: {error}", file=sys.stderr)
+            return 1
         command = [
             str(args.binary.resolve()),
             "--model",
             str(args.model.resolve()),
             "--manifest",
-            str(args.manifest.resolve()),
+            str(manifest),
+            "--fps",
+            "25",
             "--trace",
             str(trace),
             "--detector-engine",
