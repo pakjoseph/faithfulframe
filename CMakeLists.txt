@@ -583,7 +583,8 @@ if (WITH_DOCK)
 		tests/faithfulframe-preview-widget-smoke.cpp ui/face-tracker-widget.cpp)
 	target_include_directories(faithfulframe-preview-widget-smoke PRIVATE
 		${CMAKE_CURRENT_BINARY_DIR} src ui "$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
-	target_link_libraries(faithfulframe-preview-widget-smoke PRIVATE Qt::Widgets OBS::libobs)
+	target_link_libraries(faithfulframe-preview-widget-smoke PRIVATE
+		Qt::Widgets OBS::libobs OBS::obs-frontend-api)
 	set(_preview_widget_smoke_env "QT_QPA_PLATFORM=offscreen")
 	set(_qt_core_dir_variable "Qt${QT_VERSION}Core_DIR")
 	get_filename_component(_qt_core_config_dir "${${_qt_core_dir_variable}}" ABSOLUTE)
