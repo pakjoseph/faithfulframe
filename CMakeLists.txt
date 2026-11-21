@@ -586,7 +586,7 @@ if (WITH_DOCK)
 	target_link_libraries(faithfulframe-preview-widget-smoke PRIVATE
 		Qt::Widgets OBS::libobs OBS::obs-frontend-api)
 	if (WIN32)
-		set(_preview_widget_smoke_env)
+		set(_preview_widget_smoke_env "QT_DEBUG_PLUGINS=1")
 	else()
 		set(_preview_widget_smoke_env "QT_QPA_PLATFORM=offscreen")
 	endif()
