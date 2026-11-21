@@ -2094,7 +2094,12 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 	if (!source_width || !source_height)
 		return;
 	ff_generations generations{};
-	std::lock_guard<std::mutex> lifecycle_lock(binding->lifecycle_mutex);
+	// This runs from the OBS video tick. Lifecycle producers can briefly own
+	// this mutex while publishing a transition; defer this frame rather than
+	// making OBS's graphics callback wait for them.
+	std::unique_lock<std::mutex> lifecycle_lock(binding->lifecycle_mutex, std::try_to_lock);
+	if (!lifecycle_lock.owns_lock())
+		return;
 	if (binding->closed.load(std::memory_order_acquire) ||
 	    binding->transition_pending.load(std::memory_order_acquire) ||
 	    binding->source_settings_updated.load(std::memory_order_acquire) ||
@@ -2253,7 +2258,12 @@ static void settle_source_transition(faithfulframe_source_binding *binding)
 	auto executor = faithfulframe::atomic_shared_ptr_load(&binding->executor, std::memory_order_acquire);
 	if (!executor)
 		return;
-	std::lock_guard<std::mutex> lock(binding->lifecycle_mutex);
+	// A transition is only cleared after its matching snapshot is published.
+	// If an OBS lifecycle callback is currently advancing the generation, leave
+	// the transition pending and retry on the next video tick.
+	std::unique_lock<std::mutex> lock(binding->lifecycle_mutex, std::try_to_lock);
+	if (!lock.owns_lock())
+		return;
 	const ff_generations generations = binding->generations;
 	ff_snapshot snapshot{};
 	if (!executor->try_snapshot(snapshot) || snapshot.identity.source != binding->identity.source ||
