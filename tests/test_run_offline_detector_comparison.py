@@ -21,6 +21,25 @@ SPEC.loader.exec_module(comparison)
 
 
 class OfflineDetectorComparisonTests(unittest.TestCase):
+    def test_plugin_detector_default_is_explicitly_hog(self):
+        manager_source_path = (
+            Path(__file__).resolve().parents[1] / "src" / "face-tracker-manager.cpp"
+        )
+        manager_source = manager_source_path.read_text(encoding="utf-8")
+        defaults_start = manager_source.index("void face_tracker_manager::get_defaults(obs_data_t *settings)")
+        defaults = manager_source[defaults_start:]
+        self.assertRegex(
+            defaults,
+            r'obs_data_set_default_int\(settings,\s*"detector_engine",\s*engine_dlib_hog\)',
+        )
+
+        manager_header_path = (
+            Path(__file__).resolve().parents[1] / "src" / "face-tracker-manager.hpp"
+        )
+        manager_header = manager_header_path.read_text(encoding="utf-8")
+        self.assertRegex(manager_header, r"engine_dlib_hog\s*=\s*0")
+        self.assertRegex(manager_header, r"engine_dlib_cnn\s*=\s*1")
+
     def test_4k_scene_is_derived_from_the_non_identifiable_fixture(self):
         portrait = (
             Path(__file__).resolve().parent

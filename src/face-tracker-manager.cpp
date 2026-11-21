@@ -707,6 +707,8 @@ void face_tracker_manager::get_properties(obs_properties_t *pp)
 
 void face_tracker_manager::get_defaults(obs_data_t *settings)
 {
+	// Keep the existing HOG default explicit; CNN remains operator-selected.
+	obs_data_set_default_int(settings, "detector_engine", engine_dlib_hog);
 	obs_data_set_default_double(settings, "upsize_l", 0.2);
 	obs_data_set_default_double(settings, "upsize_r", 0.2);
 	obs_data_set_default_double(settings, "upsize_t", 0.3);
