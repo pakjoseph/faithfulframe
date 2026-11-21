@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 import unittest
 
 
@@ -50,13 +53,75 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
         self.assertEqual(timestamps[0], 0)
         self.assertEqual(timestamps[-1], (comparison.FRAME_COUNT - 1) * comparison.FRAME_STEP_MS)
         self.assertTrue(all(right > left for left, right in zip(timestamps, timestamps[1:])))
-        self.assertTrue(all(row.endswith(str(scene.resolve())) for row in rows[1:]))
+        self.assertTrue(all(row.split("\t", 1)[1] == scene.name for row in rows[1:]))
+
+    def test_manifest_hash_is_stable_across_temporary_directories(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            manifests = []
+            for directory in (Path(first), Path(second)):
+                scene = directory / "synthetic-4k-scene.ppm"
+                scene.write_bytes(b"same deterministic frame")
+                manifest = directory / "manifest.tsv"
+                comparison._write_manifest(scene, manifest)
+                manifests.append(manifest.read_bytes())
+
+        self.assertEqual(manifests[0], manifests[1])
+
+    def test_input_artifacts_capture_exact_content_digests(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            portrait = directory / "portrait.ppm"
+            portrait.write_bytes(b"synthetic portrait")
+            scene = directory / "scene.ppm"
+            scene.write_bytes(b"generated scene")
+            artifacts = comparison._input_artifacts(portrait, scene)
+
+        self.assertEqual(
+            artifacts["synthetic_portrait_fixture"]["sha256"],
+            hashlib.sha256(b"synthetic portrait").hexdigest(),
+        )
+        self.assertEqual(
+            artifacts["generated_source_frame"]["sha256"],
+            hashlib.sha256(b"generated scene").hexdigest(),
+        )
+        self.assertEqual(artifacts["generated_source_frame"]["size_bytes"], len(b"generated scene"))
+
+    def test_replay_source_revision_is_forwarded_to_benchmark(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+            report_path = output_dir / "dlib_hog.json"
+
+            def run(command, **_kwargs):
+                revision_index = command.index("--binary-source-revision")
+                self.assertEqual(command[revision_index + 1], "commit-123")
+                report_path.write_text("{}", encoding="utf-8")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with patch.object(comparison.subprocess, "run", side_effect=run):
+                report = comparison._run_backend(
+                    Path("benchmark.py"),
+                    Path("replay"),
+                    Path("model.dat"),
+                    "dlib_hog",
+                    Path("manifest.tsv"),
+                    output_dir,
+                    1,
+                    2.0,
+                    "commit-123",
+                )
+
+        self.assertEqual(report, {})
 
     def test_paired_reports_require_identical_host_and_workload(self):
         shared = {
             "host": {"cpu_architecture": "x86_64"},
             "benchmark_tool_source_revision": {"commit": "abc123", "working_tree_dirty": False},
-            "replay_binary": {"filename": "replay", "sha256": "same"},
+            "replay_binary": {
+                "filename": "replay",
+                "sha256": "same",
+                "build_source_revision": "abc123",
+                "build_source_revision_status": "operator_supplied_unverified",
+            },
             "manifest": {"sha256": "same"},
             "workload": {
                 "source_resolution": [3840, 2160],
@@ -77,8 +142,11 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                 ],
             }
 
-        paired = comparison._paired_summary(report("dlib_hog"), report("dlib_cnn"))
+        inputs = {"generated_source_frame": {"sha256": "scene-hash"}}
+        paired = comparison._paired_summary(report("dlib_hog"), report("dlib_cnn"), inputs)
+        self.assertEqual(paired["schema_version"], comparison.SCHEMA_VERSION)
         self.assertFalse(paired["production_acceptance_eligible"])
+        self.assertEqual(paired["input_artifacts"], inputs)
         self.assertEqual(
             [scale["detection_scale"] for scale in paired["results"]["dlib_hog"]], [2, 4]
         )
@@ -87,17 +155,17 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
         mismatched = report("dlib_cnn")
         mismatched["host"] = {"cpu_architecture": "arm64"}
         with self.assertRaisesRegex(comparison.ComparisonError, "shared host"):
-            comparison._paired_summary(report("dlib_hog"), mismatched)
+            comparison._paired_summary(report("dlib_hog"), mismatched, {})
 
         mismatched = report("dlib_cnn")
         mismatched["manifest"] = {"sha256": "different"}
         with self.assertRaisesRegex(comparison.ComparisonError, "shared manifest"):
-            comparison._paired_summary(report("dlib_hog"), mismatched)
+            comparison._paired_summary(report("dlib_hog"), mismatched, {})
 
         mismatched = report("dlib_cnn")
         mismatched["scales"].reverse()
         with self.assertRaisesRegex(comparison.ComparisonError, "same detector scale"):
-            comparison._paired_summary(report("dlib_hog"), mismatched)
+            comparison._paired_summary(report("dlib_hog"), mismatched, {})
 
 
 if __name__ == "__main__":

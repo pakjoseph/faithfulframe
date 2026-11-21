@@ -162,6 +162,7 @@ jobs:
         run: |
           python3 ci/run_offline_detector_comparison.py \
             --binary build/faithfulframe-offline-session-replay \
+            --binary-source-revision "$GITHUB_SHA" \
             --hog-model data/dlib_hog_model/frontal_face_detector.dat \
             --cnn-model data/dlib_cnn_model/mmod_human_face_detector.dat \
             --portrait tests/fixtures/offline-synthetic-person-320x360.ppm \

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -18,7 +19,7 @@ import tempfile
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 FRAME_COUNT = 75
 FRAME_STEP_MS = 40
 SOURCE_WIDTH = 3840
@@ -77,15 +78,41 @@ def _write_4k_scene(portrait_path: Path, destination: Path) -> None:
 
 
 def _write_manifest(scene: Path, destination: Path) -> None:
-    scene_path = scene.resolve()
     destination.write_text(
         "monotonic_ms\tframe_path\n"
         + "".join(
-            f"{frame_index * FRAME_STEP_MS}\t{scene_path}\n"
+            f"{frame_index * FRAME_STEP_MS}\t{scene.name}\n"
             for frame_index in range(FRAME_COUNT)
         ),
         encoding="utf-8",
     )
+
+
+def _artifact_metadata(path: Path) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+        size_bytes = path.stat().st_size
+    except OSError as error:
+        raise ComparisonError(f"could not fingerprint benchmark input {path.name}: {error}") from error
+    return {"filename": path.name, "size_bytes": size_bytes, "sha256": digest.hexdigest()}
+
+
+def _input_artifacts(portrait: Path, scene: Path) -> dict[str, Any]:
+    return {
+        "synthetic_portrait_fixture": _artifact_metadata(portrait),
+        "generated_source_frame": _artifact_metadata(scene),
+        "generation": {
+            "source_resolution": [SOURCE_WIDTH, SOURCE_HEIGHT],
+            "background_rgb": [32, 38, 42],
+            "portrait_scale": DETECTION_SCALE,
+            "portrait_position": "centered",
+            "frames": FRAME_COUNT,
+            "frame_interval_ms": FRAME_STEP_MS,
+        },
+    }
 
 
 def _run_backend(
@@ -97,6 +124,7 @@ def _run_backend(
     output_dir: Path,
     repeats: int,
     timeout_seconds: float,
+    binary_source_revision: str | None,
 ) -> dict[str, Any]:
     report_path = output_dir / f"{engine}.json"
     trace_dir = output_dir / "traces" / engine
@@ -128,6 +156,8 @@ def _run_backend(
         "--trace-directory",
         str(trace_dir),
     ]
+    if binary_source_revision:
+        command.extend(("--binary-source-revision", binary_source_revision))
     try:
         completed = subprocess.run(
             command,
@@ -153,7 +183,9 @@ def _run_backend(
     return report
 
 
-def _paired_summary(hog: dict[str, Any], cnn: dict[str, Any]) -> dict[str, Any]:
+def _paired_summary(
+    hog: dict[str, Any], cnn: dict[str, Any], input_artifacts: dict[str, Any]
+) -> dict[str, Any]:
     if hog.get("detector_engine") != "dlib_hog" or cnn.get("detector_engine") != "dlib_cnn":
         raise ComparisonError("benchmark reports do not identify the requested detector engines")
     if hog.get("production_acceptance_eligible") is not False or cnn.get("production_acceptance_eligible") is not False:
@@ -186,6 +218,7 @@ def _paired_summary(hog: dict[str, Any], cnn: dict[str, Any]) -> dict[str, Any]:
         "host": hog["host"],
         "benchmark_tool_source_revision": hog["benchmark_tool_source_revision"],
         "replay_binary": hog["replay_binary"],
+        "input_artifacts": input_artifacts,
         "manifest": hog["manifest"],
         "workload": hog["workload"],
         "models": {"dlib_hog": hog["model"], "dlib_cnn": cnn["model"]},
@@ -220,6 +253,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--timeout-seconds", type=float, default=300.0)
+    parser.add_argument(
+        "--binary-source-revision",
+        help="CI checkout revision used to build the replay binary; recorded as operator-supplied",
+    )
     return parser
 
 
@@ -261,6 +298,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest = temporary_dir / "synthetic-4k-manifest.tsv"
             _write_4k_scene(portrait, scene)
             _write_manifest(scene, manifest)
+            input_artifacts = _input_artifacts(portrait, scene)
             hog = _run_backend(
                 benchmark,
                 binary,
@@ -270,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir,
                 args.repeats,
                 args.timeout_seconds,
+                args.binary_source_revision,
             )
             cnn = _run_backend(
                 benchmark,
@@ -280,8 +319,11 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir,
                 args.repeats,
                 args.timeout_seconds,
+                args.binary_source_revision,
             )
-            paired = _paired_summary(hog, cnn)
+            if _input_artifacts(portrait, scene) != input_artifacts:
+                raise ComparisonError("synthetic benchmark inputs changed during the paired runs")
+            paired = _paired_summary(hog, cnn, input_artifacts)
         (output_dir / "comparison.json").write_text(
             json.dumps(paired, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
