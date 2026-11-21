@@ -585,7 +585,8 @@ if (WITH_DOCK)
 	add_executable(faithfulframe-preview-widget-smoke
 		tests/faithfulframe-preview-widget-smoke.cpp ui/face-tracker-widget.cpp)
 	target_include_directories(faithfulframe-preview-widget-smoke PRIVATE
-		${CMAKE_CURRENT_BINARY_DIR} src ui "$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
+		${CMAKE_CURRENT_BINARY_DIR} src ui rust/faithfulframe-ffi/include
+		"$<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>")
 	target_link_libraries(faithfulframe-preview-widget-smoke PRIVATE
 		Qt::Widgets OBS::libobs OBS::obs-frontend-api)
 	if (WIN32)
