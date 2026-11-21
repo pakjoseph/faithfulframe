@@ -743,6 +743,7 @@ class PluginLoadTest(obstest.OBSTest):
             )
             self.assertIn('press space', select_control.get('accessibleDescription', '').lower())
 
+            self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
             self._invoke_ui_widget(ui, 'accessibleName', 'Enable automatic speaker following', 'click')
             status = self._wait_for_ui_status_any(
                 ui,
