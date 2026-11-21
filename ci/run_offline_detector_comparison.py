@@ -19,10 +19,11 @@ import tempfile
 from typing import Any
 
 
-SCHEMA_VERSION = 4
-FRAME_COUNT = 250
+SCHEMA_VERSION = 5
+FRAME_COUNT = 550
 FRAME_STEP_MS = 40
-MIN_DETECTOR_WORK_SAMPLES_PER_RUN = 3
+MIN_DETECTOR_WORK_SAMPLES_PER_RUN = 10
+MIN_COMPARISON_REPEATS = 5
 SOURCE_WIDTH = 3840
 SOURCE_HEIGHT = 2160
 OUTPUT_WIDTH = 1920
@@ -33,17 +34,29 @@ FPS = 25
 WORKLOADS = (
     (
         "single_face_center",
-        "10-second synthetic 4K centered cartoon face; stride-2 and stride-4 detector inputs",
+        "22-second synthetic 4K centered cartoon face; stride-2 and stride-4 detector inputs",
     ),
     (
         "three_face_stage",
-        "10-second synthetic 4K three cartoon faces spread across stage width; stride-2 and stride-4 detector inputs",
+        "22-second synthetic 4K three cartoon faces spread across stage width; stride-2 and stride-4 detector inputs",
     ),
 )
 
 
 class ComparisonError(ValueError):
     """Raised when the paired backend runs are not comparable."""
+
+
+def _latency_sample_contract() -> dict[str, Any]:
+    return {
+        "minimum_detector_work_samples_per_run": MIN_DETECTOR_WORK_SAMPLES_PER_RUN,
+        "minimum_comparison_repeats": MIN_COMPARISON_REPEATS,
+        "minimum_total_detector_work_samples": (
+            MIN_DETECTOR_WORK_SAMPLES_PER_RUN * MIN_COMPARISON_REPEATS
+        ),
+        "percentile_method": "nearest-rank",
+        "note": "Latency tails are exploratory; the sample floor does not establish production performance thresholds.",
+    }
 
 
 def _read_portrait(path: Path) -> tuple[int, int, bytes]:
@@ -157,6 +170,7 @@ def _input_artifacts(
             "frames": FRAME_COUNT,
             "frame_interval_ms": FRAME_STEP_MS,
             "minimum_detector_work_samples_per_run": MIN_DETECTOR_WORK_SAMPLES_PER_RUN,
+            "minimum_comparison_repeats": MIN_COMPARISON_REPEATS,
         },
     }
 
@@ -268,6 +282,7 @@ def _paired_summary(
                 or isinstance(repeats, bool)
                 or not isinstance(repeats, int)
                 or repeats != len(runs)
+                or repeats < MIN_COMPARISON_REPEATS
             ):
                 raise ComparisonError(f"{scale_label} report has inconsistent run samples")
             sample_counts: list[int] = []
@@ -296,11 +311,7 @@ def _paired_summary(
         "evidence_scope": "offline_development_measurement",
         "production_acceptance_eligible": False,
         "comparison": "existing dlib HOG and CNN backends on the same synthetic workload and host",
-        "latency_sample_contract": {
-            "minimum_detector_work_samples_per_run": MIN_DETECTOR_WORK_SAMPLES_PER_RUN,
-            "percentile_method": "nearest-rank",
-            "note": "A sample-count gate improves trace coverage; it does not establish production performance thresholds.",
-        },
+        "latency_sample_contract": _latency_sample_contract(),
         "host": hog["host"],
         "benchmark_tool_source_revision": hog["benchmark_tool_source_revision"],
         "replay_binary": hog["replay_binary"],
@@ -417,11 +428,7 @@ def _comparison_index(workloads: list[dict[str, Any]]) -> dict[str, Any]:
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "evidence_scope": "offline_development_measurement",
         "production_acceptance_eligible": False,
-        "latency_sample_contract": {
-            "minimum_detector_work_samples_per_run": MIN_DETECTOR_WORK_SAMPLES_PER_RUN,
-            "percentile_method": "nearest-rank",
-            "note": "A sample-count gate improves trace coverage; it does not establish production performance thresholds.",
-        },
+        "latency_sample_contract": _latency_sample_contract(),
         "comparison": "existing dlib HOG and CNN backends on paired synthetic workloads and the same host",
         "workloads": workloads,
         "not_measured": [
@@ -452,7 +459,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Path("tests/fixtures/offline-synthetic-person-320x360.ppm"),
     )
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--repeats", type=int, default=MIN_COMPARISON_REPEATS)
     parser.add_argument("--timeout-seconds", type=float, default=300.0)
     parser.add_argument(
         "--binary-source-revision",
@@ -463,8 +470,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    if not 1 <= args.repeats <= 10:
-        print("--repeats must be from 1 through 10", file=sys.stderr)
+    if not MIN_COMPARISON_REPEATS <= args.repeats <= 10:
+        print(
+            f"--repeats must be from {MIN_COMPARISON_REPEATS} through 10",
+            file=sys.stderr,
+        )
         return 2
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
         print("--timeout-seconds must be finite and greater than zero", file=sys.stderr)

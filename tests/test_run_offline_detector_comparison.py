@@ -21,6 +21,12 @@ SPEC.loader.exec_module(comparison)
 
 
 class OfflineDetectorComparisonTests(unittest.TestCase):
+    def test_comparison_defaults_to_five_independent_repeats(self):
+        args = comparison._build_parser().parse_args(
+            ["--binary", "replay", "--output-dir", "reports"]
+        )
+        self.assertEqual(args.repeats, comparison.MIN_COMPARISON_REPEATS)
+
     def test_plugin_detector_default_is_explicitly_hog(self):
         manager_source_path = (
             Path(__file__).resolve().parents[1] / "src" / "face-tracker-manager.cpp"
@@ -104,8 +110,9 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
         self.assertEqual(timestamps[-1], (comparison.FRAME_COUNT - 1) * comparison.FRAME_STEP_MS)
         self.assertTrue(all(right > left for left, right in zip(timestamps, timestamps[1:])))
         self.assertTrue(all(row.split("\t", 1)[1] == scene.name for row in rows[1:]))
-        self.assertEqual(timestamps[-1], 9960)
-        self.assertEqual(comparison.MIN_DETECTOR_WORK_SAMPLES_PER_RUN, 3)
+        self.assertEqual(timestamps[-1], 21960)
+        self.assertEqual(comparison.MIN_DETECTOR_WORK_SAMPLES_PER_RUN, 10)
+        self.assertEqual(comparison.MIN_COMPARISON_REPEATS, 5)
 
     def test_manifest_hash_is_stable_across_temporary_directories(self):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
@@ -142,6 +149,10 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
         self.assertEqual(artifacts["generation"]["layout"], "single_face_center")
         self.assertEqual(artifacts["generation"]["face_top_left_pixels"], [[1600, 720]])
         self.assertEqual(artifacts["generation"]["frames"], comparison.FRAME_COUNT)
+        self.assertEqual(
+            artifacts["generation"]["minimum_comparison_repeats"],
+            comparison.MIN_COMPARISON_REPEATS,
+        )
         self.assertEqual(
             artifacts["generation"]["minimum_detector_work_samples_per_run"],
             comparison.MIN_DETECTOR_WORK_SAMPLES_PER_RUN,
@@ -184,7 +195,7 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
             engine,
             manifest,
             _output_dir,
-            _repeats,
+            repeats,
             _timeout,
             revision,
             workload_label,
@@ -213,9 +224,9 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                     {
                         "detection_scale": scale,
                         "summary": {
-                            "repeats": 3,
-                            "detector_work_samples_count": 9,
-                            "simulated_duration_ms_per_run": 9960,
+                            "repeats": repeats,
+                            "detector_work_samples_count": 10 * repeats,
+                            "simulated_duration_ms_per_run": 21960,
                             "detector_work_median_us": 100,
                             "detector_work_p95_us": 120,
                             "max_face_detections": 3,
@@ -223,8 +234,8 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                             "process_cpu_percent_median": 50.0,
                             "peak_resident_bytes_max": 1000000,
                             "runs": [
-                                {"detector_work_samples_us": [100, 110, 120]}
-                                for _ in range(3)
+                                {"detector_work_samples_us": [100 + index for index in range(10)]}
+                                for _ in range(repeats)
                             ],
                         },
                     }
@@ -254,7 +265,7 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                         "--output-dir",
                         str(output),
                         "--repeats",
-                        "1",
+                        str(comparison.MIN_COMPARISON_REPEATS),
                         "--binary-source-revision",
                         "abc123",
                     ]
@@ -267,7 +278,7 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertFalse(index["production_acceptance_eligible"])
         self.assertEqual(
-            index["latency_sample_contract"]["minimum_detector_work_samples_per_run"], 3
+            index["latency_sample_contract"]["minimum_detector_work_samples_per_run"], 10
         )
         self.assertEqual([item["layout"] for item in index["workloads"]], [
             "single_face_center",
@@ -279,9 +290,9 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
             self.assertEqual(len(item["results"]["dlib_hog"]), 2)
             for engine_results in item["results"].values():
                 for scale_result in engine_results:
-                    self.assertEqual(scale_result["detector_work_samples_count"], 9)
-                    self.assertEqual(scale_result["detector_work_samples_per_run"], [3, 3, 3])
-                    self.assertEqual(scale_result["simulated_duration_ms_per_run"], 9960)
+                    self.assertEqual(scale_result["detector_work_samples_count"], 50)
+                    self.assertEqual(scale_result["detector_work_samples_per_run"], [10] * 5)
+                    self.assertEqual(scale_result["simulated_duration_ms_per_run"], 21960)
 
     def test_paired_reports_require_identical_host_and_workload(self):
         shared = {
@@ -314,12 +325,12 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                     {
                         "detection_scale": scale,
                         "summary": {
-                            "repeats": 3,
-                            "detector_work_samples_count": 9,
+                            "repeats": 5,
+                            "detector_work_samples_count": 50,
                             "detector_work_median_us": 1,
                             "runs": [
-                                {"detector_work_samples_us": [1, 2, 3]}
-                                for _ in range(3)
+                                {"detector_work_samples_us": list(range(10))}
+                                for _ in range(5)
                             ],
                         },
                     }
@@ -338,17 +349,28 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
         )
         self.assertIn("unmodified upstream", paired["not_measured"][-1])
         self.assertEqual(
-            paired["latency_sample_contract"]["minimum_detector_work_samples_per_run"], 3
+            paired["latency_sample_contract"]["minimum_detector_work_samples_per_run"], 10
         )
+        self.assertEqual(
+            paired["latency_sample_contract"]["minimum_total_detector_work_samples"], 50
+        )
+
+        insufficient_repeats = report("dlib_hog")
+        for scale in insufficient_repeats["scales"]:
+            scale["summary"]["repeats"] = 4
+            scale["summary"]["detector_work_samples_count"] = 40
+            scale["summary"]["runs"].pop()
+        with self.assertRaisesRegex(comparison.ComparisonError, "inconsistent run samples"):
+            comparison._paired_summary(insufficient_repeats, report("dlib_cnn"), {})
 
         insufficient = report("dlib_hog")
         insufficient["scales"][0]["summary"]["runs"][1]["detector_work_samples_us"] = [1]
-        insufficient["scales"][0]["summary"]["detector_work_samples_count"] = 7
-        with self.assertRaisesRegex(comparison.ComparisonError, "fewer than 3 detector work samples"):
+        insufficient["scales"][0]["summary"]["detector_work_samples_count"] = 41
+        with self.assertRaisesRegex(comparison.ComparisonError, "fewer than 10 detector work samples"):
             comparison._paired_summary(insufficient, report("dlib_cnn"), {})
 
         inconsistent = report("dlib_hog")
-        inconsistent["scales"][0]["summary"]["detector_work_samples_count"] = 8
+        inconsistent["scales"][0]["summary"]["detector_work_samples_count"] = 49
         with self.assertRaisesRegex(comparison.ComparisonError, "aggregate sample count is inconsistent"):
             comparison._paired_summary(inconsistent, report("dlib_cnn"), {})
 
