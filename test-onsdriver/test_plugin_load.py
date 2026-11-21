@@ -1676,8 +1676,8 @@ class PluginLoadTest(obstest.OBSTest):
             if scene_created:
                 client.send('RemoveScene', {'sceneName': scene_name})
 
-    def test_safe_adapter_resolution_change_requires_new_target_selection(self):
-        'Invalidate camera geometry and return the safe adapter to wide framing'
+    def test_safe_adapter_source_settings_and_resolution_changes_require_new_target_selection(self):
+        'Invalidate camera geometry after same-size settings changes and resolution changes'
         client = self.obs.get_obsws()
         ui = obsui.OBSUI(client)
         suffix = uuid.uuid4().hex
@@ -1762,6 +1762,44 @@ class PluginLoadTest(obstest.OBSTest):
                 'click',
             )
             self._wait_for_ui_status(ui, 'Wide framing; select a face to follow again')
+
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Enable automatic speaker following',
+                'click',
+            )
+            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
+
+            # A source update can change orientation or transforms without
+            # changing its dimensions. Change only the synthetic color source's
+            # color so this exercises that signal path independently of width
+            # and height changes.
+            client.send('SetInputSettings', {
+                'inputName': camera_name,
+                'inputSettings': {'color': 0xFFB2531C},
+                'overlay': True,
+            })
+            same_size_settings = client.send('GetInputSettings', {'inputName': camera_name})
+            self.assertEqual(same_size_settings.input_settings.get('width'), 320)
+            self.assertEqual(same_size_settings.input_settings.get('height'), 180)
+            self._wait_for_ui_status(
+                ui,
+                'Camera or tracking settings changed; select the speaker again before following',
+            )
+            self._wait_for_ui_widget(ui, 'Tracking state: Manual')
+            camera_after_settings = self._wait_for_screenshot(
+                client, camera_name, lambda image: image != camera_before
+            )
+            adapter_after_settings = self._wait_for_screenshot(
+                client, adapter_name, lambda image: image == camera_after_settings
+            )
+            self.assertEqual(
+                adapter_after_settings,
+                camera_after_settings,
+                'A same-size source update must return only the protected adapter to wide framing',
+            )
 
             self._invoke_ui_widget(
                 ui,
