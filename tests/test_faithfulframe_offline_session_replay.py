@@ -255,6 +255,10 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     "initial_tick": next(event for event in events if event["kind"] == "tick"),
                 }
 
+            for resolution, run in runs.items():
+                x, y, width, height = run["selected_rect"]
+                self.assertAlmostEqual(x + width / 2, 0.5, delta=0.08, msg=resolution)
+                self.assertAlmostEqual(y + height / 2, 0.5, delta=0.08, msg=resolution)
             for actual, expected in zip(runs["4k"]["selected_rect"], runs["1080p"]["selected_rect"]):
                 self.assertAlmostEqual(actual, expected, delta=0.005)
             for actual, expected in zip(runs["4k"]["crop"], runs["1080p"]["crop"]):
