@@ -57,6 +57,8 @@ public:
 	std::unique_ptr<faithfulframe::performance::csv_spool> performanceSpool;
 	uint64_t performanceSampleCount = 0;
 	QString operatorNotice;
+	QString lastAnnouncedSafeStatusKey;
+	QString lastAnnouncedOperatorNotice;
 	QString performanceHardwareAndWorkloadNotes;
 	QElapsedTimer operatorNoticeTimer;
 
