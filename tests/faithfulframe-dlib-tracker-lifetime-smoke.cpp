@@ -66,6 +66,7 @@ void delete_tracker_on_reaper(void *context)
 							std::memory_order_release);
 	delete teardown->tracker;
 	teardown->tracker = nullptr;
+	faithfulframe_teardown_instance_destroyed();
 	teardown->cleanup_complete.store(true, std::memory_order_release);
 }
 
@@ -114,28 +115,37 @@ int main()
 	teardown.tracker = tracker;
 	std::atomic<bool> destroy_callback_returned{false};
 	std::atomic<bool> handoff_succeeded{false};
-	// Exercise the real last-source path: module unload has begun, the dlib
-	// worker is blocked, and this destroy callback must still return promptly.
+	std::atomic<bool> first_handoff_rejected{false};
+	// Exercise the failed-first-enqueue recovery path: module unload has begun,
+	// the dlib worker is blocked, and the destroy callback must return without
+	// deleting the manager. The main thread below represents a later OBS destroy
+	// task that retries the handoff while the source reservation remains active.
 	faithfulframe_teardown_begin_module_unload();
 	std::thread destroyer([&] {
 		teardown.destroy_thread = std::this_thread::get_id();
-		const bool handed_off =
-			faithfulframe_defer_reap_task(&teardown.task, delete_tracker_on_reaper, &teardown, true);
-		handoff_succeeded.store(handed_off, std::memory_order_release);
-		if (handed_off)
-			faithfulframe_activate_reap_task(&teardown.task);
-		else
-			delete_tracker_on_reaper(&teardown);
-		faithfulframe_teardown_instance_destroyed();
+		// Invalid input deterministically models a rejected initial enqueue while
+		// leaving the embedded task available for the later retry.
+		first_handoff_rejected.store(!faithfulframe_defer_reap_task(&teardown.task, nullptr, &teardown, true),
+					     std::memory_order_release);
+		handoff_succeeded.store(false, std::memory_order_release);
 		destroy_callback_returned.store(true, std::memory_order_release);
 	});
 
-	// The worker hook holds face_tracker_base's mutex. The reaper should reach
-	// stop() and wait there while the simulated OBS destroy callback returns.
+	const bool callback_returned_while_worker_blocked =
+		wait_for(destroy_callback_returned, std::chrono::seconds(2)) &&
+		!teardown.cleanup_complete.load(std::memory_order_acquire) &&
+		!stop_attempted.load(std::memory_order_acquire);
+	const bool retry_handoff_succeeded =
+		faithfulframe_defer_reap_task(&teardown.task, delete_tracker_on_reaper, &teardown, true);
+	if (retry_handoff_succeeded) {
+		faithfulframe_activate_reap_task(&teardown.task);
+		handoff_succeeded.store(true, std::memory_order_release);
+	}
+	// The retried reaper callback now blocks in stop() while the worker is held;
+	// this verifies the OBS destroy callback already returned before the join.
 	const auto stop_reached = wait_for(stop_attempted, std::chrono::seconds(10));
-	const bool destroy_returned_while_worker_blocked =
-		stop_reached && wait_for(destroy_callback_returned, std::chrono::seconds(2)) &&
-		!teardown.cleanup_complete.load(std::memory_order_acquire);
+	const bool destroy_returned_while_worker_blocked = callback_returned_while_worker_blocked && stop_reached &&
+							   !teardown.cleanup_complete.load(std::memory_order_acquire);
 	const bool cleanup_ran_off_destroy_thread =
 		teardown.callback_ran_off_destroy_thread.load(std::memory_order_acquire);
 	release_worker.store(true, std::memory_order_release);
@@ -149,7 +159,8 @@ int main()
 	const bool reaper_restarted = faithfulframe_executor_reaper_start() == 1;
 	faithfulframe_teardown_begin_module_unload();
 
-	if (!handoff_succeeded.load(std::memory_order_acquire) || !destroy_returned_while_worker_blocked ||
+	if (!first_handoff_rejected.load(std::memory_order_acquire) || !retry_handoff_succeeded ||
+	    !handoff_succeeded.load(std::memory_order_acquire) || !destroy_returned_while_worker_blocked ||
 	    !cleanup_ran_off_destroy_thread || !reaper_drained || !reaper_restarted || teardown.tracker != nullptr) {
 		std::fprintf(
 			stderr,

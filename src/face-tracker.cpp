@@ -71,7 +71,29 @@ public:
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	void detach_obs_context() noexcept { ctx = nullptr; }
 
-	static void destroy_reaped(void *context) { delete static_cast<ft_manager_for_ftf *>(context); }
+	static void destroy_reaped(void *context)
+	{
+		delete static_cast<ft_manager_for_ftf *>(context);
+		// The source-instance reservation remains live until dlib teardown has
+		// completed, keeping the module reaper and its callback code available.
+		faithfulframe_teardown_instance_destroyed();
+	}
+
+	static void retry_destroy_reap(void *context)
+	{
+		auto *manager = static_cast<ft_manager_for_ftf *>(context);
+		if (!manager)
+			return;
+		if (faithfulframe_defer_reap_task(&manager->teardown_task, destroy_reaped, manager, true)) {
+			faithfulframe_activate_reap_task(&manager->teardown_task);
+			return;
+		}
+		// Do not delete here: this callback also runs on an OBS-owned executor.
+		// The live source reservation intentionally remains outstanding so OBS
+		// cannot unload the module while the manager's dlib workers still run.
+		blog(LOG_ERROR,
+		     "FaithfulFrame could not retry dlib manager teardown; preserving its module reservation");
+	}
 #endif
 };
 
@@ -981,6 +1003,7 @@ static void ftf_destroy(void *data)
 	// Only safe-source adapters reserve a module-reaper lifetime. Legacy filters
 	// keep their original synchronous destruction path.
 	const bool defer_tracker_teardown = s->safe_runtime != nullptr;
+	bool manager_owns_instance_reservation = false;
 #endif
 	// Stop new hotkey ingress before shutting down the runtime that callbacks
 	// may enqueue commands through.
@@ -1025,13 +1048,14 @@ static void ftf_destroy(void *data)
 		if (faithfulframe_defer_reap_task(&safe_manager->teardown_task, ft_manager_for_ftf::destroy_reaped,
 						  safe_manager, true)) {
 			faithfulframe_activate_reap_task(&safe_manager->teardown_task);
+			manager_owns_instance_reservation = true;
 		} else {
 			// A live source-instance reservation keeps the reaper available until
-			// this callback completes. Preserve safe ownership if that invariant is
-			// ever violated, rather than abandoning live dlib workers.
-			blog(LOG_ERROR,
-			     "FaithfulFrame could not defer dlib manager teardown; joining on the OBS destruction thread");
-			delete tracker_manager;
+			// manager cleanup completes. Retry asynchronously if the queue invariant
+			// is unexpectedly violated; never join dlib workers on this OBS callback.
+			blog(LOG_ERROR, "FaithfulFrame could not defer dlib manager teardown; retrying asynchronously");
+			manager_owns_instance_reservation = true;
+			obs_queue_task(OBS_TASK_DESTROY, ft_manager_for_ftf::retry_destroy_reap, safe_manager, false);
 		}
 	} else
 #endif
@@ -1053,7 +1077,8 @@ static void ftf_destroy(void *data)
 
 	bfree(s);
 #ifdef ENABLE_RUST_CORE_BRIDGE
-	faithfulframe_teardown_instance_destroyed();
+	if (!manager_owns_instance_reservation)
+		faithfulframe_teardown_instance_destroyed();
 #endif
 }
 
