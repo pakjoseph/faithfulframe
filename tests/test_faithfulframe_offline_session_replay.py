@@ -55,14 +55,20 @@ def write_cartoon_faces_scene(
     path.write_bytes(f"P6\n{width} {height}\n255\n".encode("ascii") + pixels)
 
 
-def write_single_speaker_scene(path: Path, portrait_path: Path, scale: int) -> None:
+def write_single_speaker_scene(
+    path: Path,
+    portrait_path: Path,
+    scale: int,
+    left: int = 800,
+    top: int = 360,
+) -> None:
     if scale not in (1, 2):
         raise ValueError("the geometry comparison uses 1080p and exact 2x 4K scenes")
 
     portrait_width, portrait_height, portrait = read_synthetic_portrait(portrait_path)
     width, height = 1920 * scale, 1080 * scale
     pixels = bytearray([32, 38, 42]) * (width * height)
-    left, top = 800 * scale, 360 * scale
+    left, top = left * scale, top * scale
 
     # Duplicate each RGB pixel exactly at 4K. The 4K replay's stride-2 detector
     # input must therefore be byte-for-byte equivalent to the 1080p input.
@@ -308,6 +314,99 @@ class OfflineSessionReplayTests(unittest.TestCase):
             )
             self.assertEqual(too_small.returncode, 3)
             self.assertIn("below 80x80 pixels", too_small.stderr)
+
+    def test_4k_edge_targets_keep_selected_crop_inside_source_bounds(self):
+        portrait = (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "offline-synthetic-person-320x360.ppm"
+        )
+        self.assertTrue(portrait.is_file(), f"missing synthetic person fixture: {portrait}")
+
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            for label, left in (("left", 0), ("right", 1600)):
+                with self.subTest(edge=label):
+                    frame = temporary / f"{label}-edge-4k.ppm"
+                    manifest = temporary / f"{label}-edge-frames.tsv"
+                    trace = temporary / f"{label}-edge-trace.jsonl"
+                    write_single_speaker_scene(frame, portrait, scale=2, left=left)
+                    manifest.write_text(
+                        "monotonic_ms\tframe_path\n"
+                        + "".join(
+                            f"{100 + frame_index * 40}\t{frame.name}\n"
+                            for frame_index in range(8)
+                        ),
+                        encoding="utf-8",
+                    )
+
+                    result = subprocess.run(
+                        [
+                            str(self.binary),
+                            "--model",
+                            str(self.model),
+                            "--manifest",
+                            str(manifest),
+                            "--trace",
+                            str(trace),
+                            "--output-width",
+                            "1920",
+                            "--output-height",
+                            "1080",
+                            "--fps",
+                            "1",
+                            "--detection-scale",
+                            "2",
+                            "--operator-select-first-candidate-at-ms",
+                            "380",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    events = [
+                        json.loads(line)
+                        for line in trace.read_text(encoding="utf-8").splitlines()
+                    ]
+                    candidates = [event for event in events if event["kind"] == "candidate"]
+                    commands = [event for event in events if event["kind"] == "command"]
+                    self.assertTrue(candidates, f"{label}-edge replay published no candidate")
+                    self.assertEqual(len(commands), 1)
+                    self.assertEqual(commands[0]["snapshot"]["state"], "locked")
+                    selected = next(
+                        event["candidate"]
+                        for event in candidates
+                        if event["frame_index"] == commands[0]["frame_index"]
+                        and event["candidate"]["handle"] == commands[0]["candidate_handle"]
+                    )
+                    x, y, width, height = selected["rect"]
+                    crop_x, crop_y, crop_width, crop_height = commands[0]["snapshot"][
+                        "source_crop"
+                    ]
+                    self.assertGreater(width, 0.0)
+                    self.assertGreater(height, 0.0)
+                    self.assertGreaterEqual(x, 0.0)
+                    self.assertGreaterEqual(y, 0.0)
+                    self.assertLessEqual(x + width, 1.000001)
+                    self.assertLessEqual(y + height, 1.000001)
+                    self.assertGreater(crop_width, 0.0)
+                    self.assertGreater(crop_height, 0.0)
+                    self.assertGreaterEqual(crop_x, 0.0)
+                    self.assertGreaterEqual(crop_y, 0.0)
+                    # The ABI carries these values as f32; decimal JSON
+                    # round-tripping can make an exact f32 boundary sum exceed
+                    # 1 by a few 1e-10 when Python promotes the operands to f64.
+                    self.assertLessEqual(crop_x + crop_width, 1.000001)
+                    self.assertLessEqual(crop_y + crop_height, 1.000001)
+                    self.assertLessEqual(crop_x, x + 0.00001)
+                    self.assertLessEqual(crop_y, y + 0.00001)
+                    self.assertGreaterEqual(crop_x + crop_width, x + width - 0.00001)
+                    self.assertGreaterEqual(crop_y + crop_height, y + height - 0.00001)
+                    if label == "left":
+                        self.assertLessEqual(x, 0.05)
+                    else:
+                        self.assertGreaterEqual(x + width, 0.95)
 
     def test_synthetic_face_flows_through_detection_tracking_and_explicit_selection(self):
         # This checked-in cartoon is procedurally drawn and contains no real
