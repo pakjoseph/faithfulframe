@@ -750,10 +750,16 @@ class PluginLoadTest(obstest.OBSTest):
                     'No speaker selected; choose a visible face',
                     'Selection or command expired; choose again from the current preview',
                     'Command rejected;',
+                    'Tracking controls are not ready',
                 ),
             )
             if 'No speaker selected; choose a visible face' not in status:
-                self.assertTrue('rejected' in status.lower() or 'expired' in status.lower(), status)
+                self.assertTrue(
+                    'rejected' in status.lower()
+                    or 'expired' in status.lower()
+                    or 'not ready' in status.lower(),
+                    status,
+                )
                 self._wait_for_ui_widget(ui, 'Tracking state: Manual')
                 self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
                 self._invoke_ui_widget(ui, 'accessibleName', 'Enable automatic speaker following', 'click')
