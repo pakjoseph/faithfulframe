@@ -82,7 +82,6 @@ public: /* not sure they are necessary to be public */
 	// TODO: Just have two pairs
 	std::deque<struct tracker_inst_s> trackers;
 	std::deque<struct tracker_inst_s> trackers_idlepool;
-	uint64_t next_candidate_handle;
 	std::atomic<uint64_t> detection_epoch{1};
 	std::atomic<uint64_t> detector_input_epoch{0};
 	uint64_t detector_input_captured_at_ms = 0;
@@ -114,6 +113,8 @@ public: /* not sure they are necessary to be public */
 	}
 
 private:
+	// Candidate IDs must not be reset within this manager's source/session lifetime.
+	uint64_t next_candidate_handle;
 	int next_tick_stage_to_detector;
 	bool detector_in_progress;
 
