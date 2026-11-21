@@ -3368,7 +3368,6 @@ static void cb_get_target_size(void *data, calldata_t *cd)
 	uint32_t height = s->known_height;
 #ifdef ENABLE_RUST_CORE_BRIDGE
 	const bool safe_enabled = s->safe_runtime && s->safe_runtime->enabled.load(std::memory_order_acquire);
-	calldata_set_bool(cd, "safe_enabled", safe_enabled);
 	bool safe_output = false;
 	calldata_get_bool(cd, "safe_output", &safe_output);
 	if (safe_enabled && safe_output) {
