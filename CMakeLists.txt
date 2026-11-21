@@ -586,16 +586,17 @@ if (WITH_DOCK)
 	target_link_libraries(faithfulframe-preview-widget-smoke PRIVATE
 		Qt::Widgets OBS::libobs OBS::obs-frontend-api)
 	if (WIN32)
-		set(_preview_widget_smoke_env "QT_DEBUG_PLUGINS=1")
+		set(_preview_widget_smoke_environment "QT_DEBUG_PLUGINS=1")
 	else()
-		set(_preview_widget_smoke_env "QT_QPA_PLATFORM=offscreen")
+		set(_preview_widget_smoke_environment "QT_QPA_PLATFORM=offscreen")
 	endif()
 	set(_qt_core_dir_variable "Qt${QT_VERSION}Core_DIR")
 	get_filename_component(_qt_core_config_dir "${${_qt_core_dir_variable}}" ABSOLUTE)
 	if (NOT WIN32)
 		get_filename_component(_qt_platform_plugins_dir "${_qt_core_config_dir}/../../../plugins/platforms" ABSOLUTE)
 		if (EXISTS "${_qt_platform_plugins_dir}")
-			list(APPEND _preview_widget_smoke_env "QT_QPA_PLATFORM_PLUGIN_PATH=${_qt_platform_plugins_dir}")
+			list(APPEND _preview_widget_smoke_environment
+				"QT_QPA_PLATFORM_PLUGIN_PATH=${_qt_platform_plugins_dir}")
 		endif()
 	endif()
 	if (WIN32)
@@ -608,16 +609,34 @@ if (WITH_DOCK)
 		set(_preview_widget_runtime_dirs ${FAITHFULFRAME_SESSION_REPLAY_TEST_PATH})
 		get_filename_component(_qt_core_runtime_dir "${_qt_core_config_dir}/../../../bin" ABSOLUTE)
 		list(APPEND _preview_widget_runtime_dirs "${_qt_core_runtime_dir}")
-		string(JOIN "$<SEMICOLON>" _preview_widget_runtime_path ${_preview_widget_runtime_dirs})
-		if (_preview_widget_runtime_path)
-			list(APPEND _preview_widget_smoke_env "PATH=${_preview_widget_runtime_path}$<SEMICOLON>$ENV{PATH}")
-		endif()
 	elseif (APPLE)
-		list(APPEND _preview_widget_smoke_env ${FAITHFULFRAME_SESSION_REPLAY_TEST_ENV})
+		list(APPEND _preview_widget_smoke_environment ${FAITHFULFRAME_SESSION_REPLAY_TEST_ENV})
 	endif()
 	add_test(NAME faithfulframe-preview-widget-smoke
-		COMMAND ${CMAKE_COMMAND} -E env ${_preview_widget_smoke_env}
-			"$<TARGET_FILE:faithfulframe-preview-widget-smoke>")
+		COMMAND "$<TARGET_FILE:faithfulframe-preview-widget-smoke>")
+	if (WIN32)
+		if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.22")
+			set(_preview_widget_windows_path_modifications)
+			foreach(_runtime_directory IN LISTS _preview_widget_runtime_dirs)
+				list(APPEND _preview_widget_windows_path_modifications
+					"PATH=path_list_prepend:${_runtime_directory}")
+			endforeach()
+			set_tests_properties(faithfulframe-preview-widget-smoke PROPERTIES
+				ENVIRONMENT "${_preview_widget_smoke_environment}"
+				ENVIRONMENT_MODIFICATION "${_preview_widget_windows_path_modifications}")
+		else()
+			string(REPLACE ";" "\\;" _preview_widget_windows_runtime_path
+				"${_preview_widget_runtime_dirs}")
+			string(REPLACE ";" "\\;" _preview_widget_existing_path "$ENV{PATH}")
+			list(APPEND _preview_widget_smoke_environment
+				"PATH=${_preview_widget_windows_runtime_path}\\;${_preview_widget_existing_path}")
+			set_tests_properties(faithfulframe-preview-widget-smoke PROPERTIES
+				ENVIRONMENT "${_preview_widget_smoke_environment}")
+		endif()
+	else()
+		set_tests_properties(faithfulframe-preview-widget-smoke PROPERTIES
+			ENVIRONMENT "${_preview_widget_smoke_environment}")
+	endif()
 	if (Qt${QT_VERSION}Core_VERSION VERSION_GREATER_EQUAL "6.8")
 		add_executable(faithfulframe-accessibility-announcer-smoke
 			tests/faithfulframe-accessibility-announcer-smoke.cpp)
