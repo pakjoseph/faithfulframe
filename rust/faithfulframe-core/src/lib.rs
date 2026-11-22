@@ -2910,6 +2910,61 @@ mod tests {
     }
 
     #[test]
+    fn selected_target_stays_locked_through_three_hour_virtual_stream() {
+        const FRAME_RATE: u64 = 30;
+        const FRAME_COUNT: u64 = 3 * 60 * 60 * FRAME_RATE;
+        let mut session = TrackingSession::new(
+            Config {
+                loss_grace_ms: 1_000,
+                max_evidence_age_ms: 100,
+                max_candidates: MAX_SESSION_CANDIDATES,
+                ..Config::default()
+            },
+            identity(),
+            generations(),
+        )
+        .unwrap();
+
+        send(&mut session, 1, Command::EnableAutoFollow);
+        observe(&mut session, candidate(10, 100, 1, 33), 33);
+        let selected = send(
+            &mut session,
+            34,
+            Command::SelectCandidate {
+                handle: 10,
+                observation_version: 1,
+            },
+        );
+        assert_eq!(selected.state, State::Locked);
+        assert_eq!(selected.selected, Some(10));
+
+        for frame in 2..=FRAME_COUNT {
+            let at = frame * 1_000 / FRAME_RATE;
+            let primary = observe(&mut session, candidate(10, 100, frame, at), at);
+            assert_eq!(primary.state, State::Locked);
+            assert_eq!(primary.selected, Some(10));
+
+            // Add a new competing face once per second. Each receives a new
+            // opaque handle and continuity token, so this replays arrivals
+            // without recycling an identifier for another person.
+            if frame % FRAME_RATE == 0 {
+                let competing = observe(
+                    &mut session,
+                    candidate(1_000 + frame, 2_000 + frame, frame, at),
+                    at,
+                );
+                assert_eq!(competing.state, State::Locked);
+                assert_eq!(competing.selected, Some(10));
+            }
+        }
+
+        assert_eq!(FRAME_COUNT * 1_000 / FRAME_RATE, 3 * 60 * 60 * 1_000);
+        assert_eq!(session.snapshot().state, State::Locked);
+        assert_eq!(session.snapshot().selected, Some(10));
+        assert_eq!(session.latest.len(), MAX_SESSION_CANDIDATES);
+    }
+
+    #[test]
     fn engine_converts_selected_face_to_bounded_crop() {
         let mut engine = TrackingEngine::new(
             Config::default(),
