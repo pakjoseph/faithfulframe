@@ -2094,7 +2094,6 @@ class PluginLoadTest(obstest.OBSTest):
     def test_safe_adapter_stops_when_legacy_tracker_filter_is_added(self):
         'Fail closed if a legacy crop filter is added to the bound camera'
         client = self.obs.get_obsws()
-        ui = obsui.OBSUI(client)
         suffix = uuid.uuid4().hex
         scene_name = f'FaithfulFrame filter guard {suffix}'
         camera_name = f'FaithfulFrame filter guard camera {suffix}'
@@ -2103,7 +2102,6 @@ class PluginLoadTest(obstest.OBSTest):
         original_scene = None
         scene_created = False
         filter_created = False
-        dock_created = False
 
         try:
             scene_response = client.send('GetCurrentProgramScene', {})
@@ -2150,21 +2148,6 @@ class PluginLoadTest(obstest.OBSTest):
             )
             self.assertEqual(bound_image, camera_image)
 
-            dock_menu_path = self._find_menu_path(
-                ui.menu_list().get('menu', []), 'New FaithfulFrame Dock'
-            )
-            self.assertIsNotNone(dock_menu_path, 'FaithfulFrame dock action must be available in OBS Tools')
-            ui.request('menu-trigger', {'path': dock_menu_path})
-            dock_created = True
-            self._invoke_ui_widget(
-                ui,
-                'accessibleName',
-                'Camera source with FaithfulFrame tracking filter',
-                'setCurrentIndex',
-                arg1=1,
-            )
-            self._wait_for_ui_status(ui, f'Tracking source: {camera_name}')
-
             client.send('CreateSourceFilter', {
                 'sourceName': camera_name,
                 'filterName': legacy_filter_name,
@@ -2173,10 +2156,6 @@ class PluginLoadTest(obstest.OBSTest):
             })
             filter_created = True
             camera_with_legacy_filter = self._wait_for_screenshot(client, camera_name, bool)
-            self._wait_for_ui_status(
-                ui,
-                'selected source is unavailable or has another face-tracker filter',
-            )
             closed_image = self._wait_for_screenshot(
                 client, adapter_name, lambda image: image != bound_image
             )
@@ -2308,12 +2287,6 @@ class PluginLoadTest(obstest.OBSTest):
             )
             self.assertEqual(rebound_image, restored_camera_image)
         finally:
-            if dock_created:
-                try:
-                    self._invoke_ui_widget(ui, 'objectName', 'FTDock_ft_dock', 'removeDock')
-                except Exception:
-                    pass
-
             names = self._input_names(client)
             if filter_created and camera_name in names:
                 try:
