@@ -24,7 +24,9 @@ inline int faithfulframe_detector_schedule_next_tick(int current_tick, float int
 	const float interval_ticks = interval_seconds / elapsed_seconds;
 	if (std::isinf(interval_ticks) && interval_ticks > 0.0f)
 		return maximum_tick;
-	if (!std::isfinite(interval_ticks) || interval_ticks <= 0.0f)
+	if (interval_ticks == 0.0f)
+		return current_tick;
+	if (!std::isfinite(interval_ticks) || interval_ticks < 0.0f)
 		return current_tick + 1;
 
 	const std::int64_t available_ticks = static_cast<std::int64_t>(maximum_tick) - current_tick;
