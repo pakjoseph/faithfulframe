@@ -309,7 +309,7 @@ if (ENABLE_RUST_CORE_BRIDGE)
 		src/face-tracker-dlib.cpp
 		src/texture-object.cpp)
 	target_compile_definitions(faithfulframe-dlib-tracker-lifetime-smoke PRIVATE
-		FAITHFULFRAME_TEST_TRACKER_TEARDOWN_HOOK=1)
+		FAITHFULFRAME_TEST_TRACKER_TEARDOWN_HOOK=1 FAITHFULFRAME_TEST_REAPER_SHUTDOWN_HOOK=1)
 	add_dependencies(faithfulframe-rust-bridge-smoke faithfulframe-rust-ffi-build)
 	add_dependencies(faithfulframe-session-executor-smoke faithfulframe-rust-ffi-build)
 	add_dependencies(faithfulframe-dlib-tracker-lifetime-smoke faithfulframe-rust-ffi-build)

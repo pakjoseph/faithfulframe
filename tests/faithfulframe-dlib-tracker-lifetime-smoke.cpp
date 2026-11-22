@@ -35,6 +35,11 @@ namespace {
 
 using steady_clock = std::chrono::steady_clock;
 
+struct reaper_drain_guard
+{
+	~reaper_drain_guard() { faithfulframe_test_drain_and_join_reaper(); }
+};
+
 std::atomic<bool> worker_entered{false};
 std::atomic<bool> release_worker{false};
 std::atomic<bool> stop_attempted{false};
@@ -87,6 +92,9 @@ extern "C" void faithfulframe_test_tracker_stop_attempted(void)
 
 int main()
 {
+	// Production teardown requests an asynchronous drain. Tests must also join
+	// the process-lifetime reaper so sanitizers can verify that no worker leaks.
+	reaper_drain_guard drain_reaper;
 	if (faithfulframe_executor_reaper_start() != 1 || faithfulframe_teardown_register_instance() != 1) {
 		std::fprintf(stderr, "dlib tracker lifetime smoke failed to start the module reaper\n");
 		return 1;
