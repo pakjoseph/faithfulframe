@@ -562,12 +562,14 @@ impl TrackingSession {
                 CommandResult::Applied
             }
             Command::ResetToWide => {
-                if self.state != State::Frozen {
+                if self.state == State::Locked {
                     self.state = State::Manual;
                 }
                 self.selected = None;
-                self.loss_started_at = None;
-                self.loss_deadline = None;
+                if self.state != State::Searching {
+                    self.loss_started_at = None;
+                    self.loss_deadline = None;
+                }
                 self.held_crop = self.config.safe_wide;
                 self.crop_action = CropAction::Wide;
                 self.reason = Reason::ResetWide;
@@ -2359,7 +2361,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_wide_stops_following_and_requires_explicit_rearm() {
+    fn reset_wide_from_lost_preserves_lost_and_requires_explicit_rearm() {
         let mut session = session();
         send(&mut session, 1, Command::EnableAutoFollow);
         let searching = session.snapshot();
@@ -2367,13 +2369,104 @@ mod tests {
         let lost = session.apply(Event::Tick { at: 101 });
         assert_eq!(lost.state, State::Lost);
         let reset = send(&mut session, 102, Command::ResetToWide);
-        assert_eq!(reset.state, State::Manual);
+        assert_eq!(reset.state, State::Lost);
         assert_eq!(reset.selected, None);
         assert_eq!(reset.crop_action, CropAction::Wide);
         assert_eq!(
             send(&mut session, 103, Command::EnableAutoFollow).state,
             State::Searching
         );
+    }
+
+    #[test]
+    fn reset_wide_from_searching_preserves_state_and_loss_deadline() {
+        let mut session = session();
+        send(&mut session, 1, Command::EnableAutoFollow);
+        let searching = session.snapshot();
+        assert_eq!(searching.state, State::Searching);
+        assert_eq!(searching.loss_deadline, Some(101));
+
+        let reset = send(&mut session, 5, Command::ResetToWide);
+
+        assert_eq!(reset.command_result, CommandResult::Applied);
+        assert_eq!(reset.state, State::Searching);
+        assert_eq!(reset.selected, None);
+        assert_eq!(reset.loss_deadline, searching.loss_deadline);
+        assert_eq!(reset.crop_action, CropAction::Wide);
+        assert_eq!(reset.crop, Rect::full_frame());
+
+        let expired = session.apply(Event::Tick { at: 101 });
+        assert_eq!(expired.state, State::Lost);
+        assert_eq!(expired.loss_deadline, None);
+        assert_eq!(expired.crop, Rect::full_frame());
+    }
+
+    #[test]
+    fn engine_reset_wide_from_searching_widens_and_keeps_original_deadline() {
+        let mut engine = TrackingEngine::new(
+            Config::default(),
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        engine.apply(Event::Candidate {
+            at: 2,
+            candidate: candidate(10, 100, 1, 2),
+        });
+        let searching = engine.snapshot();
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: searching.identity,
+                status_version: searching.status_version,
+                generations: searching.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: searching.observation_version,
+                },
+            },
+        });
+        assert_eq!(locked.state, State::Locked);
+        assert_ne!(locked.crop, Rect::full_frame());
+
+        let lost_evidence = engine.apply(Event::Tick { at: 503 });
+        assert_eq!(lost_evidence.state, State::Searching);
+        let original_deadline = lost_evidence.loss_deadline;
+        assert_eq!(original_deadline, Some(5_503));
+        assert_ne!(lost_evidence.crop, Rect::full_frame());
+
+        let reset = engine.apply(Event::Command {
+            at: 504,
+            envelope: CommandEnvelope {
+                identity: lost_evidence.identity,
+                status_version: lost_evidence.status_version,
+                generations: lost_evidence.generations,
+                command: Command::ResetToWide,
+            },
+        });
+        assert_eq!(reset.command_result, CommandResult::Applied);
+        assert_eq!(reset.state, State::Searching);
+        assert_eq!(reset.selected, None);
+        assert_eq!(reset.loss_deadline, original_deadline);
+        assert_eq!(reset.crop_action, CropAction::Wide);
+        assert_eq!(reset.crop, Rect::full_frame());
+
+        let expired = engine.apply(Event::Tick {
+            at: original_deadline.unwrap(),
+        });
+        assert_eq!(expired.state, State::Lost);
+        assert_eq!(expired.crop, Rect::full_frame());
     }
 
     #[test]
