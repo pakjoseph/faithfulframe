@@ -672,7 +672,7 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     event["candidate"]["rect"][0]
                     + event["candidate"]["rect"][2] / 2
                 )
-                if abs(center_x - selected_center_x) <= 0.12:
+                if abs(center_x - selected_center_x) < 0.12:
                     continue
                 event_index = events.index(event)
                 previous_snapshot = next(
@@ -797,7 +797,7 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     if confirmed_same_target
                     else selected_center_x
                 )
-                spatially_ambiguous = confirmed_same_target and abs(center_x - selected_center_x) > 0.12
+                spatially_ambiguous = confirmed_same_target and abs(center_x - selected_center_x) >= 0.12
                 if not confirmed_same_target or spatially_ambiguous:
                     self.assertEqual(
                         event["snapshot"]["source_crop"],
