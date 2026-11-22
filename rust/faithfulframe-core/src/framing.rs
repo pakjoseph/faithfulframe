@@ -961,6 +961,72 @@ mod tests {
     }
 
     #[test]
+    fn aspect_and_edge_sweep_preserves_the_normalized_geometry_contract() {
+        let aspect_pairs = [
+            (16.0 / 9.0, 16.0 / 9.0),
+            (4.0 / 3.0, 16.0 / 9.0),
+            (16.0 / 9.0, 4.0 / 3.0),
+            (1.0, 1.0),
+            (9.0 / 16.0, 16.0 / 9.0),
+            (16.0 / 9.0, 9.0 / 16.0),
+            (21.0 / 9.0, 16.0 / 9.0),
+            (16.0 / 9.0, 21.0 / 9.0),
+        ];
+        let target_sizes = [
+            (0.01, 0.02),
+            (0.03, 0.08),
+            (0.08, 0.16),
+            (0.16, 0.08),
+            (0.24, 0.32),
+        ];
+        let corners = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
+
+        for (source_aspect, output_aspect) in aspect_pairs {
+            let mut controller = FramingController::new(FramingConfig {
+                source_aspect,
+                output_aspect,
+                max_zoom: MAX_ZOOM,
+                ..FramingConfig::default()
+            })
+            .unwrap();
+            let mut at_ms = 0_u64;
+
+            for (index, (width, height)) in target_sizes.into_iter().cycle().take(160).enumerate() {
+                at_ms += 17 + (index % 4) as u64 * 11;
+                let (corner_x, corner_y) = corners[index % corners.len()];
+                let x = if corner_x == 0.0 { 0.0 } else { 1.0 - width };
+                let y = if corner_y == 0.0 { 0.0 } else { 1.0 - height };
+                let selected = target(x, y, width, height);
+                let plan = controller.plan_at(selected, at_ms).unwrap();
+                let crop = plan.source_crop;
+                let viewport = plan.output_viewport;
+
+                assert!(contains(crop, selected), "target escaped crop: {plan:?}");
+                assert!(
+                    Rect::normalized(crop.x, crop.y, crop.width, crop.height).is_ok(),
+                    "invalid source crop: {plan:?}"
+                );
+                assert!(
+                    Rect::normalized(viewport.x, viewport.y, viewport.width, viewport.height)
+                        .is_ok(),
+                    "invalid output viewport: {plan:?}"
+                );
+
+                // A normalized output viewport may add padding, but its
+                // displayed pixel aspect must always match the source crop.
+                // This also covers the full-source safe-wide plan.
+                let crop_pixel_aspect = source_aspect * crop.width / crop.height;
+                let displayed_pixel_aspect = output_aspect * viewport.width / viewport.height;
+                let tolerance = crop_pixel_aspect.abs().max(1.0) * 0.000_02;
+                assert!(
+                    (crop_pixel_aspect - displayed_pixel_aspect).abs() <= tolerance,
+                    "source/output aspect mismatch: source={source_aspect}, output={output_aspect}, plan={plan:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn invalid_configuration_is_rejected() {
         assert!(matches!(
             FramingController::new(FramingConfig {
