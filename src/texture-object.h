@@ -18,7 +18,7 @@ public:
 	bool get_dlib_rgb_image(dlib::matrix<dlib::rgb_pixel> &img) const;
 
 public:
-	int tick;
+	uint64_t tick;
 	float scale;
 	// Monotonic time when these pixels were copied, not when asynchronous tracking finishes.
 	uint64_t captured_at_ms = 0;

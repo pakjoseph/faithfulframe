@@ -8,10 +8,16 @@
 /// conversion when OBS supplies a zero, non-finite, or extremely small frame
 /// delta. Invalid timing defers work by one frame; valid timing preserves the
 /// manager's existing truncation behavior and saturates before integer overflow.
-inline int faithfulframe_detector_schedule_next_tick(int current_tick, float interval_seconds,
-						     float elapsed_seconds) noexcept
+inline uint64_t faithfulframe_next_frame_tick(uint64_t current_tick) noexcept
 {
-	constexpr int maximum_tick = std::numeric_limits<int>::max();
+	constexpr uint64_t maximum_tick = std::numeric_limits<uint64_t>::max();
+	return current_tick == maximum_tick ? current_tick : current_tick + 1;
+}
+
+inline uint64_t faithfulframe_detector_schedule_next_tick(uint64_t current_tick, float interval_seconds,
+							  float elapsed_seconds) noexcept
+{
+	constexpr uint64_t maximum_tick = std::numeric_limits<uint64_t>::max();
 	if (current_tick == maximum_tick)
 		return maximum_tick;
 
@@ -29,10 +35,17 @@ inline int faithfulframe_detector_schedule_next_tick(int current_tick, float int
 	if (!std::isfinite(interval_ticks) || interval_ticks < 0.0f)
 		return current_tick + 1;
 
-	const std::int64_t available_ticks = static_cast<std::int64_t>(maximum_tick) - current_tick;
 	const double whole_ticks = std::trunc(static_cast<double>(interval_ticks));
-	if (whole_ticks >= static_cast<double>(available_ticks))
+	// 2^64 is exactly representable as a double and is the first value that
+	// cannot be converted to uint64_t without an out-of-range conversion.
+	constexpr double uint64_tick_limit = 18446744073709551616.0;
+	if (whole_ticks >= uint64_tick_limit)
 		return maximum_tick;
 
-	return static_cast<int>(static_cast<std::int64_t>(current_tick) + static_cast<std::int64_t>(whole_ticks));
+	const uint64_t tick_increment = static_cast<uint64_t>(whole_ticks);
+	const uint64_t available_ticks = maximum_tick - current_tick;
+	if (tick_increment >= available_ticks)
+		return maximum_tick;
+
+	return current_tick + tick_increment;
 }

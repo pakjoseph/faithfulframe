@@ -55,7 +55,7 @@ public:
 			tracker_state_available,   // 1st tracking was done, `rect` is available, can accept next frame.
 			tracker_state_ending,
 		} state;
-		int tick_cnt;
+		uint64_t tick_cnt;
 	};
 
 public: // properties
@@ -74,7 +74,7 @@ public: // properties
 
 public: // realtime status
 	rectf_s crop_cur;
-	int tick_cnt;
+	uint64_t tick_cnt;
 
 public: // results
 	std::vector<rect_s> detect_rects;
@@ -82,7 +82,7 @@ public: // results
 
 public: /* not sure they are necessary to be public */
 	class face_detector_base *detect;
-	int detect_tick;
+	uint64_t detect_tick;
 
 	// TODO: Just have two pairs
 	std::deque<struct tracker_inst_s> trackers;
@@ -120,7 +120,7 @@ public: /* not sure they are necessary to be public */
 private:
 	// Candidate IDs must not be reset within this manager's source/session lifetime.
 	uint64_t next_candidate_handle;
-	int next_tick_stage_to_detector;
+	uint64_t next_tick_stage_to_detector;
 	bool detector_in_progress;
 
 public:

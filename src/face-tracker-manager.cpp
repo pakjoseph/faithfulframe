@@ -357,7 +357,7 @@ inline void face_tracker_manager::stage_to_detector(std::shared_ptr<texture_obje
 		detector_in_progress = false;
 	}
 
-	if ((next_tick_stage_to_detector - tick_cnt) > 0) {
+	if (next_tick_stage_to_detector > tick_cnt) {
 		detect->unlock();
 		return;
 	}
@@ -550,7 +550,7 @@ void face_tracker_manager::tick(float second)
 		next_tick_stage_to_detector =
 			faithfulframe_detector_schedule_next_tick(tick_cnt, detector_interval_seconds, second);
 
-	tick_cnt += 1;
+	tick_cnt = faithfulframe_next_frame_tick(tick_cnt);
 
 	make_tracker_rects(tracker_rects, trackers);
 }

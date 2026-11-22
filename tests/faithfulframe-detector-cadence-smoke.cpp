@@ -16,6 +16,12 @@ static void check_impl(bool condition, int line)
 
 int main()
 {
+	using tick_t = uint64_t;
+	const tick_t maximum_tick = std::numeric_limits<tick_t>::max();
+	check(faithfulframe_next_frame_tick(0) == 1);
+	check(faithfulframe_next_frame_tick(maximum_tick - 1) == maximum_tick);
+	check(faithfulframe_next_frame_tick(maximum_tick) == maximum_tick);
+
 	check(faithfulframe_detector_schedule_next_tick(0, 2.0f, 0.5f) == 4);
 	check(faithfulframe_detector_schedule_next_tick(100, 2.0f, 0.1f) == 120);
 	check(faithfulframe_detector_schedule_next_tick(7, 2.0f, 3.0f) == 7);
@@ -31,10 +37,10 @@ int main()
 	check(faithfulframe_detector_schedule_next_tick(7, nan, 0.1f) == 8);
 	check(faithfulframe_detector_schedule_next_tick(7, 0.0f, 0.1f) == 8);
 	check(faithfulframe_detector_schedule_next_tick(7, smallest_positive, largest_finite) == 7);
-	check(faithfulframe_detector_schedule_next_tick(7, 2.0f, smallest_positive) == std::numeric_limits<int>::max());
-	check(faithfulframe_detector_schedule_next_tick(std::numeric_limits<int>::max(), 2.0f, 0.5f) ==
-	      std::numeric_limits<int>::max());
-	check(faithfulframe_detector_schedule_next_tick(std::numeric_limits<int>::max() - 2, 2.0f, 0.1f) ==
-	      std::numeric_limits<int>::max());
+	check(faithfulframe_detector_schedule_next_tick(7, 2.0f, smallest_positive) == maximum_tick);
+	check(faithfulframe_detector_schedule_next_tick(7, largest_finite, 1.0f) == maximum_tick);
+	check(faithfulframe_detector_schedule_next_tick(maximum_tick, 2.0f, 0.5f) == maximum_tick);
+	check(faithfulframe_detector_schedule_next_tick(maximum_tick - 2, 2.0f, 0.1f) == maximum_tick);
+	check(faithfulframe_detector_schedule_next_tick(maximum_tick - 30, 2.0f, 0.1f) == maximum_tick - 10);
 	return 0;
 }
