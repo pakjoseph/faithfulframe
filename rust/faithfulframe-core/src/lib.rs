@@ -3503,6 +3503,126 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_speaker_tracks_across_stage_without_switching_to_competing_face() {
+        let mut engine = TrackingEngine::new(
+            Config {
+                loss_grace_ms: 500,
+                max_evidence_age_ms: 100,
+                ..Config::default()
+            },
+            framing::FramingConfig {
+                dead_zone_fraction: 0.0,
+                ..framing::FramingConfig::default()
+            },
+            identity(),
+            generations(),
+        )
+        .unwrap();
+
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+
+        let first_target = Candidate {
+            rect: Rect::normalized(0.44, 0.35, 0.12, 0.24).unwrap(),
+            ..candidate(10, 100, 1, 2)
+        };
+        let observed = engine.apply(Event::Candidate {
+            at: 2,
+            candidate: first_target,
+        });
+        let mut locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: observed.identity,
+                status_version: observed.status_version,
+                generations: observed.generations,
+                command: Command::SelectCandidate {
+                    handle: first_target.handle,
+                    observation_version: observed.observation_version,
+                },
+            },
+        });
+
+        assert_eq!(locked.state, State::Locked);
+        assert_eq!(locked.selected, Some(first_target.handle));
+        assert_eq!(locked.crop_action, CropAction::Track);
+        let mut previous_crop_center = locked.crop.x + locked.crop.width * 0.5;
+        let initial_crop_center = previous_crop_center;
+
+        for step in 1..=18_u64 {
+            let at = 2 + step * 30;
+            let target = Candidate {
+                rect: Rect::normalized(0.44 + step as f32 * 0.018, 0.35, 0.12, 0.24).unwrap(),
+                ..candidate(10, 100, step + 1, at)
+            };
+            locked = engine.apply(Event::Candidate {
+                at,
+                candidate: target,
+            });
+
+            assert_eq!(locked.state, State::Locked);
+            assert_eq!(locked.selected, Some(first_target.handle));
+            assert_eq!(locked.selected_rect, Some(target.rect));
+            assert_eq!(locked.crop_action, CropAction::Track);
+            assert!(
+                Rect::normalized(
+                    locked.crop.x,
+                    locked.crop.y,
+                    locked.crop.width,
+                    locked.crop.height
+                )
+                .is_ok()
+            );
+            assert!(locked.crop.x <= target.rect.x + 0.000_01);
+            assert!(locked.crop.y <= target.rect.y + 0.000_01);
+            assert!(
+                locked.crop.x + locked.crop.width + 0.000_01 >= target.rect.x + target.rect.width
+            );
+            assert!(
+                locked.crop.y + locked.crop.height + 0.000_01 >= target.rect.y + target.rect.height
+            );
+
+            let moving_crop_center = locked.crop.x + locked.crop.width * 0.5;
+            assert!(
+                moving_crop_center + 0.000_01 >= previous_crop_center,
+                "crop moved opposite the target at step {step}: previous={previous_crop_center}, current={moving_crop_center}, crop={:?}",
+                locked.crop
+            );
+            previous_crop_center = moving_crop_center;
+
+            // A distinct face is present in each same-time detector batch.
+            // Its valid evidence may update the preview, but cannot change
+            // the operator-authorized identity or move the protected crop.
+            let before_competitor = locked;
+            let competitor = Candidate {
+                rect: Rect::normalized(0.06, 0.3, 0.1, 0.2).unwrap(),
+                ..candidate(20, 200, step + 1, at)
+            };
+            let with_competitor = engine.apply(Event::Candidate {
+                at,
+                candidate: competitor,
+            });
+            assert_eq!(with_competitor.state, State::Locked);
+            assert_eq!(with_competitor.selected, Some(first_target.handle));
+            assert_eq!(with_competitor.selected_rect, Some(target.rect));
+            assert_eq!(with_competitor.crop_action, CropAction::Track);
+            assert_eq!(with_competitor.crop, before_competitor.crop);
+            locked = with_competitor;
+        }
+
+        let final_crop_center = locked.crop.x + locked.crop.width * 0.5;
+        assert!(final_crop_center > initial_crop_center + 0.1);
+    }
+
+    #[test]
     fn continuity_recovery_resets_stale_framing_velocity_before_reframing() {
         let mut engine = TrackingEngine::new(
             Config {
