@@ -658,6 +658,16 @@ class PluginLoadTest(obstest.OBSTest):
                     break
         self.assertTrue(loaded)
 
+    def test_new_adapter_defaults_to_dlib_hog(self):
+        'Verify the registered detector default, rather than a source override'
+        client = self.obs.get_obsws()
+        defaults = client.send('GetInputDefaultSettings', {'inputKind': 'face_tracker_source'})
+        self.assertEqual(
+            defaults.default_input_settings.get('detector_engine'),
+            0,
+            'new adapters must default to dlib HOG instead of the slower CNN detector',
+        )
+
     def test_safe_adapter_dock_controls_update_tracking_state(self):
         'Exercise the live volunteer controls through OBS Qt widgets'
         client = self.obs.get_obsws()
