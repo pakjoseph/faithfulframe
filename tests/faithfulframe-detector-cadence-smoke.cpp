@@ -1,4 +1,5 @@
 #include "faithfulframe-detector-cadence.hpp"
+#include "faithfulframe-candidate-limits.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -27,6 +28,20 @@ int main()
 	check(faithfulframe_sanitize_detector_interval_ms(1125) == faithfulframe_detector_interval_default_ms);
 	check(faithfulframe_sanitize_detector_interval_ms(2001) == faithfulframe_detector_interval_default_ms);
 	check(faithfulframe_detector_interval_seconds(1000) == 1.0f);
+	check(faithfulframe_detector_confirmation_max_age_ms(1000) == 1500);
+	check(faithfulframe_detector_confirmation_max_age_ms(1250) == 1750);
+	check(faithfulframe_detector_confirmation_max_age_ms(1500) == 2000);
+	check(faithfulframe_detector_confirmation_max_age_ms(1750) == 2250);
+	check(faithfulframe_detector_confirmation_max_age_ms(2000) == 2500);
+	check(faithfulframe_detector_confirmation_max_age_ms(0) == faithfulframe_candidate_max_age_ms);
+	check(faithfulframe_detector_confirmation_max_age_ms(maximum_tick - faithfulframe_candidate_max_age_ms) ==
+	      maximum_tick);
+	check(faithfulframe_detector_confirmation_max_age_ms(maximum_tick - faithfulframe_candidate_max_age_ms + 1) ==
+	      maximum_tick);
+	check(faithfulframe_detector_confirmation_is_fresh(1000, 1500, 500));
+	check(!faithfulframe_detector_confirmation_is_fresh(1000, 1501, 500));
+	check(!faithfulframe_detector_confirmation_is_fresh(1501, 1500, 500));
+	check(!faithfulframe_detector_confirmation_is_fresh(0, 0, 500));
 	check(faithfulframe_next_frame_tick(0) == 1);
 	check(faithfulframe_next_frame_tick(maximum_tick - 1) == maximum_tick);
 	check(faithfulframe_next_frame_tick(maximum_tick) == maximum_tick);
