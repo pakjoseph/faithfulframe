@@ -207,6 +207,18 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
         self.assertNotIn("gs_stagesurface_unmap(surface);", callback)
         self.assertNotIn("faithfulframe_worker_log", callback)
 
+    def test_shutdown_request_has_no_blocking_diagnostics(self):
+        source = (ROOT / SERIALIZED_BRIDGE).read_text(encoding="utf-8")
+        start = source.index("void faithfulframe_session_executor::request_shutdown(")
+        end = source.index("\nvoid faithfulframe_session_executor::shutdown(", start)
+        request = source[start:end]
+
+        self.assertIn("shutdown_request_claimed.compare_exchange_strong", request)
+        self.assertIn("closing_requested.store(true, std::memory_order_release)", request)
+        self.assertIn("queue_condition.notify_one()", request)
+        for operation in ("std::getenv", "std::fprintf", "faithfulframe_worker_log", "blog("):
+            self.assertNotIn(operation, request, "OBS teardown requests must not perform blocking diagnostics")
+
 
 if __name__ == "__main__":
     unittest.main()

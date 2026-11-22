@@ -489,10 +489,6 @@ void faithfulframe_session_executor::request_shutdown(uint32_t terminal_lifecycl
 	if (!shutdown_request_claimed.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
 							      std::memory_order_acquire))
 		return;
-	if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
-		std::fprintf(stderr, "[FaithfulFrame test] session shutdown source=%llu session=%llu lifecycle=%u\n",
-			     static_cast<unsigned long long>(identity.source),
-			     static_cast<unsigned long long>(identity.session), terminal_lifecycle_kind);
 	shutdown_lifecycle_kind.store(terminal_lifecycle_kind, std::memory_order_relaxed);
 	shutdown_source_width.store(source_width, std::memory_order_relaxed);
 	shutdown_source_height.store(source_height, std::memory_order_relaxed);
