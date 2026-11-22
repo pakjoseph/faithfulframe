@@ -7,6 +7,16 @@
 static constexpr std::size_t faithfulframe_max_candidates = 8;
 inline constexpr std::uint64_t faithfulframe_candidate_max_age_ms = 500;
 
+/// Keep detector-backed identity evidence fresh for one configured detector
+/// cadence plus the normal candidate-observation window. Saturation avoids
+/// wrapping if this helper is ever called with an untrusted interval.
+inline constexpr std::uint64_t faithfulframe_detector_confirmation_max_age_ms(std::uint64_t detector_interval_ms)
+{
+	return detector_interval_ms > std::numeric_limits<std::uint64_t>::max() - faithfulframe_candidate_max_age_ms
+		       ? std::numeric_limits<std::uint64_t>::max()
+		       : detector_interval_ms + faithfulframe_candidate_max_age_ms;
+}
+
 // Candidate handles travel through OBS's signed integer fields. Exhaust the
 // allocator rather than wrapping or reusing an identity that may still be
 // present in a preview payload or delayed command.

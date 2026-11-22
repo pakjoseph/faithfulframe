@@ -11,10 +11,6 @@
 class face_tracker_manager {
 public:
 	static constexpr uint64_t detector_interval_default_ms = faithfulframe_detector_interval_default_ms;
-	// A correlation-tracker result remains detector-authorized through one
-	// detector cadence plus the normal candidate freshness window.
-	static constexpr uint64_t detector_confirmation_max_age_ms =
-		detector_interval_default_ms + faithfulframe_candidate_max_age_ms;
 
 	enum detector_engine_e {
 		engine_dlib_hog = 0,

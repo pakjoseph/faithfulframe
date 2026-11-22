@@ -151,9 +151,6 @@ struct faithfulframe_tracker_settings_queue
 #ifdef ENABLE_RUST_CORE_BRIDGE
 static constexpr uint64_t safe_preview_max_snapshot_age_ms = 500;
 static constexpr uint64_t safe_candidate_max_age_ms = faithfulframe_candidate_max_age_ms;
-// Keep the live adapter's confirmation bound aligned with the manager cadence.
-static constexpr uint64_t safe_detector_confirmation_max_age_ms =
-	face_tracker_manager::detector_confirmation_max_age_ms;
 
 struct faithfulframe_source_binding;
 static void faithfulframe_bound_source_updated(void *data, calldata_t *params);
@@ -2123,6 +2120,8 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 	const uint32_t source_height = binding->source_height.load(std::memory_order_acquire);
 	if (!source_width || !source_height)
 		return;
+	const uint64_t detector_confirmation_max_age_ms = faithfulframe_detector_confirmation_max_age_ms(
+		s->ftm->detector_interval_ms.load(std::memory_order_acquire));
 	ff_generations generations{};
 	// This runs from the OBS video tick. Lifecycle producers can briefly own
 	// this mutex while publishing a transition; defer this frame rather than
@@ -2163,7 +2162,7 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		candidate.observed_at_ms = tracker.observed_at_ms;
 		candidate.detector_confirmed_at_ms =
 			faithfulframe_detector_confirmation_is_fresh(tracker.detector_confirmed_at_ms, now,
-								     safe_detector_confirmation_max_age_ms)
+								     detector_confirmation_max_age_ms)
 				? tracker.detector_confirmed_at_ms
 				: 0;
 		candidate.expires_at_ms =

@@ -35,6 +35,15 @@ int main()
 	check(faithfulframe_allocate_candidate_handle(next) == 0);
 	check(next == maximum + 1);
 
+	check(faithfulframe_detector_confirmation_max_age_ms(1000) == 1500);
+	check(faithfulframe_detector_confirmation_max_age_ms(1500) == 2000);
+	check(faithfulframe_detector_confirmation_max_age_ms(2000) == 2500);
+	check(faithfulframe_detector_confirmation_max_age_ms(static_cast<uint64_t>(maximum) - 499) ==
+	      static_cast<uint64_t>(maximum) + 1);
+	const uint64_t maximum_uint64 = std::numeric_limits<uint64_t>::max();
+	check(faithfulframe_detector_confirmation_max_age_ms(maximum_uint64 - 499) == maximum_uint64);
+	check(faithfulframe_detector_confirmation_max_age_ms(maximum_uint64) == maximum_uint64);
+
 	check(faithfulframe_detector_confirmation_is_fresh(1000, 3500, 2500));
 	check(!faithfulframe_detector_confirmation_is_fresh(1000, 3501, 2500));
 	check(!faithfulframe_detector_confirmation_is_fresh(3501, 3500, 2500));
