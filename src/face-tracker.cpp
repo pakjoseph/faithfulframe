@@ -26,6 +26,7 @@
 #include "source_list.h"
 #include "faithfulframe-preview-render-stamp.hpp"
 #include "faithfulframe-atomic-shared-ptr.hpp"
+#include "faithfulframe-worker-log.hpp"
 #ifdef ENABLE_RUST_CORE_BRIDGE
 #include "faithfulframe-core-bridge.hpp"
 #include "faithfulframe-active-slot.hpp"
@@ -2782,28 +2783,33 @@ static inline std::shared_ptr<texture_object> surface_to_cvtex(struct face_track
 		s->ftm->record_stagesurface_map_sample(map_duration_us, map_succeeded);
 	if (!map_succeeded)
 		return NULL;
+	std::unique_ptr<gs_stagesurf_t, decltype(&gs_stagesurface_unmap)> mapped_surface(surface,
+											 &gs_stagesurface_unmap);
 
-	uint32_t width = gs_stagesurface_get_width(surface);
-	uint32_t height = gs_stagesurface_get_height(surface);
+	try {
+		const uint32_t width = gs_stagesurface_get_width(surface);
+		const uint32_t height = gs_stagesurface_get_height(surface);
 
-	std::shared_ptr<texture_object> cvtex(new texture_object);
-	cvtex->scale = scale;
-	cvtex->tick = s->ftm->tick_cnt;
-	cvtex->captured_at_ms = captured_at_ms;
-	cvtex->detection_epoch = detection_epoch;
+		auto cvtex = std::make_shared<texture_object>();
+		cvtex->scale = scale;
+		cvtex->tick = s->ftm->tick_cnt;
+		cvtex->captured_at_ms = captured_at_ms;
+		cvtex->detection_epoch = detection_epoch;
 
-	struct obs_source_frame frame;
-	memset(&frame, 0, sizeof(frame));
-	frame.data[0] = video_data;
-	frame.linesize[0] = video_linesize;
-	frame.width = width;
-	frame.height = height;
-	frame.format = VIDEO_FORMAT_BGRA;
-	cvtex->set_texture_obsframe(&frame, 1);
+		struct obs_source_frame frame;
+		memset(&frame, 0, sizeof(frame));
+		frame.data[0] = video_data;
+		frame.linesize[0] = video_linesize;
+		frame.width = width;
+		frame.height = height;
+		frame.format = VIDEO_FORMAT_BGRA;
+		cvtex->set_texture_obsframe(&frame, 1);
 
-	gs_stagesurface_unmap(surface);
-
-	return cvtex;
+		return cvtex;
+	} catch (...) {
+		faithfulframe_worker_log(LOG_ERROR, "surface_to_cvtex: failed to allocate or copy staged frame");
+		return nullptr;
+	}
 }
 
 #ifdef ENABLE_RUST_CORE_BRIDGE

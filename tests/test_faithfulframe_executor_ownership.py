@@ -188,6 +188,24 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
         self.assertIn("safe_candidate_max_age_ms", callback)
         self.assertIn("plan.reset_surfaces", callback)
 
+    def test_mapped_staging_surface_is_unmapped_if_frame_allocation_fails(self):
+        source = (ROOT / "src/face-tracker.cpp").read_text(encoding="utf-8")
+        start = source.rindex("static inline std::shared_ptr<texture_object> surface_to_cvtex(")
+        end = source.index("\n#ifdef ENABLE_RUST_CORE_BRIDGE", start)
+        callback = source[start:end]
+
+        map_call = callback.index("gs_stagesurface_map(surface")
+        unmap_guard = callback.index(
+            "std::unique_ptr<gs_stagesurf_t, decltype(&gs_stagesurface_unmap)> mapped_surface"
+        )
+        allocation = callback.index("std::make_shared<texture_object>()")
+
+        self.assertLess(map_call, unmap_guard)
+        self.assertLess(unmap_guard, allocation)
+        self.assertIn("&gs_stagesurface_unmap", callback)
+        self.assertIn("catch (...)", callback)
+        self.assertNotIn("gs_stagesurface_unmap(surface);", callback)
+
 
 if __name__ == "__main__":
     unittest.main()
