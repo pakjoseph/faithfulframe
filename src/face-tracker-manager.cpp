@@ -547,8 +547,10 @@ void face_tracker_manager::tick(float second)
 	}
 
 	if (detect_tick == tick_cnt)
-		next_tick_stage_to_detector =
-			faithfulframe_detector_schedule_next_tick(tick_cnt, detector_interval_seconds, second);
+		next_tick_stage_to_detector = faithfulframe_detector_schedule_next_tick(
+			tick_cnt,
+			faithfulframe_detector_interval_seconds(detector_interval_ms.load(std::memory_order_acquire)),
+			second);
 
 	tick_cnt = faithfulframe_next_frame_tick(tick_cnt);
 
@@ -605,6 +607,9 @@ void face_tracker_manager::update(obs_data_t *settings)
 	upsize_t = obs_data_get_double(settings, "upsize_t");
 	upsize_b = obs_data_get_double(settings, "upsize_b");
 	scale.store(static_cast<float>(obs_data_get_double(settings, "scale")), std::memory_order_relaxed);
+	detector_interval_ms.store(
+		faithfulframe_sanitize_detector_interval_ms(obs_data_get_int(settings, "detector_interval_ms")),
+		std::memory_order_release);
 	auto _detector_engine = (enum detector_engine_e)obs_data_get_int(settings, "detector_engine");
 	if (_detector_engine != detector_engine) {
 		update_detector(this, _detector_engine);
@@ -649,6 +654,11 @@ void face_tracker_manager::get_properties(obs_properties_t *pp)
 	obs_properties_add_float(pp, "upsize_t", obs_module_text("Top"), -0.4, 4.0, 0.2);
 	obs_properties_add_float(pp, "upsize_b", obs_module_text("Bottom"), -0.4, 4.0, 0.2);
 	obs_properties_add_float(pp, "scale", obs_module_text("Scale image"), 1.0, 16.0, 1.0);
+	p = obs_properties_add_int(pp, "detector_interval_ms", obs_module_text("Detector.interval"),
+				   static_cast<int>(faithfulframe_detector_interval_min_ms),
+				   static_cast<int>(faithfulframe_detector_interval_default_ms),
+				   static_cast<int>(faithfulframe_detector_interval_step_ms));
+	obs_property_set_long_description(p, obs_module_text("Detector.interval.description"));
 	p = obs_properties_add_list(pp, "detector_engine", obs_module_text("Detector"), OBS_COMBO_TYPE_LIST,
 				    OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(p, obs_module_text("Detector.dlib.hog"), (int)engine_dlib_hog);
@@ -689,6 +699,8 @@ void face_tracker_manager::get_defaults(obs_data_t *settings)
 	obs_data_set_default_double(settings, "upsize_t", 0.3);
 	obs_data_set_default_double(settings, "upsize_b", 0.1);
 	obs_data_set_default_double(settings, "scale", 2.0);
+	obs_data_set_default_int(settings, "detector_interval_ms",
+				 static_cast<int>(faithfulframe_detector_interval_default_ms));
 	obs_data_set_default_bool(settings, "tracking_th_en", true);
 	obs_data_set_default_double(settings, "tracking_th_dB", -80.0);
 

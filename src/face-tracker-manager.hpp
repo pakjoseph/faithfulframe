@@ -6,15 +6,15 @@
 #include <string>
 #include "face-tracker-base.h"
 #include "faithfulframe-candidate-limits.hpp"
+#include "faithfulframe-detector-cadence.hpp"
 
 class face_tracker_manager {
 public:
-	static constexpr uint64_t detector_interval_ms = 2000;
-	static constexpr float detector_interval_seconds = 2.0f;
+	static constexpr uint64_t detector_interval_default_ms = faithfulframe_detector_interval_default_ms;
 	// A correlation-tracker result remains detector-authorized through one
 	// detector cadence plus the normal candidate freshness window.
 	static constexpr uint64_t detector_confirmation_max_age_ms =
-		detector_interval_ms + faithfulframe_candidate_max_age_ms;
+		detector_interval_default_ms + faithfulframe_candidate_max_age_ms;
 
 	enum detector_engine_e {
 		engine_dlib_hog = 0,
@@ -64,6 +64,7 @@ public: // properties
 	// both candidates. Keep the upstream legacy association policy when disabled.
 	std::atomic<bool> safety_policy_enabled{false};
 	std::atomic<float> scale{0.0f};
+	std::atomic<uint64_t> detector_interval_ms{detector_interval_default_ms};
 	std::atomic<bool> reset_requested{false};
 	float tracking_threshold;
 	enum detector_engine_e detector_engine = engine_uninitialized;

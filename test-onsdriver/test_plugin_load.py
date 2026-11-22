@@ -934,6 +934,9 @@ class PluginLoadTest(obstest.OBSTest):
                     'safe_tracking_loss_grace_seconds': 15.0,
                     # Use a non-default framing target for this synthetic speaker workflow.
                     'safe_tracking_target_coverage_percent': 60.0,
+                    # Keep the existing two-second cadence as the default,
+                    # while exercising the per-source tuning setting.
+                    'detector_interval_ms': 1500,
                     # The synthetic source is already 640x360; keep the same
                     # detector working resolution without making OBS render a
                     # larger image for this operator-workflow test.
@@ -947,6 +950,7 @@ class PluginLoadTest(obstest.OBSTest):
                 adapter_settings.input_settings.get('safe_tracking_target_coverage_percent'),
                 60.0,
             )
+            self.assertEqual(adapter_settings.input_settings.get('detector_interval_ms'), 1500)
 
             camera_before = self._wait_for_screenshot(client, camera_name, bool)
             adapter_before = self._wait_for_screenshot(client, adapter_name, bool)

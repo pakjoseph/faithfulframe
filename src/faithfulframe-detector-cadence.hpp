@@ -4,6 +4,28 @@
 #include <cstdint>
 #include <limits>
 
+inline constexpr uint64_t faithfulframe_detector_interval_min_ms = 1000;
+inline constexpr uint64_t faithfulframe_detector_interval_default_ms = 2000;
+inline constexpr uint64_t faithfulframe_detector_interval_step_ms = 250;
+
+/// Keep the configurable cadence inside the tested control range. Invalid or
+/// old profile values fall back to the existing two-second interval.
+inline uint64_t faithfulframe_sanitize_detector_interval_ms(int64_t interval_ms) noexcept
+{
+	if (interval_ms < static_cast<int64_t>(faithfulframe_detector_interval_min_ms) ||
+	    interval_ms > static_cast<int64_t>(faithfulframe_detector_interval_default_ms) ||
+	    (interval_ms - static_cast<int64_t>(faithfulframe_detector_interval_min_ms)) %
+			    static_cast<int64_t>(faithfulframe_detector_interval_step_ms) !=
+		    0)
+		return faithfulframe_detector_interval_default_ms;
+	return static_cast<uint64_t>(interval_ms);
+}
+
+inline float faithfulframe_detector_interval_seconds(uint64_t interval_ms) noexcept
+{
+	return static_cast<float>(interval_ms) / 1000.0f;
+}
+
 /// Return the next detector tick without performing an invalid float-to-int
 /// conversion when OBS supplies a zero, non-finite, or extremely small frame
 /// delta. Invalid timing defers work by one frame; valid timing preserves the
