@@ -1658,18 +1658,6 @@ static bool enqueue_source_lifecycle_locked(faithfulframe_source_binding *bindin
 		defer_session_join(executor);
 		return false;
 	}
-	if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS")) {
-		blog(LOG_INFO,
-		     "[FaithfulFrame test] lifecycle kind=%u source=%llu session=%llu generations="
-		     "(%llu,%llu,%llu,%llu,%llu)->(%llu,%llu,%llu,%llu,%llu) geometry=%ux%u",
-		     kind, (unsigned long long)binding->identity.source, (unsigned long long)binding->identity.session,
-		     (unsigned long long)binding->generations.source, (unsigned long long)binding->generations.session,
-		     (unsigned long long)binding->generations.stream, (unsigned long long)binding->generations.geometry,
-		     (unsigned long long)binding->generations.tracker, (unsigned long long)event.generations.source,
-		     (unsigned long long)event.generations.session, (unsigned long long)event.generations.stream,
-		     (unsigned long long)event.generations.geometry, (unsigned long long)event.generations.tracker,
-		     width, height);
-	}
 	binding->transition_pending.store(true, std::memory_order_release);
 	if (!executor->enqueue_lifecycle(at, event)) {
 		executor->request_shutdown(FF_LIFECYCLE_SOURCE_DESTROYED);
@@ -2215,20 +2203,6 @@ static void publish_source_candidates(face_tracker_filter *s, faithfulframe_sour
 		preview_candidates[i].observation_version = version;
 	if (candidate_set_changed)
 		binding->candidate_observation_pending.store(true, std::memory_order_release);
-	if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS")) {
-		const uint64_t counts = (static_cast<uint64_t>(count) << 32) | static_cast<uint64_t>(preview_count);
-		static std::atomic<uint64_t> last_logged_counts{std::numeric_limits<uint64_t>::max()};
-		if (last_logged_counts.exchange(counts, std::memory_order_relaxed) != counts) {
-			const ff_candidate &first = count ? candidates[0] : ff_candidate{};
-			blog(LOG_INFO,
-			     "[FaithfulFrame test] candidate pipeline trackers=%zu detector_confirmed=%zu first_handle=%llu "
-			     "continuity=%llu observed=%llu confirmed=%llu rect=(%.3f,%.3f,%.3f,%.3f)",
-			     count, preview_count, (unsigned long long)first.handle,
-			     (unsigned long long)first.continuity_token, (unsigned long long)first.observed_at_ms,
-			     (unsigned long long)first.detector_confirmed_at_ms, first.rect.x, first.rect.y,
-			     first.rect.width, first.rect.height);
-		}
-	}
 	bool observation_enqueued = false;
 	if (count) {
 		if (executor->enqueue_candidates(now, candidates.data(), count)) {
@@ -2334,8 +2308,6 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 			static_cast<uint32_t>(faithfulframe::safe_adapter_availability_issue::invalid_source_binding),
 			std::memory_order_release);
 		if (!binding->closed.load(std::memory_order_acquire)) {
-			blog(LOG_WARNING,
-			     "FaithfulFrame safe tracking stopped: remove the added legacy tracker filter, then rebind the source");
 			fail_source_binding_closed(binding);
 		}
 		s->ftm->tracker_rects.clear();
@@ -2401,7 +2373,6 @@ static void tick_safe_source(face_tracker_filter *s, float second)
 		return;
 	}
 	if (executor && !binding->closed.load(std::memory_order_acquire) && !executor->worker_available()) {
-		blog(LOG_ERROR, "FaithfulFrame tracking worker stopped; using safe-wide framing until reconfiguration");
 		runtime->configuration_issue.store(
 			static_cast<uint32_t>(
 				faithfulframe::safe_adapter_availability_issue::session_worker_failed_safe_wide),

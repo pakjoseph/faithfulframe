@@ -59,15 +59,6 @@ face_tracker_manager::~face_tracker_manager()
 
 inline void face_tracker_manager::retire_tracker(int ix)
 {
-	if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS")) {
-		const auto &tracker = trackers[ix];
-		blog(LOG_INFO,
-		     "[FaithfulFrame test] retire tracker handle=%llu continuity=%llu state=%d att=%.3f score=%.3f "
-		     "rect=(%d,%d,%d,%d)",
-		     (unsigned long long)tracker.candidate_handle, (unsigned long long)tracker.continuity_token,
-		     static_cast<int>(tracker.state), tracker.att, tracker.rect.score, tracker.rect.x0, tracker.rect.y0,
-		     tracker.rect.x1, tracker.rect.y1);
-	}
 	debug_track_thread("%p retire_tracker(%d %p)", this, ix, trackers[ix].tracker);
 	tracker_inst_s retired = trackers[ix];
 	retired.seed_texture.reset();
@@ -150,13 +141,6 @@ void face_tracker_manager::retire_ambiguous_trackers()
 			// tracker can silently make its continuity token follow the other
 			// person after an occlusion, so retire both and require fresh
 			// observations to receive new continuity tokens.
-			if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
-				blog(LOG_INFO,
-				     "[FaithfulFrame test] retire ambiguous trackers handles=%llu,%llu continuity=%llu,%llu",
-				     (unsigned long long)trackers[i].candidate_handle,
-				     (unsigned long long)trackers[j].candidate_handle,
-				     (unsigned long long)trackers[i].continuity_token,
-				     (unsigned long long)trackers[j].continuity_token);
 			retire_tracker(static_cast<int>(j));
 			retire_tracker(static_cast<int>(i));
 			retired_ambiguous_pair = true;
@@ -193,15 +177,8 @@ inline void face_tracker_manager::attenuate_tracker()
 			}
 		}
 
-		const float previous_attention = t.att;
 		const float overlap_fraction = a1 > 0 ? amax / static_cast<float>(a1) : 0.0f;
 		t.att = ff_tracker_attention_after_detection(t.att, overlap_fraction, detector_match);
-		if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
-			blog(LOG_INFO,
-			     "[FaithfulFrame test] association handle=%llu detections=%zu match=%d attention=%.3f->%.3f "
-			     "score=%.3f rect=(%d,%d,%d,%d)",
-			     (unsigned long long)t.candidate_handle, detect_rects.size(), detector_match,
-			     previous_attention, t.att, t.rect.score, t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1);
 	}
 
 	float score_max = 1e-17f;
@@ -361,9 +338,6 @@ inline void face_tracker_manager::stage_to_detector(std::shared_ptr<texture_obje
 	// get previous results
 	if (detector_in_progress) {
 		detect->get_faces(detect_rects);
-		if (std::getenv("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS"))
-			blog(LOG_INFO, "[FaithfulFrame test] manager received %zu detector rectangles (epoch=%llu)",
-			     detect_rects.size(), (unsigned long long)detect->completed_result_epoch());
 		const uint64_t current_epoch = detection_epoch.load(std::memory_order_acquire);
 		if (face_detector_result_epoch_is_current(detect->completed_result_epoch(), current_epoch)) {
 			detector_result_captured_at_ms = detector_input_captured_at_ms;
