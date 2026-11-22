@@ -205,6 +205,7 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
         self.assertIn("&gs_stagesurface_unmap", callback)
         self.assertIn("catch (...)", callback)
         self.assertNotIn("gs_stagesurface_unmap(surface);", callback)
+        self.assertNotIn("faithfulframe_worker_log", callback)
 
 
 if __name__ == "__main__":

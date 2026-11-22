@@ -26,7 +26,6 @@
 #include "source_list.h"
 #include "faithfulframe-preview-render-stamp.hpp"
 #include "faithfulframe-atomic-shared-ptr.hpp"
-#include "faithfulframe-worker-log.hpp"
 #ifdef ENABLE_RUST_CORE_BRIDGE
 #include "faithfulframe-core-bridge.hpp"
 #include "faithfulframe-active-slot.hpp"
@@ -2807,7 +2806,6 @@ static inline std::shared_ptr<texture_object> surface_to_cvtex(struct face_track
 
 		return cvtex;
 	} catch (...) {
-		faithfulframe_worker_log(LOG_ERROR, "surface_to_cvtex: failed to allocate or copy staged frame");
 		return nullptr;
 	}
 }
