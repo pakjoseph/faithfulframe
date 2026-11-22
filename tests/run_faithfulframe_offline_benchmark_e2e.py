@@ -16,6 +16,24 @@ def main() -> int:
     args = parser.parse_args()
 
     fixture = Path(__file__).resolve().parent / "fixtures" / "offline-synthetic-person-320x360.ppm"
+    invalid_interval = subprocess.run(
+        [
+            str(args.binary.resolve()),
+            "--model",
+            str(args.model.resolve()),
+            "--ppm-stdin",
+            "--detector-interval-ms",
+            "1125",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if invalid_interval.returncode != 2 or "must be 1000, 1250, 1500, 1750, or 2000" not in invalid_interval.stderr:
+        print("offline replay accepted an unsupported detector interval", file=sys.stderr)
+        return 1
+
     with tempfile.TemporaryDirectory(prefix="faithfulframe-benchmark-smoke-") as temp_dir:
         temp = Path(temp_dir)
         manifest = temp / "frames.tsv"
@@ -42,6 +60,8 @@ def main() -> int:
             "1",
             "--fps",
             "25",
+            "--detector-interval-ms",
+            "1250",
             "--output-resolution",
             "1920x1080",
             "--workload-label",
@@ -65,7 +85,7 @@ def main() -> int:
             print(f"offline benchmark did not produce valid JSON: {error}", file=sys.stderr)
             return 1
 
-        if report.get("schema_version") != 5:
+        if report.get("schema_version") != 6:
             print("offline benchmark did not emit the current report schema", file=sys.stderr)
             return 1
         if report.get("detector_engine") != "dlib_hog":
@@ -103,6 +123,9 @@ def main() -> int:
             return 1
         if report.get("workload", {}).get("source_resolution") != [320, 360]:
             print("benchmark did not preserve the fixture source geometry", file=sys.stderr)
+            return 1
+        if report.get("workload", {}).get("detector_interval_ms") != 1250:
+            print("benchmark did not preserve the selected detector interval", file=sys.stderr)
             return 1
         scales = report.get("scales", [])
         if [scale.get("detection_scale") for scale in scales] != [1, 2]:

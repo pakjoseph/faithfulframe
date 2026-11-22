@@ -199,6 +199,8 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
             report_path = output_dir / "dlib_hog.json"
 
             def run(command, **_kwargs):
+                interval_index = command.index("--detector-interval-ms")
+                self.assertEqual(command[interval_index + 1], str(comparison.DETECTOR_INTERVAL_MS))
                 revision_index = command.index("--binary-source-revision")
                 self.assertEqual(command[revision_index + 1], "commit-123")
                 report_path.write_text("{}", encoding="utf-8")
@@ -250,6 +252,7 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                     "source_resolution": [3840, 2160],
                     "output_resolution": [1920, 1080],
                     "fps": 25,
+                    "detector_interval_ms": comparison.DETECTOR_INTERVAL_MS,
                     "label": workload_label,
                 },
                 "detector_engine": engine,
@@ -352,6 +355,7 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                 "source_resolution": [3840, 2160],
                 "output_resolution": [1920, 1080],
                 "fps": 25,
+                "detector_interval_ms": comparison.DETECTOR_INTERVAL_MS,
                 "label": "synthetic",
             },
         }

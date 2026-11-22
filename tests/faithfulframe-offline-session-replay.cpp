@@ -10,6 +10,7 @@
 #include "face-detector-dlib-hog.h"
 #include "face-tracker-manager.hpp"
 #include "faithfulframe-candidate-limits.hpp"
+#include "faithfulframe-detector-cadence.hpp"
 #include "faithfulframe_ffi.h"
 #include "texture-object.h"
 
@@ -72,6 +73,7 @@ struct arguments
 	offline_detector_engine detector_engine = offline_detector_engine::dlib_hog;
 	bool ppm_stdin = false;
 	uint32_t fps = 30;
+	uint64_t detector_interval_ms = faithfulframe_detector_interval_default_ms;
 	uint32_t detection_scale = 1;
 	uint32_t output_width = 1920;
 	uint32_t output_height = 1080;
@@ -111,6 +113,7 @@ void usage(std::ostream &out)
 	out << "Usage: faithfulframe-offline-session-replay --model <dlib_model.dat> "
 	       "(--manifest <frames.tsv> | --ppm-stdin) [--fps <1..120>] [--trace <trace.jsonl>] "
 	       "[--detector-engine dlib_hog|dlib_cnn] [--detection-scale <1..16>] "
+	       "[--detector-interval-ms <1000|1250|1500|1750|2000>] "
 	       "[--output-width <pixels>] [--output-height <pixels>] "
 	       "[--operator-select-first-candidate-at-ms <timestamp> | "
 	       "--operator-select-leftmost-candidate-at-ms <timestamp>] "
@@ -172,6 +175,15 @@ bool parse_arguments(int argc, char **argv, arguments &args)
 				return false;
 			}
 			args.fps = static_cast<uint32_t>(parsed);
+		} else if (option == "--detector-interval-ms") {
+			uint64_t parsed = 0;
+			if (!parse_integer(value, parsed) || parsed < faithfulframe_detector_interval_min_ms ||
+			    parsed > faithfulframe_detector_interval_default_ms ||
+			    (parsed - faithfulframe_detector_interval_min_ms) % faithfulframe_detector_interval_step_ms != 0) {
+				std::cerr << "--detector-interval-ms must be 1000, 1250, 1500, 1750, or 2000\n";
+				return false;
+			}
+			args.detector_interval_ms = parsed;
 		} else if (option == "--detection-scale") {
 			uint64_t parsed = 0;
 			if (!parse_integer(value, parsed) || parsed < 1 || parsed > 16) {
@@ -627,6 +639,7 @@ int main(int argc, char **argv)
 			manager->upsize_b = 0.1f;
 			manager->tracking_threshold = 1.0e-4f;
 			manager->scale.store(static_cast<float>(args.detection_scale), std::memory_order_relaxed);
+			manager->detector_interval_ms.store(args.detector_interval_ms, std::memory_order_release);
 			manager->detector_crop_l = 0;
 			manager->detector_crop_r = 0;
 			manager->detector_crop_t = 0;
@@ -737,6 +750,8 @@ int main(int argc, char **argv)
 		       << ",\"detector_input_width\":" << image.width / args.detection_scale
 		       << ",\"detector_input_height\":" << image.height / args.detection_scale
 		       << ",\"detection_scale\":" << args.detection_scale << ",\"scaling_mode\":\"rgb_stride\""
+		       << ",\"detector_interval_ms\":"
+		       << manager->detector_interval_ms.load(std::memory_order_acquire)
 		       << ",\"detector_work_count\":" << manager->detect->completed_work_count()
 		       << ",\"detector_work_us\":" << manager->detect->last_work_duration_us()
 		       << ",\"detection_count\":" << detections.size()
@@ -928,6 +943,7 @@ int main(int argc, char **argv)
 							     process_started.resident_bytes, resident_growth_bytes);
 	*trace << "{\"kind\":\"summary\",\"frames\":" << frame_index << ",\"detector_engine\":\""
 	       << detector_engine_name(args.detector_engine) << "\",\"detection_scale\":" << args.detection_scale
+	       << ",\"detector_interval_ms\":" << args.detector_interval_ms
 	       << ",\"scaling_mode\":\"rgb_stride\""
 	       << ",\"candidate_observations\":" << candidate_observations
 	       << ",\"operator_selection_attempts\":" << selection_attempts

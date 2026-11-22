@@ -19,7 +19,7 @@ import tempfile
 from typing import Any
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 FRAME_COUNT = 550
 FRAME_STEP_MS = 40
 MIN_DETECTOR_WORK_SAMPLES_PER_RUN = 10
@@ -31,6 +31,7 @@ OUTPUT_HEIGHT = 1080
 DETECTION_SCALE = 2
 DETECTION_SCALES = (2, 4)
 FPS = 25
+DETECTOR_INTERVAL_MS = 2000
 WORKLOADS = (
     (
         "single_face_center",
@@ -208,6 +209,8 @@ def _run_backend(
         str(repeats),
         "--fps",
         str(FPS),
+        "--detector-interval-ms",
+        str(DETECTOR_INTERVAL_MS),
         "--output-resolution",
         f"{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}",
         "--workload-label",
@@ -303,6 +306,8 @@ def _paired_summary(
         raise ComparisonError("benchmark workload is not the defined synthetic 4K source")
     if hog.get("workload", {}).get("output_resolution") != [OUTPUT_WIDTH, OUTPUT_HEIGHT]:
         raise ComparisonError("benchmark workload does not use the defined 1080p output")
+    if hog.get("workload", {}).get("detector_interval_ms") != DETECTOR_INTERVAL_MS:
+        raise ComparisonError("benchmark workload does not use the defined detector interval")
     hog_scales = hog.get("scales", [])
     cnn_scales = cnn.get("scales", [])
     expected_scales = list(DETECTION_SCALES)

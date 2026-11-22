@@ -26,9 +26,11 @@ import time
 from typing import Any
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MAX_DETECTION_SCALE = 16
 DETECTOR_ENGINES = ("dlib_hog", "dlib_cnn")
+DETECTOR_INTERVALS_MS = (1000, 1250, 1500, 1750, 2000)
+DEFAULT_DETECTOR_INTERVAL_MS = 2000
 
 
 class BenchmarkError(ValueError):
@@ -139,10 +141,15 @@ def _process_metrics(summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def summarize_trace(
-    trace_path: Path, detection_scale: int, detector_engine: str = "dlib_hog"
+    trace_path: Path,
+    detection_scale: int,
+    detector_engine: str = "dlib_hog",
+    detector_interval_ms: int = DEFAULT_DETECTOR_INTERVAL_MS,
 ) -> dict[str, Any]:
     if detector_engine not in DETECTOR_ENGINES:
         raise BenchmarkError("requested detector engine is unsupported")
+    if detector_interval_ms not in DETECTOR_INTERVALS_MS:
+        raise BenchmarkError("requested detector interval is unsupported")
     diagnostics: list[dict[str, Any]] = []
     candidate_observations = 0
     summary_events: list[dict[str, Any]] = []
@@ -189,10 +196,13 @@ def summarize_trace(
         detector_width = _nonnegative_integer(event.get("detector_input_width"), "detector_input_width")
         detector_height = _nonnegative_integer(event.get("detector_input_height"), "detector_input_height")
         event_scale = _nonnegative_integer(event.get("detection_scale"), "detection_scale")
+        event_interval_ms = _nonnegative_integer(event.get("detector_interval_ms"), "detector_interval_ms")
         if frame_index <= previous_frame_index:
             raise BenchmarkError("detector diagnostics frame indexes are not strictly increasing")
         if event_scale != detection_scale:
             raise BenchmarkError("trace detection scale does not match the requested scale")
+        if event_interval_ms != detector_interval_ms:
+            raise BenchmarkError("trace detector interval does not match the requested interval")
         if source_width == 0 or source_height == 0:
             raise BenchmarkError("trace contains an empty source geometry")
         if (detector_width, detector_height) != (
@@ -232,6 +242,11 @@ def summarize_trace(
         raise BenchmarkError("summary frame count does not match detector diagnostics")
     if _nonnegative_integer(final_summary.get("detection_scale"), "summary.detection_scale") != detection_scale:
         raise BenchmarkError("summary detection scale does not match the requested scale")
+    summary_interval_ms = _nonnegative_integer(
+        final_summary.get("detector_interval_ms"), "summary.detector_interval_ms"
+    )
+    if summary_interval_ms != detector_interval_ms:
+        raise BenchmarkError("summary detector interval does not match the requested interval")
     if final_summary.get("detector_engine") != detector_engine:
         raise BenchmarkError("summary detector engine does not match the requested engine")
     if final_summary.get("scaling_mode") != "rgb_stride":
@@ -250,6 +265,7 @@ def summarize_trace(
         ],
         "detection_scale": detection_scale,
         "detector_engine": detector_engine,
+        "detector_interval_ms": detector_interval_ms,
         "scaling_mode": "rgb_stride",
         "frame_count": len(diagnostics),
         "simulated_duration_ms": last_timestamp_ms - first_timestamp_ms,
@@ -355,6 +371,7 @@ def _run_replay(
     manifest: Path,
     output_resolution: tuple[int, int],
     fps: int,
+    detector_interval_ms: int,
     detector_engine: str,
     scale: int,
     trace_path: Path,
@@ -370,6 +387,8 @@ def _run_replay(
         str(trace_path),
         "--fps",
         str(fps),
+        "--detector-interval-ms",
+        str(detector_interval_ms),
         "--detector-engine",
         detector_engine,
         "--output-width",
@@ -398,7 +417,7 @@ def _run_replay(
         raise BenchmarkError(
             f"replay failed at {detector_engine} detection scale {scale} with exit code {completed.returncode}: {detail}"
         )
-    metrics = summarize_trace(trace_path, scale, detector_engine)
+    metrics = summarize_trace(trace_path, scale, detector_engine, detector_interval_ms)
     metrics["replay_wall_time_ms"] = round(wall_time_ms, 3)
     return metrics
 
@@ -416,6 +435,7 @@ def _aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
             "frame_count",
             "simulated_duration_ms",
             "detector_engine",
+            "detector_interval_ms",
         ):
             if run[field] != first[field]:
                 raise BenchmarkError(f"replay workload changed between repeats ({field})")
@@ -425,6 +445,7 @@ def _aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "repeats": len(runs),
         "detector_engine": first["detector_engine"],
+        "detector_interval_ms": first["detector_interval_ms"],
         "source_resolution": first["source_resolution"],
         "detector_input_resolution": first["detector_input_resolution"],
         "frame_count_per_run": first["frame_count"],
@@ -509,6 +530,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scales", type=parse_scales, default=parse_scales("1,2,4"))
     parser.add_argument("--repeats", type=int, default=3, help="replay count per scale (1..100)")
     parser.add_argument("--fps", type=int, default=30, help="simulated source rate (1..120)")
+    parser.add_argument(
+        "--detector-interval-ms",
+        type=int,
+        choices=DETECTOR_INTERVALS_MS,
+        default=DEFAULT_DETECTOR_INTERVAL_MS,
+        help="production detector cadence to reproduce (default: 2000 ms)",
+    )
     parser.add_argument(
         "--output-resolution",
         type=parse_resolution,
@@ -604,6 +632,7 @@ def main(argv: list[str] | None = None) -> int:
         "workload": {
             "label": args.workload_label.strip(),
             "fps": args.fps,
+            "detector_interval_ms": args.detector_interval_ms,
             "output_resolution": list(args.output_resolution),
             "source_resolution": None,
             "notes": "manifest frame paths and image data are not copied into this report",
@@ -649,6 +678,7 @@ def main(argv: list[str] | None = None) -> int:
                         manifest,
                         args.output_resolution,
                         args.fps,
+                        args.detector_interval_ms,
                         args.detector_engine,
                         scale,
                         trace_path,

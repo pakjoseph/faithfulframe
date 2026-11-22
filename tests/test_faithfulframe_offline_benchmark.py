@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -13,7 +15,7 @@ benchmark = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(benchmark)
 
 
-def diagnostic(frame_index, work_count, work_us, *, width=3840, height=2160, scale=2):
+def diagnostic(frame_index, work_count, work_us, *, width=3840, height=2160, scale=2, interval_ms=2000):
     return {
         "kind": "tracker_diagnostics",
         "frame_index": frame_index,
@@ -24,6 +26,7 @@ def diagnostic(frame_index, work_count, work_us, *, width=3840, height=2160, sca
         "detector_input_height": height // scale,
         "detector_engine": "dlib_hog",
         "detection_scale": scale,
+        "detector_interval_ms": interval_ms,
         "scaling_mode": "rgb_stride",
         "detector_work_count": work_count,
         "detector_work_us": work_us,
@@ -35,6 +38,7 @@ def diagnostic(frame_index, work_count, work_us, *, width=3840, height=2160, sca
 def process_summary(**overrides):
     summary = {
         "detector_engine": "dlib_hog",
+        "detector_interval_ms": 2000,
         "process_wall_us": 1000,
         "process_cpu_valid": True,
         "process_cpu_us": 250,
@@ -118,6 +122,50 @@ class OfflineBenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(args.detector_engine, "dlib_cnn")
 
+    def test_benchmark_records_selected_detector_interval(self):
+        parser = benchmark._build_parser()
+        args = parser.parse_args(
+            [
+                "--binary", "replay",
+                "--model", "model.dat",
+                "--manifest", "frames.tsv",
+                "--output", "report.json",
+                "--workload-label", "synthetic",
+                "--detector-interval-ms", "1250",
+            ]
+        )
+        self.assertEqual(args.detector_interval_ms, 1250)
+
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            parser.parse_args(
+                [
+                    "--binary", "replay",
+                    "--model", "model.dat",
+                    "--manifest", "frames.tsv",
+                    "--output", "report.json",
+                    "--workload-label", "synthetic",
+                    "--detector-interval-ms", "1125",
+                ]
+            )
+
+    def test_rejects_trace_with_different_detector_interval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = self.write_trace(
+                directory,
+                [
+                    diagnostic(0, 0, 0, interval_ms=2000),
+                    diagnostic(1, 1, 1200, interval_ms=2000),
+                    {
+                        "kind": "summary",
+                        "frames": 2,
+                        "detection_scale": 2,
+                        **process_summary(),
+                    },
+                ],
+            )
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "detector interval"):
+                benchmark.summarize_trace(trace, 2, detector_interval_ms=1250)
+
     def test_summarizes_latency_and_numeric_tracking_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:
             trace = self.write_trace(
@@ -142,6 +190,7 @@ class OfflineBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["source_resolution"], [3840, 2160])
         self.assertEqual(result["detector_input_resolution"], [1920, 1080])
         self.assertEqual(result["detector_engine"], "dlib_hog")
+        self.assertEqual(result["detector_interval_ms"], 2000)
         self.assertEqual(result["frame_count"], 4)
         self.assertEqual(result["simulated_duration_ms"], 120)
         self.assertEqual(result["detector_work_samples_us"], [1200, 1800])
@@ -323,6 +372,7 @@ class OfflineBenchmarkTests(unittest.TestCase):
     def test_aggregates_repeats_only_when_workload_shape_matches(self):
         common = {
             "detector_engine": "dlib_hog",
+            "detector_interval_ms": 2000,
             "source_resolution": [3840, 2160],
             "detector_input_resolution": [1920, 1080],
             "frame_count": 150,
