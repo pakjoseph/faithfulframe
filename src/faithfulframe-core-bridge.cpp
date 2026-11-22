@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <new>
 
 #ifdef FAITHFULFRAME_TEST_REAPER_ENQUEUE_HOOK
 namespace {
@@ -857,15 +858,34 @@ static void faithfulframe_release_reaper_worker(const std::shared_ptr<faithfulfr
 }
 
 namespace {
-std::mutex faithfulframe_reaper_owner_mutex;
-std::mutex faithfulframe_module_lifecycle_mutex;
+template<typename T> T &faithfulframe_process_lifetime_object()
+{
+	alignas(T) static unsigned char storage[sizeof(T)];
+	// Placement construction deliberately avoids registering a static destructor.
+	static T *const object = ::new (static_cast<void *>(storage)) T();
+	return *object;
+}
+
+struct faithfulframe_reaper_lifecycle_state
+{
+	std::mutex owner_mutex;
+	std::mutex lifecycle_mutex;
+};
+
+// OBS may invoke plugin callbacks after obs_module_unload returns, and source
+// destruction can finish asynchronously. Keep the reaper owner and the locks
+// it uses alive through process termination; do not join workers from a DLL
+// static destructor, which can run under the Windows loader lock.
+faithfulframe_reaper_lifecycle_state &faithfulframe_reaper_lifecycle =
+	faithfulframe_process_lifetime_object<faithfulframe_reaper_lifecycle_state>();
+std::mutex &faithfulframe_reaper_owner_mutex = faithfulframe_reaper_lifecycle.owner_mutex;
+std::mutex &faithfulframe_module_lifecycle_mutex = faithfulframe_reaper_lifecycle.lifecycle_mutex;
 size_t faithfulframe_pending_creates = 0;
 size_t faithfulframe_live_instances = 0;
 bool faithfulframe_module_unloading = false;
 bool faithfulframe_reaper_shutdown_started = false;
-// Declared last so process-exit cleanup runs while the lifecycle/owner locks
-// above are still alive. OBS module unload normally drains this earlier.
-std::shared_ptr<faithfulframe_executor_reaper> faithfulframe_reaper;
+std::shared_ptr<faithfulframe_executor_reaper> &faithfulframe_reaper =
+	faithfulframe_process_lifetime_object<std::shared_ptr<faithfulframe_executor_reaper>>();
 } // namespace
 
 std::shared_ptr<faithfulframe_executor_reaper> faithfulframe_acquire_executor_reaper()
@@ -959,6 +979,19 @@ extern "C" void faithfulframe_executor_reaper_shutdown()
 	if (faithfulframe_reaper)
 		faithfulframe_reaper->request_shutdown();
 }
+
+#ifdef FAITHFULFRAME_TEST_REAPER_SHUTDOWN_HOOK
+extern "C" void faithfulframe_test_drain_and_join_reaper(void)
+{
+	std::shared_ptr<faithfulframe_executor_reaper> reaper;
+	{
+		std::lock_guard<std::mutex> lock(faithfulframe_reaper_owner_mutex);
+		reaper = faithfulframe_reaper;
+	}
+	if (reaper)
+		reaper->shutdown();
+}
+#endif
 
 extern "C" int faithfulframe_teardown_register_instance()
 {

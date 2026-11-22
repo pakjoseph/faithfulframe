@@ -2704,6 +2704,8 @@ int run_smoke()
 	trace_session_smoke_checkpoint("nonblocking video cleanup reservation test");
 	if (!video_cleanup_reservation_does_not_wait_for_lifecycle_mutex())
 		return 130;
+	faithfulframe_teardown_begin_module_unload();
+	faithfulframe_test_drain_and_join_reaper();
 	return 0;
 }
 

@@ -329,6 +329,7 @@ extern "C" void faithfulframe_test_set_reaper_wait_hook(void (*hook)(void *), vo
 
 #ifdef FAITHFULFRAME_TEST_REAPER_SHUTDOWN_HOOK
 extern "C" int faithfulframe_test_reaper_shutdown_pending(void);
+extern "C" void faithfulframe_test_drain_and_join_reaper(void);
 #endif
 #ifdef FAITHFULFRAME_TEST_SESSION_WORK_HOOK
 extern "C" void faithfulframe_test_set_session_work_hook(void (*hook)(void *), void *context);
