@@ -3244,21 +3244,34 @@ mod tests {
         assert_eq!(stale_click.selected, Some(10));
         assert_eq!(stale_click.crop, locked.crop);
 
-        let other_person = engine.apply(Event::Candidate {
+        let mut stale_same_person = candidate(11, 100, 3, 6);
+        // This confirmation is newer than the lock's original evidence, but
+        // it was produced before the loss boundary and cannot authorize a
+        // reacquisition after the target disappears.
+        stale_same_person.detector_confirmed_at = 3;
+        let stale_reacquisition = engine.apply(Event::Candidate {
             at: 6,
-            candidate: candidate(11, 777, 3, 6),
+            candidate: stale_same_person,
+        });
+        assert_eq!(stale_reacquisition.state, State::Searching);
+        assert_eq!(stale_reacquisition.selected, Some(10));
+        assert_eq!(stale_reacquisition.crop, locked.crop);
+
+        let other_person = engine.apply(Event::Candidate {
+            at: 7,
+            candidate: candidate(12, 777, 4, 7),
         });
         assert_eq!(other_person.state, State::Searching);
         assert_eq!(other_person.selected, Some(10));
         assert_eq!(other_person.crop, locked.crop);
 
         let same_person = engine.apply(Event::Candidate {
-            at: 7,
-            candidate: candidate(12, 100, 4, 7),
+            at: 8,
+            candidate: candidate(13, 100, 5, 8),
         });
         assert_eq!(same_person.state, State::Locked);
         assert_eq!(same_person.reason, Reason::ContinuityRecovered);
-        assert_eq!(same_person.selected, Some(12));
+        assert_eq!(same_person.selected, Some(13));
     }
 
     #[test]
