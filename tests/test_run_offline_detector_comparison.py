@@ -94,6 +94,41 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
             center_pixel = ((top + portrait_height) * comparison.SOURCE_WIDTH + left + portrait_width) * 3
             self.assertEqual(pixels[center_pixel : center_pixel + 3], expected)
 
+    def test_detector_comparison_requires_each_scale_and_repeat_to_see_the_fixture(self):
+        report = {
+            "detector_engine": "dlib_hog",
+            "scales": [
+                {
+                    "detection_scale": scale,
+                    "summary": {
+                        "max_face_detections": 3,
+                        "runs": [
+                            {"max_face_detections": 3}
+                            for _ in range(comparison.MIN_COMPARISON_REPEATS)
+                        ]
+                    },
+                }
+                for scale in comparison.DETECTION_SCALES
+            ],
+        }
+
+        comparison._require_synthetic_face_coverage(report, 3)
+
+        report["scales"][1]["summary"]["runs"][3]["max_face_detections"] = 2
+        with self.assertRaisesRegex(
+            comparison.ComparisonError,
+            r"dlib_hog scale 4 run 4 reported 2 synthetic face detections; expected at least 3",
+        ):
+            comparison._require_synthetic_face_coverage(report, 3)
+
+        report["scales"][1]["summary"]["max_face_detections"] = 2
+        report["scales"][1]["summary"]["runs"][3]["max_face_detections"] = 3
+        with self.assertRaisesRegex(
+            comparison.ComparisonError,
+            r"dlib_hog scale 4 aggregate reported 2 synthetic face detections; expected at least 3",
+        ):
+            comparison._require_synthetic_face_coverage(report, 3)
+
     def test_manifest_repeats_one_4k_frame_with_monotonic_timestamps(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -234,7 +269,12 @@ class OfflineDetectorComparisonTests(unittest.TestCase):
                             "process_cpu_percent_median": 50.0,
                             "peak_resident_bytes_max": 1000000,
                             "runs": [
-                                {"detector_work_samples_us": [100 + index for index in range(10)]}
+                                {
+                                    "detector_work_samples_us": [
+                                        100 + index for index in range(10)
+                                    ],
+                                    "max_face_detections": 3,
+                                }
                                 for _ in range(repeats)
                             ],
                         },

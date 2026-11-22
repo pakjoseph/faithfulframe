@@ -244,6 +244,49 @@ def _run_backend(
     return report
 
 
+def _require_synthetic_face_coverage(report: dict[str, Any], expected_face_count: int) -> None:
+    if (
+        isinstance(expected_face_count, bool)
+        or not isinstance(expected_face_count, int)
+        or expected_face_count < 1
+    ):
+        raise ComparisonError("synthetic workload must contain at least one expected face")
+    engine = report.get("detector_engine", "unknown detector")
+    scales = report.get("scales")
+    if not isinstance(scales, list) or not scales:
+        raise ComparisonError(f"{engine} report has no detector scale results")
+
+    for scale in scales:
+        if not isinstance(scale, dict):
+            raise ComparisonError(f"{engine} report contains an invalid detector scale result")
+        scale_label = scale.get("detection_scale", "unknown")
+        summary = scale.get("summary")
+        runs = summary.get("runs") if isinstance(summary, dict) else None
+        if not isinstance(runs, list) or not runs:
+            raise ComparisonError(f"{engine} scale {scale_label} report has no run results")
+        summary_detected = summary.get("max_face_detections")
+        if (
+            isinstance(summary_detected, bool)
+            or not isinstance(summary_detected, int)
+            or summary_detected < expected_face_count
+        ):
+            raise ComparisonError(
+                f"{engine} scale {scale_label} aggregate reported {summary_detected} "
+                f"synthetic face detections; expected at least {expected_face_count}"
+            )
+        for index, run in enumerate(runs, start=1):
+            detected = run.get("max_face_detections") if isinstance(run, dict) else None
+            if (
+                isinstance(detected, bool)
+                or not isinstance(detected, int)
+                or detected < expected_face_count
+            ):
+                raise ComparisonError(
+                    f"{engine} scale {scale_label} run {index} reported {detected} "
+                    f"synthetic face detections; expected at least {expected_face_count}"
+                )
+
+
 def _paired_summary(
     hog: dict[str, Any], cnn: dict[str, Any], input_artifacts: dict[str, Any]
 ) -> dict[str, Any]:
@@ -413,6 +456,9 @@ def _run_workload(
         binary_source_revision,
         workload_label,
     )
+    expected_face_count = len(positions)
+    _require_synthetic_face_coverage(hog, expected_face_count)
+    _require_synthetic_face_coverage(cnn, expected_face_count)
     if _input_artifacts(portrait, scene, layout, positions) != input_artifacts:
         raise ComparisonError(f"synthetic benchmark inputs changed during {layout} paired runs")
     paired = _paired_summary(hog, cnn, input_artifacts)
