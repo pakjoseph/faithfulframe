@@ -8,6 +8,7 @@
 #include "face-tracker-dlib.h"
 #include "face-tracker-association.hpp"
 #include "faithfulframe-candidate-limits.hpp"
+#include "faithfulframe-detector-cadence.hpp"
 #include "texture-object.h"
 #include "helper.hpp"
 
@@ -547,7 +548,7 @@ void face_tracker_manager::tick(float second)
 
 	if (detect_tick == tick_cnt)
 		next_tick_stage_to_detector =
-			tick_cnt + (int)(detector_interval_seconds / second); // detector scan cadence.
+			faithfulframe_detector_schedule_next_tick(tick_cnt, detector_interval_seconds, second);
 
 	tick_cnt += 1;
 
