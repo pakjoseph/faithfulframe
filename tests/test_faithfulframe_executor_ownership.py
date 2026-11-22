@@ -219,7 +219,7 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
         for operation in ("std::getenv", "std::fprintf", "faithfulframe_worker_log", "blog("):
             self.assertNotIn(operation, request, "OBS teardown requests must not perform blocking diagnostics")
 
-    def test_video_and_render_callback_helpers_have_no_test_diagnostics(self):
+    def test_video_and_render_callback_helpers_have_no_blocking_diagnostics(self):
         face_tracker = (ROOT / "src/face-tracker.cpp").read_text(encoding="utf-8")
         lifecycle_start = face_tracker.index("static bool enqueue_source_lifecycle_locked(")
         lifecycle_end = face_tracker.index("\nstatic void fail_source_binding_closed(", lifecycle_start)
@@ -247,6 +247,18 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
             ],
         )
 
+        blocking_diagnostics = (
+            "std::getenv(",
+            "getenv(",
+            "std::fprintf(",
+            "fprintf(",
+            "std::printf(",
+            "printf(",
+            "blog(",
+            "faithfulframe_worker_log(",
+            "std::cerr",
+            "std::cout",
+        )
         for callback in (
             face_tracker[lifecycle_start:lifecycle_end],
             face_tracker[publish_start:publish_end],
@@ -254,8 +266,12 @@ class SerializedSessionOwnershipTests(unittest.TestCase):
             *manager_callbacks,
         ):
             self.assertNotIn("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS", callback)
-            self.assertNotIn("std::getenv", callback)
-            self.assertNotIn("blog(", callback, "OBS video callbacks must surface status through snapshots")
+            for operation in blocking_diagnostics:
+                self.assertNotIn(
+                    operation,
+                    callback,
+                    "OBS video/render callbacks must surface status through snapshots",
+                )
         self.assertNotIn("FAITHFULFRAME_TEST_DETECTOR_DIAGNOSTICS", manager)
 
 
