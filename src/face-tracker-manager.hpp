@@ -5,11 +5,16 @@
 #include <cstdint>
 #include <string>
 #include "face-tracker-base.h"
+#include "faithfulframe-candidate-limits.hpp"
 
 class face_tracker_manager {
 public:
 	static constexpr uint64_t detector_interval_ms = 2000;
 	static constexpr float detector_interval_seconds = 2.0f;
+	// A correlation-tracker result remains detector-authorized through one
+	// detector cadence plus the normal candidate freshness window.
+	static constexpr uint64_t detector_confirmation_max_age_ms =
+		detector_interval_ms + faithfulframe_candidate_max_age_ms;
 
 	enum detector_engine_e {
 		engine_dlib_hog = 0,

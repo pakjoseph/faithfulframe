@@ -711,7 +711,7 @@ int main(int argc, char **argv)
 			const uint64_t detector_confirmed_at =
 				faithfulframe_detector_confirmation_is_fresh(
 					tracker.detector_confirmed_at_ms, timestamp_ms,
-					face_tracker_manager::detector_interval_ms + faithfulframe_candidate_max_age_ms)
+					face_tracker_manager::detector_confirmation_max_age_ms)
 					? tracker.detector_confirmed_at_ms
 					: 0;
 			candidates.push_back(ff_candidate{tracker.candidate_handle, tracker.continuity_token, identity,

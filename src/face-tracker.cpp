@@ -151,11 +151,9 @@ struct faithfulframe_tracker_settings_queue
 #ifdef ENABLE_RUST_CORE_BRIDGE
 static constexpr uint64_t safe_preview_max_snapshot_age_ms = 500;
 static constexpr uint64_t safe_candidate_max_age_ms = faithfulframe_candidate_max_age_ms;
-// The manager schedules dlib detection every two seconds. Confirmation expires
-// one candidate-freshness window after that cadence, so a stalled detector
-// cannot leave correlation-tracker output authorized indefinitely.
+// Keep the live adapter's confirmation bound aligned with the manager cadence.
 static constexpr uint64_t safe_detector_confirmation_max_age_ms =
-	face_tracker_manager::detector_interval_ms + safe_candidate_max_age_ms;
+	face_tracker_manager::detector_confirmation_max_age_ms;
 
 struct faithfulframe_source_binding;
 static void faithfulframe_bound_source_updated(void *data, calldata_t *params);
