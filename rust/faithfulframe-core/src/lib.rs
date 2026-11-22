@@ -73,6 +73,25 @@ impl Rect {
     }
 }
 
+/// Conservative spatial continuity check for detector-confirmed faces.
+///
+/// Candidate and anchor rectangles have already passed normalized geometry
+/// validation, so all intermediate values are finite and bounded. Requiring
+/// half of the smaller box to overlap mirrors the detector/tracker association
+/// threshold and intentionally prefers a missed automatic recovery over a
+/// possible identity switch.
+fn overlaps_half_of_smaller(left: Rect, right: Rect) -> bool {
+    let intersection_width = (left.x + left.width).min(right.x + right.width) - left.x.max(right.x);
+    let intersection_height =
+        (left.y + left.height).min(right.y + right.height) - left.y.max(right.y);
+    if intersection_width <= 0.0 || intersection_height <= 0.0 {
+        return false;
+    }
+    let intersection_area = intersection_width * intersection_height;
+    let smaller_area = (left.width * left.height).min(right.width * right.height);
+    intersection_area >= smaller_area * 0.5
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GeometryError {
     NonFinite,
@@ -122,6 +141,7 @@ pub enum Reason {
     SessionClosing,
     SessionClosed,
     FramingFailure,
+    TargetReacquisitionAmbiguous,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -309,6 +329,10 @@ struct SelectedTarget {
     continuity: ContinuityToken,
     last_seen: Millis,
     rect: Rect,
+    /// Updated only by a newer detector confirmation. Correlation-tracker
+    /// rectangles may move between detector runs, but cannot move this anchor.
+    detector_anchor: Rect,
+    detector_confirmed_at: Millis,
 }
 
 /// A deterministic single-threaded safety policy. Callers must serialize all
@@ -568,6 +592,8 @@ impl TrackingSession {
                             continuity: candidate.continuity,
                             last_seen: candidate.observed_at,
                             rect: candidate.rect,
+                            detector_anchor: candidate.rect,
+                            detector_confirmed_at: candidate.detector_confirmed_at,
                         });
                         self.state = State::Locked;
                         self.reason = Reason::SelectedByOperator;
@@ -686,10 +712,25 @@ impl TrackingSession {
                 && candidate.detector_confirmed_at != 0
                 && candidate.observed_at > selected.last_seen
             {
+                // An active lock has not crossed a target-loss boundary, so
+                // continuous, detector-confirmed movement remains trackable
+                // across the stage. Advance the reacquisition anchor only on
+                // genuinely newer detector confirmation; Searching applies
+                // the conservative spatial check against this anchor.
                 self.selected = Some(SelectedTarget {
                     handle: candidate.handle,
                     last_seen: candidate.observed_at,
                     rect: candidate.rect,
+                    detector_anchor: if candidate.detector_confirmed_at
+                        > selected.detector_confirmed_at
+                    {
+                        candidate.rect
+                    } else {
+                        selected.detector_anchor
+                    },
+                    detector_confirmed_at: candidate
+                        .detector_confirmed_at
+                        .max(selected.detector_confirmed_at),
                     ..selected
                 });
                 self.crop_action = CropAction::Track;
@@ -697,27 +738,44 @@ impl TrackingSession {
                 && self.state == State::Searching
                 && candidate.detector_confirmed_at != 0
                 && candidate.observed_at > selected.last_seen
-                && self
-                    .loss_started_at
-                    .is_some_and(|started_at| candidate.observed_at >= started_at)
-                && self
-                    .loss_deadline
-                    .is_some_and(|deadline| candidate.observed_at < deadline)
             {
-                self.selected = Some(SelectedTarget {
-                    handle: candidate.handle,
-                    last_seen: candidate.observed_at,
-                    rect: candidate.rect,
-                    ..selected
-                });
-                self.state = State::Locked;
-                self.reason = Reason::ContinuityRecovered;
-                self.crop_action = CropAction::Track;
-                self.loss_started_at = None;
-                self.loss_deadline = None;
+                if !overlaps_half_of_smaller(selected.detector_anchor, candidate.rect) {
+                    self.lose_ambiguous_target();
+                } else if candidate.detector_confirmed_at > selected.detector_confirmed_at
+                    && self.loss_started_at.is_some_and(|started_at| {
+                        candidate.observed_at >= started_at
+                            && candidate.detector_confirmed_at >= started_at
+                    })
+                    && self
+                        .loss_deadline
+                        .is_some_and(|deadline| candidate.observed_at < deadline)
+                {
+                    self.selected = Some(SelectedTarget {
+                        handle: candidate.handle,
+                        last_seen: candidate.observed_at,
+                        rect: candidate.rect,
+                        detector_anchor: candidate.rect,
+                        detector_confirmed_at: candidate.detector_confirmed_at,
+                        ..selected
+                    });
+                    self.state = State::Locked;
+                    self.reason = Reason::ContinuityRecovered;
+                    self.crop_action = CropAction::Track;
+                    self.loss_started_at = None;
+                    self.loss_deadline = None;
+                }
             }
         }
         CommandResult::NotACommand
+    }
+
+    fn lose_ambiguous_target(&mut self) {
+        self.state = State::Lost;
+        self.reason = Reason::TargetReacquisitionAmbiguous;
+        self.selected = None;
+        self.loss_started_at = None;
+        self.loss_deadline = None;
+        self.crop_action = CropAction::Hold;
     }
 
     fn clear_candidates(&mut self, observation_version: u64) -> CommandResult {
@@ -1410,7 +1468,7 @@ mod tests {
         generations: Generations,
         state: State,
         reason: Reason,
-        selected: Option<(CandidateHandle, ContinuityToken, Millis, Rect)>,
+        selected: Option<(CandidateHandle, ContinuityToken, Millis, Rect, Rect, Millis)>,
         latest: BTreeMap<CandidateHandle, Candidate>,
         candidate_observation_open: bool,
         held_crop: Rect,
@@ -1441,6 +1499,8 @@ mod tests {
                     target.continuity,
                     target.last_seen,
                     target.rect,
+                    target.detector_anchor,
+                    target.detector_confirmed_at,
                 )
             }),
             latest: session.latest.clone(),
@@ -3040,7 +3100,7 @@ mod tests {
             observed_at: 6,
             detector_confirmed_at: 6,
             expires_at: 16,
-            rect: Rect::normalized(0.65, 0.2, 0.1, 0.2).unwrap(),
+            rect: Rect::normalized(0.52, 0.2, 0.1, 0.2).unwrap(),
         };
         let after_selected_update = engine.apply(Event::Candidate {
             at: 6,
@@ -3097,7 +3157,7 @@ mod tests {
         assert_eq!(locked.state, State::Locked);
 
         let mut moved = candidate(10, 100, observed.observation_version, 4);
-        moved.rect = Rect::normalized(0.75, 0.2, 0.1, 0.2).unwrap();
+        moved.rect = Rect::normalized(0.52, 0.2, 0.1, 0.2).unwrap();
         let updated = engine.apply(Event::Candidate {
             at: 4,
             candidate: moved,
@@ -3209,7 +3269,10 @@ mod tests {
                 max_evidence_age_ms: 10,
                 ..Config::default()
             },
-            framing::FramingConfig::default(),
+            framing::FramingConfig {
+                dead_zone_fraction: 0.0,
+                ..framing::FramingConfig::default()
+            },
             identity(),
             generations(),
         )
@@ -3252,8 +3315,8 @@ mod tests {
         let crop_center_x = |snapshot: Snapshot| snapshot.crop.x + snapshot.crop.width * 0.5;
         assert!(crop_center_x(before_recovery) < crop_center_x(locked));
 
-        let mut returning_speaker = candidate(10, 100, 1, 20);
-        returning_speaker.rect = Rect::normalized(0.9, 0.3, 0.08, 0.2).unwrap();
+        let mut returning_speaker = candidate(10, 100, 2, 20);
+        returning_speaker.rect = Rect::normalized(0.51, 0.3, 0.08, 0.2).unwrap();
         let recovered = engine.apply(Event::Candidate {
             at: 20,
             candidate: returning_speaker,
@@ -3274,7 +3337,7 @@ mod tests {
             recovered.crop
         );
 
-        let mut continued_speaker = candidate(10, 100, 1, 29);
+        let mut continued_speaker = candidate(10, 100, 2, 29);
         continued_speaker.rect = returning_speaker.rect;
         let continued = engine.apply(Event::Candidate {
             at: 29,
@@ -3286,16 +3349,100 @@ mod tests {
             crop_center_x(continued) - crop_center_x(recovered) > 0.001,
             "framing did not preserve the new recovery motion ramp"
         );
+    }
 
-        let mut returning_left = candidate(10, 100, 1, 51);
-        returning_left.rect = Rect::normalized(0.05, 0.3, 0.08, 0.2).unwrap();
-        let recovered_again = engine.apply(Event::Candidate {
-            at: 51,
-            candidate: returning_left,
+    #[test]
+    fn spatially_ambiguous_reacquisition_holds_crop_until_operator_selects() {
+        let mut engine = TrackingEngine::new(
+            Config {
+                loss_grace_ms: 100,
+                max_evidence_age_ms: 10,
+                ..Config::default()
+            },
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        let armed = engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
         });
-        assert_eq!(recovered_again.state, State::Locked);
-        assert_eq!(recovered_again.reason, Reason::ContinuityRecovered);
-        assert!(crop_center_x(recovered_again) < crop_center_x(continued));
+        let mut first_face = candidate(10, 100, 1, 2);
+        first_face.rect = Rect::normalized(0.202, 0.2, 0.1, 0.15).unwrap();
+        let observed = engine.apply(Event::Candidate {
+            at: 2,
+            candidate: first_face,
+        });
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: observed.identity,
+                status_version: observed.status_version,
+                generations: observed.generations,
+                command: Command::SelectCandidate {
+                    handle: first_face.handle,
+                    observation_version: first_face.observation_version,
+                },
+            },
+        });
+        assert_eq!(armed.state, State::Searching);
+        assert_eq!(locked.state, State::Locked);
+
+        let mut detector_miss = candidate(10, 100, 2, 4);
+        detector_miss.rect = Rect::normalized(0.082, 0.2, 0.1, 0.15).unwrap();
+        detector_miss.detector_confirmed_at = 0;
+        let searching = engine.apply(Event::Candidate {
+            at: 4,
+            candidate: detector_miss,
+        });
+        assert_eq!(searching.state, State::Searching);
+        assert_eq!(searching.crop_action, CropAction::Hold);
+        assert_eq!(searching.crop, locked.crop);
+
+        let mut displaced_detection = candidate(11, 100, 3, 5);
+        displaced_detection.rect = detector_miss.rect;
+        let ambiguous = engine.apply(Event::Candidate {
+            at: 5,
+            candidate: displaced_detection,
+        });
+        assert_eq!(ambiguous.state, State::Lost);
+        assert_eq!(ambiguous.reason, Reason::TargetReacquisitionAmbiguous);
+        assert_eq!(ambiguous.selected, None);
+        assert_eq!(ambiguous.crop_action, CropAction::Hold);
+        assert_eq!(ambiguous.crop, locked.crop);
+
+        let mut repeated_detection = candidate(12, 100, 4, 6);
+        repeated_detection.rect = detector_miss.rect;
+        let still_lost = engine.apply(Event::Candidate {
+            at: 6,
+            candidate: repeated_detection,
+        });
+        assert_eq!(still_lost.state, State::Lost);
+        assert_eq!(still_lost.selected, None);
+        assert_eq!(still_lost.crop, locked.crop);
+
+        let selected = engine.apply(Event::Command {
+            at: 7,
+            envelope: CommandEnvelope {
+                identity: still_lost.identity,
+                status_version: still_lost.status_version,
+                generations: still_lost.generations,
+                command: Command::SelectCandidate {
+                    handle: repeated_detection.handle,
+                    observation_version: repeated_detection.observation_version,
+                },
+            },
+        });
+        assert_eq!(selected.state, State::Locked);
+        assert_eq!(selected.reason, Reason::SelectedByOperator);
+        assert_eq!(selected.selected, Some(repeated_detection.handle));
     }
 
     #[test]
@@ -3405,7 +3552,7 @@ mod tests {
             },
         });
         let mut next = candidate(10, 100, 2, 4);
-        next.rect = Rect::normalized(0.7, 0.2, 0.2, 0.4).unwrap();
+        next.rect = Rect::normalized(0.48, 0.2, 0.2, 0.4).unwrap();
         let moving = engine.apply(Event::Candidate {
             at: 4,
             candidate: next,

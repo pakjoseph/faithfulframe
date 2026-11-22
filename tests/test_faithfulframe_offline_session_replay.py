@@ -666,21 +666,34 @@ class OfflineSessionReplayTests(unittest.TestCase):
                 if event["candidate"]["continuity_token"] == selected_continuity
             ]
             for event in selected_track:
-                # A correlation tracker can publish a stale rectangle after
-                # the person leaves or is occluded. That rectangle is useful
-                # only as unconfirmed continuity evidence; it is not a
-                # measured person position and must not be judged as one.
                 if event["candidate"]["detector_confirmed_at_ms"] == 0:
                     continue
                 center_x = (
                     event["candidate"]["rect"][0]
                     + event["candidate"]["rect"][2] / 2
                 )
-                self.assertLess(
-                    abs(center_x - selected_center_x),
-                    0.12,
-                    f"confirmed selected speaker continuity drifted from its initial position at frame "
-                    f"{event['frame_index']}: {center_x:.3f} vs {selected_center_x:.3f}",
+                if abs(center_x - selected_center_x) <= 0.12:
+                    continue
+                event_index = events.index(event)
+                previous_snapshot = next(
+                    prior["snapshot"]
+                    for prior in reversed(events[:event_index])
+                    if "snapshot" in prior
+                )
+                self.assertEqual(
+                    event["snapshot"]["state"],
+                    "lost",
+                    "a detector-confirmed face far from the last selected position must not retain the lock",
+                )
+                self.assertIsNone(
+                    event["snapshot"]["selected_handle"],
+                    "spatially ambiguous evidence must require operator selection",
+                )
+                self.assertEqual(event["snapshot"]["crop_action"], "hold")
+                self.assertEqual(
+                    event["snapshot"]["source_crop"],
+                    previous_snapshot["source_crop"],
+                    "spatially ambiguous evidence changed the held framing",
                 )
             detector_misses = [
                 event
@@ -779,12 +792,21 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     and candidate["continuity_token"] == selected_continuity
                     and candidate["detector_confirmed_at_ms"] != 0
                 )
-                if not confirmed_same_target:
+                center_x = (
+                    candidate["rect"][0] + candidate["rect"][2] / 2
+                    if confirmed_same_target
+                    else selected_center_x
+                )
+                spatially_ambiguous = confirmed_same_target and abs(center_x - selected_center_x) > 0.12
+                if not confirmed_same_target or spatially_ambiguous:
                     self.assertEqual(
                         event["snapshot"]["source_crop"],
                         previous_snapshot["source_crop"],
-                        "unconfirmed or unrelated evidence changed the held crop",
+                        "unconfirmed, unrelated, or spatially ambiguous evidence changed the held crop",
                     )
+                if spatially_ambiguous:
+                    self.assertEqual(event["snapshot"]["state"], "lost")
+                    self.assertIsNone(event["snapshot"]["selected_handle"])
                 selected_after_event = event["snapshot"]["selected_handle"]
                 if selected_after_event is not None:
                     self.assertEqual(
@@ -1009,7 +1031,25 @@ class OfflineSessionReplayTests(unittest.TestCase):
 
             crop_positions = [event["snapshot"]["source_crop"][0] for event in selected_candidates]
             self.assertGreater(crop_positions[-1], crop_positions[0])
-            self.assertIn(summary["snapshot"]["state"], ("locked", "searching"), summary)
+            self.assertIn(
+                summary["snapshot"]["state"],
+                ("locked", "searching"),
+                {
+                    "summary": summary,
+                    "selected_history": [
+                        (
+                            event["frame_index"],
+                            event["candidate"]["rect"],
+                            event["candidate"]["detector_confirmed_at_ms"],
+                            event["snapshot"]["state"],
+                            event["snapshot"]["reason"],
+                            event["snapshot"]["selected_handle"],
+                        )
+                        for event in selected_candidates
+                        if event["snapshot"]["state"] != "locked"
+                    ],
+                },
+            )
             self.assertEqual(summary["snapshot"]["selected_handle"], command["candidate_handle"])
             expected_crop_action = "track" if summary["snapshot"]["state"] == "locked" else "hold"
             self.assertEqual(summary["snapshot"]["crop_action"], expected_crop_action, summary)

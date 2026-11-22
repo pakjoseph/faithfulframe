@@ -190,6 +190,7 @@ fn map_reason(value: Reason) -> u32 {
         Reason::InvalidLifecycle => 18,
         Reason::FramingFailure => 19,
         Reason::TargetDetectorUnconfirmed => 20,
+        Reason::TargetReacquisitionAmbiguous => 21,
     }
 }
 fn map_crop(value: CropAction) -> u32 {
@@ -707,6 +708,7 @@ mod tests {
         assert_eq!(map_reason(Reason::TrackerIdentityExpired), 14);
         assert_eq!(map_reason(Reason::FramingFailure), 19);
         assert_eq!(map_reason(Reason::TargetDetectorUnconfirmed), 20);
+        assert_eq!(map_reason(Reason::TargetReacquisitionAmbiguous), 21);
     }
 
     #[test]

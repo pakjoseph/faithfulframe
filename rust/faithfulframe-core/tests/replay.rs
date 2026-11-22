@@ -483,6 +483,7 @@ fn reason_name(reason: Reason) -> &'static str {
         Reason::SessionClosing => "session_closing",
         Reason::SessionClosed => "session_closed",
         Reason::FramingFailure => "framing_failure",
+        Reason::TargetReacquisitionAmbiguous => "target_reacquisition_ambiguous",
     }
 }
 

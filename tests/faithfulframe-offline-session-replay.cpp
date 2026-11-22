@@ -349,6 +349,8 @@ const char *reason_name(uint32_t value)
 		return "target_evidence_stale";
 	case FF_REASON_TARGET_DETECTOR_UNCONFIRMED:
 		return "target_detector_unconfirmed";
+	case FF_REASON_TARGET_REACQUISITION_AMBIGUOUS:
+		return "target_reacquisition_ambiguous";
 	case FF_REASON_TARGET_LOSS_DEADLINE_EXPIRED:
 		return "target_loss_deadline_expired";
 	case FF_REASON_RESET_WIDE:
