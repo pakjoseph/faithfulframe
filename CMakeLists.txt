@@ -50,6 +50,13 @@ set(FAITHFULFRAME_SESSION_REPLAY_TEST_ENV)
 set(FAITHFULFRAME_SESSION_REPLAY_TEST_PATH)
 if (APPLE)
 	set(_obs_runtime_candidates)
+	# obs-studio-devel-action installs FFmpeg beside its Qt/OBS SDK prefix.
+	# Framework-relative searches alone miss this directory when libobs is
+	# imported from an OBS build tree, which leaves replay tests unable to load
+	# libobs at runtime even though the SDK prefix is already known.
+	if (QTDIR)
+		list(APPEND _obs_runtime_candidates "${QTDIR}/lib")
+	endif()
 	foreach(_framework_path IN LISTS CMAKE_FRAMEWORK_PATH)
 		get_filename_component(_framework_parent "${_framework_path}" DIRECTORY)
 		list(APPEND _obs_runtime_candidates "${_framework_parent}/lib")
