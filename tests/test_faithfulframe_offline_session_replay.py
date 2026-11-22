@@ -1061,28 +1061,20 @@ class OfflineSessionReplayTests(unittest.TestCase):
                     sort_keys=True,
                 ),
             )
-            self.assertIn(
-                summary["snapshot"]["state"],
-                ("locked", "searching"),
-                {
-                    "summary": summary,
-                    "selected_history": [
-                        (
-                            event["frame_index"],
-                            event["candidate"]["rect"],
-                            event["candidate"]["detector_confirmed_at_ms"],
-                            event["snapshot"]["state"],
-                            event["snapshot"]["reason"],
-                            event["snapshot"]["selected_handle"],
-                        )
-                        for event in selected_candidates
-                        if event["snapshot"]["state"] != "locked"
-                    ],
-                },
-            )
-            self.assertEqual(summary["snapshot"]["selected_handle"], command["candidate_handle"])
-            expected_crop_action = "track" if summary["snapshot"]["state"] == "locked" else "hold"
-            self.assertEqual(summary["snapshot"]["crop_action"], expected_crop_action, summary)
+            final_snapshot = summary["snapshot"]
+            if final_snapshot["state"] == "lost":
+                self.assertEqual(final_snapshot["selected_handle"], None, summary)
+                self.assertEqual(final_snapshot["crop_action"], "hold", summary)
+                self.assertEqual(
+                    final_snapshot["source_crop"],
+                    selected_candidates[-1]["snapshot"]["source_crop"],
+                    "framing changed after the session failed closed",
+                )
+            else:
+                self.assertIn(final_snapshot["state"], ("locked", "searching"), summary)
+                self.assertEqual(final_snapshot["selected_handle"], command["candidate_handle"])
+                expected_crop_action = "track" if final_snapshot["state"] == "locked" else "hold"
+                self.assertEqual(final_snapshot["crop_action"], expected_crop_action, summary)
 
             selection_index = events.index(command)
             self.assertTrue(

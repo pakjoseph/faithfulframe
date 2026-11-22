@@ -740,6 +740,10 @@ impl TrackingSession {
                 && self.state == State::Searching
                 && candidate.detector_confirmed_at != 0
                 && candidate.observed_at > selected.last_seen
+                && self.loss_started_at.is_some_and(|started_at| {
+                    candidate.observed_at >= started_at
+                        && candidate.detector_confirmed_at >= started_at
+                })
             {
                 if !overlaps_half_of_smaller(selected.detector_anchor, candidate.rect) {
                     self.lose_ambiguous_target();
@@ -3420,6 +3424,82 @@ mod tests {
         assert_eq!(same_person.state, State::Locked);
         assert_eq!(same_person.reason, Reason::ContinuityRecovered);
         assert_eq!(same_person.selected, Some(13));
+    }
+
+    #[test]
+    fn pre_loss_detector_evidence_cannot_make_moved_tracker_ambiguous() {
+        let mut engine = TrackingEngine::new(
+            Config {
+                loss_grace_ms: 100,
+                max_evidence_age_ms: 10,
+                ..Config::default()
+            },
+            framing::FramingConfig::default(),
+            identity(),
+            generations(),
+        )
+        .unwrap();
+        let initial = engine.snapshot();
+        engine.apply(Event::Command {
+            at: 1,
+            envelope: CommandEnvelope {
+                identity: initial.identity,
+                status_version: initial.status_version,
+                generations: initial.generations,
+                command: Command::EnableAutoFollow,
+            },
+        });
+        let first = engine.apply(Event::Candidate {
+            at: 2,
+            candidate: candidate(10, 100, 1, 2),
+        });
+        let locked = engine.apply(Event::Command {
+            at: 3,
+            envelope: CommandEnvelope {
+                identity: first.identity,
+                status_version: first.status_version,
+                generations: first.generations,
+                command: Command::SelectCandidate {
+                    handle: 10,
+                    observation_version: first.observation_version,
+                },
+            },
+        });
+        let mut detector_miss = candidate(10, 100, 2, 4);
+        detector_miss.detector_confirmed_at = 0;
+        let searching = engine.apply(Event::Candidate {
+            at: 4,
+            candidate: detector_miss,
+        });
+        assert_eq!(searching.state, State::Searching);
+        assert_eq!(searching.selected, Some(10));
+        let deadline = searching.loss_deadline;
+
+        let mut moved_stale_confirmation = candidate(11, 100, 3, 6);
+        moved_stale_confirmation.detector_confirmed_at = 3;
+        moved_stale_confirmation.rect = Rect::normalized(0.72, 0.2, 0.1, 0.15).unwrap();
+        let held = engine.apply(Event::Candidate {
+            at: 6,
+            candidate: moved_stale_confirmation,
+        });
+
+        assert_eq!(held.state, State::Searching);
+        assert_eq!(held.selected, Some(10));
+        assert_eq!(held.crop_action, CropAction::Hold);
+        assert_eq!(held.crop, locked.crop);
+        assert_eq!(held.loss_deadline, deadline);
+
+        let mut fresh_displaced_confirmation = candidate(12, 100, 4, 7);
+        fresh_displaced_confirmation.rect = moved_stale_confirmation.rect;
+        let ambiguous = engine.apply(Event::Candidate {
+            at: 7,
+            candidate: fresh_displaced_confirmation,
+        });
+        assert_eq!(ambiguous.state, State::Lost);
+        assert_eq!(ambiguous.reason, Reason::TargetReacquisitionAmbiguous);
+        assert_eq!(ambiguous.selected, None);
+        assert_eq!(ambiguous.crop_action, CropAction::Hold);
+        assert_eq!(ambiguous.crop, locked.crop);
     }
 
     #[test]
