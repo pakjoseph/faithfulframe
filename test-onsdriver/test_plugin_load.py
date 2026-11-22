@@ -1348,6 +1348,31 @@ class PluginLoadTest(obstest.OBSTest):
                 camera_before,
                 'Rearming after framing changes must not alter the original camera feed',
             )
+
+            # Detection configuration changes must retire the existing dlib
+            # tracker identity through the session lifecycle path. The adapter
+            # remains at its safe-wide crop until the volunteer rearms and
+            # selects a current candidate.
+            client.send('SetInputSettings', {
+                'inputName': adapter_name,
+                'inputSettings': {'scale': 2.0},
+                'overlay': True,
+            })
+            detector_settings = client.send('GetInputSettings', {'inputName': adapter_name})
+            self.assertEqual(detector_settings.input_settings.get('scale'), 2.0)
+            self._wait_for_ui_status(
+                ui, 'Tracking settings changed; rearm and select a speaker before following'
+            )
+            self._wait_for_ui_widget(ui, 'Tracking state: Lost')
+            adapter_after_detector_change = self._wait_for_screenshot(
+                client,
+                adapter_name,
+                lambda image: screenshots_match_with_render_tolerance(camera_before, image),
+            )
+            self.assertTrue(
+                screenshots_match_with_render_tolerance(camera_before, adapter_after_detector_change),
+                'A detector reset must hold safe-wide framing until the volunteer selects again',
+            )
         finally:
             if dock_created:
                 try:
