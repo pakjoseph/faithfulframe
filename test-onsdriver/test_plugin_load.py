@@ -812,6 +812,22 @@ class PluginLoadTest(obstest.OBSTest):
             self._wait_for_ui_widget(ui, 'Tracking state: Manual')
             self._invoke_ui_widget(ui, 'accessibleName', 'Enable automatic speaker following', 'click')
             self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
+            self._wait_for_ui_widget(ui, 'Tracking state: Lost', timeout=10.0)
+
+            self._invoke_ui_widget(
+                ui,
+                'accessibleName',
+                'Reset framing to the full camera view',
+                'click',
+            )
+            self._wait_for_ui_widget(ui, 'Tracking state: Lost')
+            self._wait_for_ui_status(ui, 'Wide framing active; select a face to resume following')
+
+            self._wait_for_ui_widget(ui, 'Enable automatic speaker following', enabled=True)
+            self._invoke_ui_widget(ui, 'accessibleName', 'Enable automatic speaker following', 'click')
+            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
 
             self._invoke_ui_widget(
                 ui,
