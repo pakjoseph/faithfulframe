@@ -1030,7 +1030,37 @@ class OfflineSessionReplayTests(unittest.TestCase):
             self.assertGreater(centers[-1] - centers[0], 0.20)
 
             crop_positions = [event["snapshot"]["source_crop"][0] for event in selected_candidates]
-            self.assertGreater(crop_positions[-1], crop_positions[0])
+            crop_failure_details = [
+                {
+                    "frame_index": event["frame_index"],
+                    "at_ms": event["at_ms"],
+                    "target_center_x": round(
+                        event["candidate"]["rect"][0]
+                        + event["candidate"]["rect"][2] / 2,
+                        4,
+                    ),
+                    "detector_confirmed_at_ms": event["candidate"][
+                        "detector_confirmed_at_ms"
+                    ],
+                    "state": event["snapshot"]["state"],
+                    "reason": event["snapshot"]["reason"],
+                    "crop_action": event["snapshot"]["crop_action"],
+                    "source_crop": event["snapshot"]["source_crop"],
+                }
+                for index, event in enumerate(selected_candidates)
+                if index % 10 == 0 or index == len(selected_candidates) - 1
+            ]
+            self.assertGreater(
+                crop_positions[-1],
+                crop_positions[0],
+                json.dumps(
+                    {
+                        "summary": summary["snapshot"],
+                        "sampled_selected_history": crop_failure_details,
+                    },
+                    sort_keys=True,
+                ),
+            )
             self.assertIn(
                 summary["snapshot"]["state"],
                 ("locked", "searching"),
