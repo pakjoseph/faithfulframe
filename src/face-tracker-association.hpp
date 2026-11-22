@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 
@@ -12,6 +13,48 @@ struct ff_tracker_box_i
 	int x1;
 	int y1;
 };
+
+inline bool ff_tracker_boxes_match(const ff_tracker_box_i &left, const ff_tracker_box_i &right);
+
+/// Accumulate one detector result into a conservative one-to-one association
+/// pass. If one detection overlaps multiple trackers, or one tracker overlaps
+/// multiple detections, every involved tracker is ambiguous and cannot retain
+/// identity continuity in safety mode.
+inline bool ff_tracker_record_detector_association(const ff_tracker_box_i *trackers, std::size_t tracker_count,
+						   const ff_tracker_box_i &detection, std::size_t *match_counts,
+						   bool *ambiguous)
+{
+	if (tracker_count && (!trackers || !match_counts || !ambiguous))
+		return false;
+
+	std::size_t matches = 0;
+	std::size_t unique_index = 0;
+	for (std::size_t i = 0; i < tracker_count; ++i) {
+		if (!ff_tracker_boxes_match(trackers[i], detection))
+			continue;
+		++matches;
+		unique_index = i;
+	}
+	if (!matches)
+		return true;
+
+	if (matches > 1) {
+		for (std::size_t i = 0; i < tracker_count; ++i) {
+			if (!ff_tracker_boxes_match(trackers[i], detection))
+				continue;
+			if (match_counts[i] < std::numeric_limits<std::size_t>::max())
+				++match_counts[i];
+			ambiguous[i] = true;
+		}
+		return true;
+	}
+
+	if (match_counts[unique_index] < std::numeric_limits<std::size_t>::max())
+		++match_counts[unique_index];
+	if (match_counts[unique_index] > 1)
+		ambiguous[unique_index] = true;
+	return true;
+}
 
 /// Tracker scores are ranking evidence only when they are finite and positive.
 inline bool ff_tracker_score_is_usable(float score)

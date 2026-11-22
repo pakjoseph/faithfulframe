@@ -1,4 +1,5 @@
 #include <obs-module.h>
+#include <array>
 #include <cstdlib>
 #include <limits>
 #include "plugin-macros.generated.h"
@@ -156,12 +157,48 @@ void face_tracker_manager::retire_ambiguous_trackers()
 
 inline void face_tracker_manager::attenuate_tracker()
 {
+	const bool safety_mode = safety_policy_enabled.load(std::memory_order_acquire);
+	std::array<ff_tracker_box_i, faithfulframe_max_candidates> active_boxes{};
+	std::array<size_t, faithfulframe_max_candidates> detector_match_counts{};
+	std::array<bool, faithfulframe_max_candidates> detector_association_ambiguous{};
+	size_t active_box_count = 0;
+	bool association_invalid = false;
+	if (safety_mode) {
+		for (const auto &tracker : trackers) {
+			if (tracker.state != tracker_inst_s::tracker_state_available)
+				continue;
+			if (active_box_count == active_boxes.size()) {
+				association_invalid = true;
+				break;
+			}
+			active_boxes[active_box_count++] =
+				ff_tracker_box_i{tracker.rect.x0, tracker.rect.y0, tracker.rect.x1, tracker.rect.y1};
+		}
+		for (const auto &detection : detect_rects) {
+			if (association_invalid ||
+			    !ff_tracker_record_detector_association(
+				    active_boxes.data(), active_box_count,
+				    ff_tracker_box_i{detection.x0, detection.y0, detection.x1, detection.y1},
+				    detector_match_counts.data(), detector_association_ambiguous.data())) {
+				association_invalid = true;
+				break;
+			}
+		}
+	}
+
+	size_t active_slot = 0;
 	for (size_t i = 0; i < trackers.size(); i++) {
 		if (trackers[i].state != tracker_inst_s::tracker_state_available)
 			continue;
 		struct tracker_inst_s &t = trackers[i];
 		t.detector_confirmed_at_ms = 0;
 		bool detector_match = false;
+		const size_t slot = active_slot++;
+		const bool ambiguous_detector_match = safety_mode &&
+						      (association_invalid || detector_association_ambiguous[slot]);
+		const bool unique_detector_match =
+			safety_mode && !association_invalid &&
+			(detector_match_counts[slot] == 1 && !detector_association_ambiguous[slot]);
 
 		int a1 = (t.rect.x1 - t.rect.x0) * (t.rect.y1 - t.rect.y0);
 		float amax = (float)a1 * 0.1f;
@@ -170,9 +207,19 @@ inline void face_tracker_manager::attenuate_tracker()
 			float a = (float)common_area(r, t.rect);
 			if (a > amax)
 				amax = a;
-			if (detector_result_captured_at_ms &&
+			if (!safety_mode && detector_result_captured_at_ms &&
 			    ff_tracker_boxes_match(ff_tracker_box_i{r.x0, r.y0, r.x1, r.y1},
 						   ff_tracker_box_i{t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1})) {
+				t.detector_confirmed_at_ms = detector_result_captured_at_ms;
+				detector_match = true;
+			}
+		}
+		if (safety_mode) {
+			if (ambiguous_detector_match) {
+				// One detector result cannot renew multiple tracker identities. Retire
+				// these ambiguous tracks below, then seed fresh handles from new evidence.
+				t.att = 0.0f;
+			} else if (unique_detector_match && detector_result_captured_at_ms) {
 				t.detector_confirmed_at_ms = detector_result_captured_at_ms;
 				detector_match = true;
 			}
