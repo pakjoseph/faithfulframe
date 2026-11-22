@@ -124,17 +124,19 @@ class OfflineBenchmarkTests(unittest.TestCase):
 
     def test_benchmark_records_selected_detector_interval(self):
         parser = benchmark._build_parser()
-        args = parser.parse_args(
-            [
-                "--binary", "replay",
-                "--model", "model.dat",
-                "--manifest", "frames.tsv",
-                "--output", "report.json",
-                "--workload-label", "synthetic",
-                "--detector-interval-ms", "1250",
-            ]
-        )
-        self.assertEqual(args.detector_interval_ms, 1250)
+        for interval_ms in benchmark.DETECTOR_INTERVALS_MS:
+            with self.subTest(interval_ms=interval_ms):
+                args = parser.parse_args(
+                    [
+                        "--binary", "replay",
+                        "--model", "model.dat",
+                        "--manifest", "frames.tsv",
+                        "--output", "report.json",
+                        "--workload-label", "synthetic",
+                        "--detector-interval-ms", str(interval_ms),
+                    ]
+                )
+                self.assertEqual(args.detector_interval_ms, interval_ms)
 
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             parser.parse_args(

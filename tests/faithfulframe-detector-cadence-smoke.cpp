@@ -20,6 +20,8 @@ int main()
 	const tick_t maximum_tick = std::numeric_limits<tick_t>::max();
 	check(faithfulframe_sanitize_detector_interval_ms(1000) == 1000);
 	check(faithfulframe_sanitize_detector_interval_ms(1250) == 1250);
+	check(faithfulframe_sanitize_detector_interval_ms(1500) == 1500);
+	check(faithfulframe_sanitize_detector_interval_ms(1750) == 1750);
 	check(faithfulframe_sanitize_detector_interval_ms(2000) == 2000);
 	check(faithfulframe_sanitize_detector_interval_ms(999) == faithfulframe_detector_interval_default_ms);
 	check(faithfulframe_sanitize_detector_interval_ms(1125) == faithfulframe_detector_interval_default_ms);

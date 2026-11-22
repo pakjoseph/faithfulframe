@@ -16,26 +16,49 @@ def main() -> int:
     args = parser.parse_args()
 
     fixture = Path(__file__).resolve().parent / "fixtures" / "offline-synthetic-person-320x360.ppm"
-    invalid_interval = subprocess.run(
-        [
-            str(args.binary.resolve()),
-            "--model",
-            str(args.model.resolve()),
-            "--ppm-stdin",
-            "--detector-interval-ms",
-            "1125",
-        ],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if invalid_interval.returncode != 2 or "must be 1000, 1250, 1500, 1750, or 2000" not in invalid_interval.stderr:
-        print("offline replay accepted an unsupported detector interval", file=sys.stderr)
-        return 1
-
     with tempfile.TemporaryDirectory(prefix="faithfulframe-benchmark-smoke-") as temp_dir:
         temp = Path(temp_dir)
+        missing_model = temp / "missing-model.dat"
+        for interval_ms in (1000, 1250, 1500, 1750, 2000):
+            parsed_interval = subprocess.run(
+                [
+                    str(args.binary.resolve()),
+                    "--model",
+                    str(missing_model),
+                    "--ppm-stdin",
+                    "--detector-interval-ms",
+                    str(interval_ms),
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if parsed_interval.returncode != 2 or "Model file does not exist" not in parsed_interval.stderr:
+                print(f"offline replay rejected supported detector interval {interval_ms}", file=sys.stderr)
+                return 1
+
+        invalid_interval = subprocess.run(
+            [
+                str(args.binary.resolve()),
+                "--model",
+                str(missing_model),
+                "--ppm-stdin",
+                "--detector-interval-ms",
+                "1125",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if (
+            invalid_interval.returncode != 2
+            or "must be 1000, 1250, 1500, 1750, or 2000" not in invalid_interval.stderr
+        ):
+            print("offline replay accepted an unsupported detector interval", file=sys.stderr)
+            return 1
+
         manifest = temp / "frames.tsv"
         report_path = temp / "report.json"
         manifest.write_text(
