@@ -1361,7 +1361,7 @@ class PluginLoadTest(obstest.OBSTest):
             detector_settings = client.send('GetInputSettings', {'inputName': adapter_name})
             self.assertEqual(detector_settings.input_settings.get('scale'), 2.0)
             self._wait_for_ui_status(
-                ui, 'Tracker identity changed; select a speaker again before following'
+                ui, 'Tracker identity changed; select the speaker again before following'
             )
             self._wait_for_ui_widget(ui, 'Tracking state: Lost')
             adapter_after_detector_change = self._wait_for_screenshot(
