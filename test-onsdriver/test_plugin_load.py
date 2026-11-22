@@ -1361,7 +1361,7 @@ class PluginLoadTest(obstest.OBSTest):
             detector_settings = client.send('GetInputSettings', {'inputName': adapter_name})
             self.assertEqual(detector_settings.input_settings.get('scale'), 2.0)
             self._wait_for_ui_status(
-                ui, 'Tracking settings changed; rearm and select a speaker before following'
+                ui, 'Tracker identity changed; select a speaker again before following'
             )
             self._wait_for_ui_widget(ui, 'Tracking state: Lost')
             adapter_after_detector_change = self._wait_for_screenshot(
@@ -1373,6 +1373,11 @@ class PluginLoadTest(obstest.OBSTest):
                 screenshots_match_with_render_tolerance(camera_before, adapter_after_detector_change),
                 'A detector reset must hold safe-wide framing until the volunteer selects again',
             )
+            self._invoke_ui_widget(
+                ui, 'accessibleName', 'Enable automatic speaker following', 'click'
+            )
+            self._wait_for_ui_status(ui, 'No speaker selected; choose a visible face')
+            self._wait_for_ui_widget(ui, 'Tracking state: Searching')
         finally:
             if dock_created:
                 try:
