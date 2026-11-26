@@ -1360,7 +1360,7 @@ static bool is_filter(QComboBox *targetSelector)
 static inline void set_monitor(obs_source_t *monitor, const QList<QVariant> &target_data)
 {
 	blog(LOG_INFO, "set_monitor monitor=%p", monitor);
-	OBSData data = obs_data_create();
+	OBSDataAutoRelease data = obs_data_create();
 
 	obs_data_set_string(data, "source_name",
 			    target_data.count() >= 1 ? target_data[0].toByteArray().constData() : "");
